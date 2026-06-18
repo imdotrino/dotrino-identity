@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dotrino Identity Vault</title>
+  <meta name="robots" content="noindex,nofollow">
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 1rem; color: #444; background: #fafafa; }
+    code { background: #eee; padding: 2px 6px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Dotrino — Identity Vault</h1>
+  <p>This page is the cross-app storage for Dotrino identities.
+     It is meant to be embedded as an invisible iframe by the apps.</p>
+  <p>Stored in <code>localStorage</code> on this origin:</p>
+  <ul>
+    <li>Your ECDSA P-256 keypair (private key never leaves this page).</li>
+    <li>Nicknames and ratings of peers you've met.</li>
+  </ul>
+  <p>Source: <a href="https://github.com/imdotrino/dotrino-identity" target="_blank" rel="noopener">github.com/imdotrino/dotrino-identity</a></p>
+  <script type="module" src="./vault.js"></script>
+</body>
+</html>
