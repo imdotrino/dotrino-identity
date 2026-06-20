@@ -7,8 +7,8 @@ Identidad de usuario y rating de peers compartidos entre las apps de Dotrino. Fu
 ```
 ┌────────────────────┐    postMessage    ┌────────────────────────┐
 │  app (cualquier    │ ◀───────────────▶ │  vault iframe          │
-│  origin: chat,     │                   │  origin: id.closer     │
-│  qrshare, chess…)  │                   │  .click                │
+│  origin: chat,     │                   │  origin: id.dotrino    │
+│  qrshare, chess…)  │                   │  .com                  │
 │                    │                   │  - keypair ECDSA P-256 │
 │  import {Identity} │                   │  - keypair ECDH P-256  │
 └────────────────────┘                   │  - peers + ratings     │
