@@ -1,5 +1,7 @@
 # @dotrino/identity
 
+> **Parte del ecosistema [Dotrino](https://dotrino.com).** Misión: aplicaciones que resuelven problemas comunes, respetando tu privacidad — sin anuncios, sin cookies, sin rastreo de datos, sin vender tu identidad a nadie.
+
 Identidad de usuario y rating de peers compartidos entre las apps de Dotrino. Funciona aunque las apps vivan en orígenes distintos: usa un **vault iframe** alojado en un origin estable que guarda la información en su propio `localStorage` y expone una API por `postMessage`.
 
 ## Cómo funciona
