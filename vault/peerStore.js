@@ -31,9 +31,14 @@ let _fallback = false
 let _idb = null
 let _writeChain = Promise.resolve()
 let _markDirty = null
+let _pid = null
 
 /** Registra el callback que marca el estado como "sucio" para el sync. */
 export function onDirty (fn) { _markDirty = fn }
+
+/** Multi-perfil: namespacea el peer book por perfil. El core lo llama antes de initPeerStorage. */
+export function setProfile (pid) { _pid = pid || null }
+function peersKey () { return _pid ? `peers.${_pid}.v1` : IDB_PEERS_KEY }
 
 function openIdb () {
   return new Promise((resolve, reject) => {
@@ -74,43 +79,28 @@ export async function initPeerStorage () {
   catch (_) { /* best-effort */ }
   try {
     _idb = await openIdb()
-    const stored = await idbGet(_idb, IDB_PEERS_KEY)
-    const storedPeers = (stored && typeof stored === 'object') ? stored : {}
-    const migratedFlag = await idbGet(_idb, IDB_MIGRATED_KEY)
-    if (migratedFlag) {
-      // Ya reconciliado: IndexedDB es la fuente de verdad (ignora el LS viejo).
-      _peers = storedPeers
-    } else {
-      // Primera corrida (o reintento tras el bug que escribía {}): unimos el
-      // peer book del localStorage viejo con lo que haya en IndexedDB —unión,
-      // IndexedDB gana en conflictos— para recuperar contactos que un bug previo
-      // pudo enmascarar. Nunca borra. Marcamos el flag para no rehacerlo (así no
-      // se "resucitan" contactos que el usuario borre más adelante).
-      const local = readLocalPeers()
-      _peers = { ...local, ...storedPeers }
-      const recovered = Object.keys(local).filter(k => !(k in storedPeers)).length
-      await idbPut(_idb, IDB_PEERS_KEY, _peers)
-      await idbPut(_idb, IDB_MIGRATED_KEY, true)
-      if (recovered) console.log(`[cc-identity] ${recovered} peer(s) recuperados del localStorage viejo → IndexedDB`)
-    }
+    const stored = await idbGet(_idb, peersKey()) // peer book DEL perfil activo (namespaceado)
+    _peers = (stored && typeof stored === 'object') ? stored : {}
   } catch (e) {
     console.warn('[cc-identity] IndexedDB no disponible, uso localStorage:', e?.message)
     _fallback = true
     _idb = null
-    _peers = readLocalPeers()
+    try { const raw = localStorage.getItem(peersKey()); _peers = raw ? (JSON.parse(raw) || {}) : {} }
+    catch (_) { _peers = {} }
   }
   return _peers
 }
 
 function persistPeers () {
+  const key = peersKey()
   if (_fallback || !_idb) {
-    try { localStorage.setItem(PEERS_STORAGE, JSON.stringify(_peers)) }
+    try { localStorage.setItem(key, JSON.stringify(_peers)) }
     catch (e) { console.warn('[cc-identity] persist (ls) falló:', e?.message) }
     return _writeChain
   }
   const snapshot = _peers
   _writeChain = _writeChain
-    .then(() => idbPut(_idb, IDB_PEERS_KEY, snapshot))
+    .then(() => idbPut(_idb, key, snapshot))
     .catch(e => console.warn('[cc-identity] persist (idb) falló:', e?.message))
   return _writeChain
 }
@@ -143,5 +133,5 @@ export function upsertPeer (publickey, patch) {
 // Sólo para tests: resetea el estado del módulo (y cierra la conexión IDB).
 export function _resetForTest () {
   try { if (_idb && _idb.close) _idb.close() } catch (_) {}
-  _peers = {}; _fallback = false; _idb = null; _writeChain = Promise.resolve(); _markDirty = null
+  _peers = {}; _fallback = false; _idb = null; _writeChain = Promise.resolve(); _markDirty = null; _pid = null
 }

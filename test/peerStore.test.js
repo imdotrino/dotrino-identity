@@ -18,7 +18,7 @@ globalThis.localStorage = ls
 // navigator es read-only en Node y el módulo ya protege navigator.storage?.persist
 
 const {
-  PEERS_STORAGE, initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer,
+  PEERS_STORAGE, setProfile, initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer,
   onDirty, flushPeers, _resetForTest
 } = await import('../vault/peerStore.js')
 
@@ -55,39 +55,27 @@ beforeEach(async () => {
   await deleteDb('cc-identity')
 })
 
-test('migra el peer book del localStorage viejo a IndexedDB (one-time)', async () => {
-  const seed = { pkA: { publickey: 'pkA', myRating: { rating: 5 } } }
-  ls.setItem(PEERS_STORAGE, JSON.stringify(seed))
-
+test('multi-perfil: setProfile namespacea el peer book (aislamiento por perfil)', async () => {
+  // Perfil p1: un contacto.
+  setProfile('p1')
   await initPeerStorage()
-  assert.deepStrictEqual(loadPeers(), seed)              // cargado en memoria
-  await flushPeers()
-  // El localStorage viejo se conserva (rollback seguro).
-  assert.ok(ls.getItem(PEERS_STORAGE))
-
-  // Una segunda init NO debe re-migrar: lee de IDB aunque cambie el localStorage.
-  _resetForTest()
-  ls.setItem(PEERS_STORAGE, JSON.stringify({ otro: { publickey: 'otro' } }))
-  await initPeerStorage()
-  assert.deepStrictEqual(loadPeers(), seed)              // gana lo de IDB, ignora el LS nuevo
-})
-
-test('recupera contactos si un bug previo dejó IndexedDB en {} sin flag', async () => {
-  // Estado del bug: peers.v1={} en IDB y SIN flag, pero los contactos siguen
-  // en el localStorage viejo (la migración no lo borra).
-  const seed = { pkX: { publickey: 'pkX', nickname: 'Zoe', isContact: true } }
-  ls.setItem(PEERS_STORAGE, JSON.stringify(seed))
-  await rawIdbPut('peers.v1', {})
-
-  await initPeerStorage()
-  assert.deepStrictEqual(loadPeers(), seed)              // recuperado del localStorage
+  upsertPeer('pkA', { nickname: 'Alice' })
   await flushPeers()
 
-  // Reconciliación one-time: una segunda init ya NO mira el localStorage.
+  // Perfil p2: peer book vacío (aislado de p1).
   _resetForTest()
-  ls.setItem(PEERS_STORAGE, JSON.stringify({ pkY: { publickey: 'pkY' } }))
+  setProfile('p2')
   await initPeerStorage()
-  assert.deepStrictEqual(loadPeers(), seed)              // IDB manda, ignora LS nuevo
+  assert.deepStrictEqual(loadPeers(), {})
+  upsertPeer('pkB', { nickname: 'Bob' })
+  await flushPeers()
+
+  // Volver a p1: conserva SU peer book y NO ve el de p2.
+  _resetForTest()
+  setProfile('p1')
+  await initPeerStorage()
+  assert.strictEqual(loadPeers().pkA?.nickname, 'Alice')
+  assert.ok(!loadPeers().pkB)
 })
 
 test('savePeers/upsertPeer hacen write-through a IndexedDB', async () => {
@@ -127,12 +115,12 @@ test('fallback a localStorage si IndexedDB no está disponible', async () => {
   const realIdb = globalThis.indexedDB
   globalThis.indexedDB = { open () { throw new Error('IDB bloqueado') } }
   try {
-    ls.setItem(PEERS_STORAGE, JSON.stringify({ pkD: { publickey: 'pkD' } }))
+    ls.setItem('peers.v1', JSON.stringify({ pkD: { publickey: 'pkD' } })) // clave del perfil por defecto
     await initPeerStorage()
     assert.strictEqual(loadPeers().pkD?.publickey, 'pkD') // leyó de localStorage
     upsertPeer('pkE', { nickname: 'Eve' })
     // En fallback persiste en localStorage de inmediato.
-    const persisted = JSON.parse(ls.getItem(PEERS_STORAGE))
+    const persisted = JSON.parse(ls.getItem('peers.v1'))
     assert.strictEqual(persisted.pkE?.nickname, 'Eve')
   } finally {
     globalThis.indexedDB = realIdb

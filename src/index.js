@@ -259,6 +259,23 @@ export class Identity {
     return this.on('vault', handler)
   }
 
+  // ----- multi-perfil por dispositivo -----
+  // Podés tener varios perfiles (identidades) en el mismo navegador, cada uno conectado o no
+  // a su propio vault. Crear/cambiar setea el perfil activo; la app RECARGA la página y toma
+  // el nuevo (no reactivo: las apps abiertas conservan el perfil con el que cargaron).
+  /** Lista de perfiles: [{ id, name, pubkey, current }]. */
+  async listProfiles () { return this._call('listProfiles') }
+  /** El perfil activo: { id, name, pubkey }. */
+  async currentProfile () { return this._call('currentProfile') }
+  /** Crea un perfil nuevo (identidad fresca) y lo deja activo. La app debe recargar. */
+  async createProfile (name) { return this._call('createProfile', { name }) }
+  /** Cambia el perfil activo. La app debe recargar la página. */
+  async switchProfile (id) { return this._call('switchProfile', { id }) }
+  /** Renombra un perfil (o el activo si no se pasa id). */
+  async renameProfile (id, name) { return this._call('renameProfile', { id, name }) }
+  /** Borra un perfil y sus datos (no el único). */
+  async deleteProfile (id) { return this._call('deleteProfile', { id }) }
+
   /**
    * Merge endorsements (signed ratings from third parties) about a subject
    * into the local peer book. Returns { merged, total }.
@@ -426,4 +443,4 @@ export class Identity {
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), reutilizables
 // por apps/bridges sin cargar el iframe del vault.
-export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'

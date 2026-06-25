@@ -41,14 +41,19 @@ function fileKv (filePath) {
 function filePeers (filePath) {
   let peers = {}
   let markDirty = null
+  let pid = null // multi-perfil: el peer book se namespacea por perfil
+  const fileFor = () => pid ? path.join(path.dirname(filePath), `peers.${pid}.json`) : filePath
   const flush = () => {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(peers))
+    const f = fileFor()
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.writeFileSync(f, JSON.stringify(peers))
   }
   return {
+    setProfile (p) { pid = p || null },
     async initPeerStorage () {
+      const f = fileFor()
       try {
-        if (fs.existsSync(filePath)) peers = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {}
+        peers = (fs.existsSync(f)) ? (JSON.parse(fs.readFileSync(f, 'utf8')) || {}) : {}
       } catch (_) { peers = {} }
       return peers
     },
@@ -144,6 +149,13 @@ export class Identity {
   listVaultDevices () { return this._h('listVaultDevices') }
   getVaultCert () { return this._h('getVaultCert') }
   onVault (handler) { return this.on('vault', handler) }
+  // Multi-perfil por dispositivo (crear/cambiar reinicializa con el nuevo perfil activo).
+  listProfiles () { return this._h('listProfiles') }
+  currentProfile () { return this._h('currentProfile') }
+  createProfile (name) { return this._h('createProfile', { name }) }
+  switchProfile (id) { return this._h('switchProfile', { id }) }
+  renameProfile (id, name) { return this._h('renameProfile', { id, name }) }
+  deleteProfile (id) { return this._h('deleteProfile', { id }) }
   mergeEndorsements (subject, endorsements, askerPubkey) {
     return this._h('mergeEndorsements', { subject, endorsements, askerPubkey })
   }
@@ -186,4 +198,4 @@ export default Identity
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), para que
 // un bridge/bot Node pueda crear su clave, firmar acciones y verificar cadenas D←P.
-export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'

@@ -29,6 +29,10 @@ export const DELEGATIONS_STORAGE = 'dotrino.identity.delegations'   // caps emit
 export const REVOCATIONS_STORAGE = 'dotrino.identity.revocations'   // nonces revocados
 export const VAULT_DEVICE_STORAGE = 'dotrino.identity.vault.device' // sub-clave D de ESTE dispositivo (custodia en el iframe)
 export const VAULT_CERT_STORAGE = 'dotrino.identity.vault.cert'     // { cert, master, proxy, deviceId, pairedAt }
+// Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
+// namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
+export const PROFILES_STORAGE = 'dotrino.identity.profiles' // [{ id, name, pubkey }]
+export const CURRENT_STORAGE = 'dotrino.identity.current'   // id del perfil activo
 
 const NONCE_TTL_MS = 5 * 60 * 1000
 
@@ -104,10 +108,26 @@ async function verifyBytes (publicJwkStr, bytes, signatureBase64) {
  * @returns {Promise<{ handlers:Object, get me():Object, sync:Object|null,
  *                      onSyncStatus(fn):void }>}
  */
-export async function createIdentityCore ({ kv, peers, makeSync = null }) {
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
+
+  // ----- multi-perfil: kv SCOPEADO por el perfil activo -----
+  // Todas las claves `dotrino.identity.*` (keypair, me, nonces, delegations, vault.*) se
+  // namespacean transparentemente bajo `dotrino.identity.p.<currentPid>.*`. Las dos claves
+  // globales (lista de perfiles + activo) usan el kv crudo. Cambiar de perfil = setear el
+  // activo; la app recarga la página y re-inicializa con el nuevo (no reactivo, por diseño).
+  let currentPid = null
+  const _scoped = (k) => (!currentPid || k === PROFILES_STORAGE || k === CURRENT_STORAGE)
+    ? k : k.replace(/^dotrino\.identity\./, `dotrino.identity.p.${currentPid}.`)
+  const kv = {
+    getItem: (k) => rawKv.getItem(_scoped(k)),
+    setItem: (k, v) => rawKv.setItem(_scoped(k), v),
+    removeItem: (k) => rawKv.removeItem(_scoped(k))
+  }
+  const loadProfiles = () => { try { return JSON.parse(rawKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { return [] } }
+  const saveProfiles = (list) => rawKv.setItem(PROFILES_STORAGE, JSON.stringify(list))
 
   // ----- keypair loaders (kv-backed) -----
 
@@ -511,6 +531,54 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       }
     },
 
+    // ----- perfiles (multi-perfil por dispositivo) -----
+    // Cambiar/crear setea el perfil activo; la app RECARGA la página y re-inicializa con él
+    // (no reactivo, por diseño). Las apps abiertas conservan el perfil con el que cargaron.
+    async listProfiles () {
+      return loadProfiles().map((p) => ({ id: p.id, name: p.name || '', pubkey: p.pubkey || null, current: p.id === currentPid }))
+    },
+    async currentProfile () {
+      const e = loadProfiles().find((p) => p.id === currentPid) || {}
+      return { id: currentPid, name: e.name || me?.nickname || '', pubkey: publickeyJwkStr }
+    },
+    async createProfile ({ name } = {}) {
+      const pid = 'p' + crypto.randomUUID().slice(0, 8)
+      currentPid = pid
+      rawKv.setItem(CURRENT_STORAGE, pid)
+      await peers.setProfile?.(pid)
+      await initPeerStorage()
+      keypair = await loadOrCreateKeypair(); publickeyJwkStr = JSON.stringify(keypair.publicJwk)
+      encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
+      me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: String(name || '').slice(0, 40) }
+      saveMe(me)
+      const list = loadProfiles(); list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr }); saveProfiles(list)
+      return { id: pid, name: me.nickname, pubkey: publickeyJwkStr }
+    },
+    async switchProfile ({ id } = {}) {
+      if (!loadProfiles().find((p) => p.id === id)) throw new Error('perfil no existe')
+      rawKv.setItem(CURRENT_STORAGE, id) // la app recarga la página → re-init con el nuevo perfil
+      return { id }
+    },
+    async renameProfile ({ id, name } = {}) {
+      const list = loadProfiles(); const e = list.find((p) => p.id === (id || currentPid))
+      if (!e) throw new Error('perfil no existe')
+      e.name = String(name || '').slice(0, 40); saveProfiles(list)
+      if (e.id === currentPid) { me = { ...(me || {}), nickname: e.name }; saveMe(me) }
+      return { id: e.id, name: e.name }
+    },
+    async deleteProfile ({ id } = {}) {
+      let list = loadProfiles()
+      if (list.length <= 1) throw new Error('no se puede borrar el único perfil')
+      if (!list.find((p) => p.id === id)) throw new Error('perfil no existe')
+      list = list.filter((p) => p.id !== id); saveProfiles(list)
+      // Borrado directo del namespace del perfil (incluye su store del vault si lo tuviera).
+      for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert']) {
+        rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
+      }
+      if (currentPid === id) { currentPid = list[0].id; rawKv.setItem(CURRENT_STORAGE, currentPid) }
+      return { ok: true, current: currentPid }
+    },
+
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
     // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
@@ -671,6 +739,24 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
 
   // ----- bootstrap -----
 
+  // Perfil activo (multi-perfil por dispositivo). Sin migración (ecosistema nuevo, no importa
+  // perder data): si no hay perfiles, se crea uno fresco. A partir de acá `kv` está scopeado a
+  // `currentPid` y `peers` apunta al peer book de ese perfil.
+  {
+    let profiles = loadProfiles()
+    currentPid = rawKv.getItem(CURRENT_STORAGE)
+    if (!profiles.length) {
+      currentPid = 'p' + crypto.randomUUID().slice(0, 8)
+      profiles = [{ id: currentPid, name: '', pubkey: null }]
+      saveProfiles(profiles)
+      rawKv.setItem(CURRENT_STORAGE, currentPid)
+    } else if (!currentPid || !profiles.find((p) => p.id === currentPid)) {
+      currentPid = profiles[0].id
+      rawKv.setItem(CURRENT_STORAGE, currentPid)
+    }
+  }
+  await peers.setProfile?.(currentPid)
+
   keypair = await loadOrCreateKeypair()
   publickeyJwkStr = JSON.stringify(keypair.publicJwk)
   encKeypair = await loadOrCreateEncKeypair()
@@ -688,6 +774,14 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
   } else {
     me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
     kv.setItem(ME_STORAGE, JSON.stringify(me))
+  }
+
+  // Registrar el pubkey (y nombre) del perfil activo en su meta → para avatar/listado sin abrir cada perfil.
+  {
+    const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
+    if (e && (e.pubkey !== publickeyJwkStr || (!e.name && me?.nickname))) {
+      e.pubkey = publickeyJwkStr; if (!e.name && me?.nickname) e.name = me.nickname; saveProfiles(list)
+    }
   }
 
   if (typeof makeSync === 'function') {
