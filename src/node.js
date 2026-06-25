@@ -142,6 +142,7 @@ export class Identity {
   vaultSign (payload) { return this._h('vaultSign', { payload }) }
   vaultStore (method, args) { return this._h('vaultStore', { method, args }) }
   listVaultDevices () { return this._h('listVaultDevices') }
+  getVaultCert () { return this._h('getVaultCert') }
   onVault (handler) { return this.on('vault', handler) }
   mergeEndorsements (subject, endorsements, askerPubkey) {
     return this._h('mergeEndorsements', { subject, endorsements, askerPubkey })

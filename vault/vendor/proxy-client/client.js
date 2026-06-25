@@ -233,9 +233,11 @@ export class WebSocketProxyClient {
    * (típicamente por el identity vault). Devuelve la respuesta del proxy con
    * `queued_delivered` (mensajes offline despachados al instante).
    */
-  identify ({ data, signature }) {
+  identify ({ data, signature, cert }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
-    return this._request({ type: 'identify', data, signature }, 'identified')
+    const msg = { type: 'identify', data, signature }
+    if (cert) msg.cert = cert // "una identidad": el proxy bindea este token también bajo tu maestra M
+    return this._request(msg, 'identified')
   }
 
   /**

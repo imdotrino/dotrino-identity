@@ -515,7 +515,11 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
     // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
     async vaultPair ({ qr }) {
-      const res = await remoteEnroll({ qr, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, sas: c.sas }) })
+      // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
+      // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
+      let device
+      try { const k = JSON.parse(kv.getItem(KEY_STORAGE)); device = { publickey: JSON.stringify(k.publicJwk), privateJwk: k.privateJwk } } catch (_) { device = undefined }
+      const res = await remoteEnroll({ qr, device, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, sas: c.sas }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify(res.device))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })
@@ -557,6 +561,13 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       return remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert })
+    },
+
+    // El cert de delegación de este dispositivo (para presentarlo al proxy en `identify`
+    // → "una identidad": el proxy bindea tu pubkey también bajo tu maestra M). Sin secretos.
+    async getVaultCert () {
+      const v = loadVaultCert()
+      return v?.cert ? { cert: v.cert, master: v.master } : null
     },
 
     async listContacts () {

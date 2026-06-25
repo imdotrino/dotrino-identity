@@ -245,6 +245,15 @@ export class Identity {
     return this._call('listVaultDevices', {}, 20000)
   }
 
+  /**
+   * El cert de delegación de este dispositivo (o null si no está emparejado). El
+   * transporte lo presenta al proxy en `identify` → "una identidad": el proxy enruta
+   * los mensajes dirigidos a tu maestra M también a este dispositivo. No tiene secretos.
+   */
+  async getVaultCert () {
+    return this._call('getVaultCert')
+  }
+
   /** Suscribe a eventos de emparejamiento ('vault'): { phase:'challenge'|'paired'|'unpaired', ... }. */
   onVault (handler) {
     return this.on('vault', handler)
