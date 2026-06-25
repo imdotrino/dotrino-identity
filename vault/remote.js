@@ -12,7 +12,7 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDelegation, makePairingCode, pubkeyId } from './capabilities.js'
 
 const MSG = {
   ENROLL: 'vault.enroll',
@@ -43,15 +43,18 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     // El DISPOSITIVO genera el código y manda solo su COMPROMISO (no el código). El vault
     // aprende el código únicamente cuando vos lo tipeás en el PC → aprobar exige tener el dispositivo.
     const code = makePairingCode()
-    const commit = await commitCode({ code, dpub: dev.publickey, sn: qr.sn })
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now() }
+    // NO se manda el código ni un compromiso: el vault lo aprende SOLO cuando lo tipeás, y al
+    // ECHARLO de vuelta el dispositivo confía. Un vault falso no conoce el código → no empareja.
+    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, label, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, data })
 
     const enrolled = new Promise((resolve, reject) => {
       const off = client.on('message', (_from, p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, code }) } catch (_) {} }
-        else if (p.type === MSG.ENROLLED) { cleanup(); resolve(p) }
+        // El vault ECHA el código que tipeaste; aceptamos SOLO si coincide con el que generamos.
+        // (Un código distinto = un vault que no lo conoce → lo ignoramos y seguimos esperando.)
+        else if (p.type === MSG.ENROLLED) { if (p.code === code) { cleanup(); resolve(p) } }
         else if (p.type === MSG.ERROR) { cleanup(); reject(new Error(p.error)) }
       })
       const t = setTimeout(() => { cleanup(); reject(new Error('timeout esperando la aprobación en el vault')) }, approveTimeoutMs)
