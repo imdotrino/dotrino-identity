@@ -1,0 +1,4 @@
+Copia vendorizada de @dotrino/proxy-client@0.6.3 (src/, sin dependencias).
+El iframe id.dotrino.com se sirve estático (sin bundler), así que el transporte
+va self-hosted aquí (no por CDN) para no depender de terceros en runtime.
+Actualizar: re-copiar node_modules/@dotrino/proxy-client/src/*.js y bumpear esta nota.

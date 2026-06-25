@@ -19,6 +19,11 @@
     <li>Nicknames and ratings of peers you've met.</li>
   </ul>
   <p>Source: <a href="https://github.com/imdotrino/dotrino-identity" target="_blank" rel="noopener">github.com/imdotrino/dotrino-identity</a></p>
+  <!-- Transporte self-hosted (vendorizado): el emparejamiento de dispositivos importa
+       @dotrino/proxy-client de forma perezosa; este import map lo resuelve sin CDN. -->
+  <script type="importmap">
+  { "imports": { "@dotrino/proxy-client": "./vendor/proxy-client/index.js" } }
+  </script>
   <script type="module" src="./vault.js"></script>
 </body>
 </html>

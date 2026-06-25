@@ -19,6 +19,7 @@
  */
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
+import { enrollDevice as remoteEnroll } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -26,6 +27,8 @@ export const ME_STORAGE = 'dotrino.identity.me'
 export const NONCE_STORAGE = 'dotrino.identity.nonces' // replay window
 export const DELEGATIONS_STORAGE = 'dotrino.identity.delegations'   // caps emitidas
 export const REVOCATIONS_STORAGE = 'dotrino.identity.revocations'   // nonces revocados
+export const VAULT_DEVICE_STORAGE = 'dotrino.identity.vault.device' // sub-clave D de ESTE dispositivo (custodia en el iframe)
+export const VAULT_CERT_STORAGE = 'dotrino.identity.vault.cert'     // { cert, master, proxy, deviceId, pairedAt }
 
 const NONCE_TTL_MS = 5 * 60 * 1000
 
@@ -167,6 +170,13 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
   const saveDelegations = (o) => kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
   const loadRevocations = () => loadJson(REVOCATIONS_STORAGE)
   const saveRevocations = (o) => kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
+
+  // ----- emparejamiento con el vault del usuario (este dispositivo enrolado) -----
+  // Canal de eventos 'vault' (p.ej. el SAS a comparar durante el emparejamiento).
+  const vaultListeners = new Set()
+  const emitVault = (p) => { for (const fn of vaultListeners) { try { fn(p) } catch (_) {} } }
+  const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
+  const loadVaultDevice = () => { try { return JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null') } catch (_) { return null } }
 
   // ----- me (kv-backed) -----
 
@@ -501,6 +511,30 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       }
     },
 
+    // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
+    // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
+    // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
+    async vaultPair ({ qr }) {
+      const res = await remoteEnroll({ qr, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, sas: c.sas }) })
+      kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify(res.device))
+      kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
+      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })
+      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope }
+    },
+
+    async vaultStatus () {
+      const v = loadVaultCert()
+      if (!v?.cert) return { paired: false }
+      return { paired: true, deviceId: v.deviceId, master: v.master, proxy: v.proxy, scope: v.cert.scope, exp: v.cert.exp, pairedAt: v.pairedAt }
+    },
+
+    async vaultUnpair () {
+      kv.removeItem(VAULT_DEVICE_STORAGE)
+      kv.removeItem(VAULT_CERT_STORAGE)
+      emitVault({ phase: 'unpaired' })
+      return { ok: true }
+    },
+
     async listContacts () {
       return Object.values(loadPeers()).filter(p => p && p.isContact).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
     },
@@ -636,6 +670,7 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
     handlers,
     get me () { return me },
     sync,
-    onSyncStatus (fn) { if (sync) sync.onStatus(fn) }
+    onSyncStatus (fn) { if (sync) sync.onStatus(fn) },
+    onVaultEvent (fn) { vaultListeners.add(fn); return () => vaultListeners.delete(fn) }
   }
 }

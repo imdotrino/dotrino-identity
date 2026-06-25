@@ -197,6 +197,35 @@ export class Identity {
     return this._call('listDelegations')
   }
 
+  // ----- Emparejar ESTE navegador/dispositivo con el vault del usuario (Fase 1) -----
+
+  /**
+   * Empareja este dispositivo con el vault del usuario a partir del QR (v2) que
+   * muestra `dotrino-vault pair`. Genera la sub-clave D DENTRO del iframe (su privada
+   * nunca sale), hace el emparejamiento endurecido por el proxy y guarda el cert.
+   * Emite un evento 'vault' { phase:'challenge', deviceId, sas } para que muestres el
+   * código a comparar; resuelve cuando el dueño aprueba en su PC (espera hasta 3 min).
+   * @returns {Promise<{ ok:boolean, deviceId:string, master:string, exp:number, scope:string[] }>}
+   */
+  async enrollDevice (qr) {
+    return this._call('vaultPair', { qr }, 200000)
+  }
+
+  /** Estado de emparejamiento: { paired, deviceId?, master?, scope?, exp?, pairedAt? }. */
+  async vaultStatus () {
+    return this._call('vaultStatus')
+  }
+
+  /** Desvincula este dispositivo del vault (borra la sub-clave + el cert locales). */
+  async unpairDevice () {
+    return this._call('vaultUnpair')
+  }
+
+  /** Suscribe a eventos de emparejamiento ('vault'): { phase:'challenge'|'paired'|'unpaired', ... }. */
+  onVault (handler) {
+    return this.on('vault', handler)
+  }
+
   /**
    * Merge endorsements (signed ratings from third parties) about a subject
    * into the local peer book. Returns { merged, total }.
@@ -334,7 +363,7 @@ export class Identity {
     }
   }
 
-  _call (method, params = {}) {
+  _call (method, params = {}, timeoutMs = this.timeoutMs) {
     return new Promise((resolve, reject) => {
       if (!this._iframe?.contentWindow) {
         return reject(new Error('Vault not ready'))
@@ -343,7 +372,7 @@ export class Identity {
       const timer = setTimeout(() => {
         this._pending.delete(id)
         reject(new Error(`Vault timeout for ${method}`))
-      }, this.timeoutMs)
+      }, timeoutMs)
       this._pending.set(id, { resolve, reject, timer })
 
       // Usamos targetOrigin='*' por compatibilidad: en algunos navegadores el

@@ -99,6 +99,7 @@ export class Identity {
       makeSync: null
     })
     this._core.onSyncStatus((payload) => this._emit('sync', payload))
+    this._core.onVaultEvent((payload) => this._emit('vault', payload))
     return this
   }
 
@@ -134,6 +135,11 @@ export class Identity {
   signDelegation (sub, scope, opts = {}) { return this._h('signDelegation', { sub, scope, ...opts }) }
   revokeDelegation (nonce) { return this._h('revokeDelegation', { nonce }) }
   listDelegations () { return this._h('listDelegations') }
+  // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)
+  enrollDevice (qr) { return this._h('vaultPair', { qr }) }
+  vaultStatus () { return this._h('vaultStatus') }
+  unpairDevice () { return this._h('vaultUnpair') }
+  onVault (handler) { return this.on('vault', handler) }
   mergeEndorsements (subject, endorsements, askerPubkey) {
     return this._h('mergeEndorsements', { subject, endorsements, askerPubkey })
   }

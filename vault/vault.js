@@ -30,17 +30,15 @@ import { createIdentityCore } from './core.js'
 
   const { handlers } = core
 
-  // Broadcast de estado del sync a todos los embebedores.
-  const broadcastStatus = (payload) => {
+  // Broadcast de eventos del vault (sync + emparejamiento) a todos los embebedores.
+  const broadcast = (eventName, payload) => {
     for (const w of [window.parent, ...Array.from(document.querySelectorAll('iframe')).map(f => f.contentWindow)]) {
       if (!w || w === window) continue
-      try { w.postMessage({ _cci: true, type: 'event', event: 'sync', payload }, '*') } catch {}
-    }
-    if (window.parent && window.parent !== window) {
-      try { window.parent.postMessage({ _cci: true, type: 'event', event: 'sync', payload }, '*') } catch {}
+      try { w.postMessage({ _cci: true, type: 'event', event: eventName, payload }, '*') } catch {}
     }
   }
-  core.onSyncStatus(broadcastStatus)
+  core.onSyncStatus((p) => broadcast('sync', p))
+  core.onVaultEvent((p) => broadcast('vault', p))
 
   window.addEventListener('message', async (event) => {
     const msg = event.data
