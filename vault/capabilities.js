@@ -53,6 +53,30 @@ export async function pubkeyId (publicJwkStr) {
   return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+/**
+ * Verifica que `signature` (base64) sobre `data` fue hecha por la privada de
+ * `publickey` (JWK string). Prueba de POSESION de una sub-clave de dispositivo (no
+ * es cadena de delegacion): la usa el vault para confirmar que quien pide enrolar
+ * `dpub` realmente tiene su privada (un token robado ya no alcanza para enrolar).
+ */
+export async function verifyDeviceSig ({ publickey, data, signature }) {
+  if (typeof publickey !== 'string' || typeof signature !== 'string') return false
+  return rawVerify(publickey, enc(canonicalStringify(data)), signature)
+}
+
+/**
+ * Short Authentication String: 6 digitos deterministas derivados de (maestra,
+ * dispositivo, nonce de sesion). NO es un secreto: su valor esta en COMPARARLO
+ * visualmente entre las dos pantallas (PC del vault y dispositivo) al emparejar —
+ * eso mata el relay/phishing (un atacante remoto no puede mostrar el SAS correcto
+ * en el dispositivo fisico de la victima).
+ */
+export async function deriveSAS (master, dpub, sn) {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc(canonicalStringify({ iss: master, sub: dpub, sn }))))
+  const n = ((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) >>> 0
+  return String(n % 1000000).padStart(6, '0')
+}
+
 /** Cuerpo canónico del certificado (lo que se firma): el cert SIN la firma. */
 export function delegationBody (cert) {
   return { v: cert.v, iss: cert.iss, sub: cert.sub, scope: cert.scope, iat: cert.iat, exp: cert.exp, nonce: cert.nonce }
