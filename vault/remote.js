@@ -62,3 +62,32 @@ export async function enrollDevice ({ qr, onChallenge, label = '', approveTimeou
     return { device, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId }
   } finally { try { client.close() } catch (_) {} }
 }
+
+/**
+ * Pide a la MAESTRA (en el vault del PC) que firme `payload`, adjuntando el cert de
+ * delegación de este dispositivo. La maestra nunca sale del vault: vuelve solo la
+ * firma. Requiere que el vault esté online.
+ * @returns {Promise<{ signature:string, publickey:string }>}  publickey = la maestra.
+ */
+export async function requestSign ({ master, proxy, device, cert, payload, timeoutMs = 15000 } = {}) {
+  if (!master || !proxy || !device?.privateJwk || !cert) throw new Error('faltan datos de emparejamiento')
+  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
+  await client.connect()
+  try {
+    const data = { op: 'sign', payload, publickey: device.publickey, ts: Date.now() }
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, data })
+    const pending = new Promise((resolve, reject) => {
+      const off = client.on('message', (_f, p) => {
+        if (!p || typeof p !== 'object') return
+        if (p.type === 'vault.signed') { cleanup(); resolve(p) }
+        else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
+      })
+      const t = setTimeout(() => { cleanup(); reject(new Error('el vault no respondió (¿está encendido?)')) }, timeoutMs)
+      const cleanup = () => { off(); clearTimeout(t) }
+    })
+    client.sendByPubkey(master, { type: 'vault.sign', data, signature, cert })
+    const res = await pending
+    return { signature: res.signature, publickey: res.publickey }
+  } finally { try { client.close() } catch (_) {} }
+}

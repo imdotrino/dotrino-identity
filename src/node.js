@@ -139,6 +139,7 @@ export class Identity {
   enrollDevice (qr) { return this._h('vaultPair', { qr }) }
   vaultStatus () { return this._h('vaultStatus') }
   unpairDevice () { return this._h('vaultUnpair') }
+  vaultSign (payload) { return this._h('vaultSign', { payload }) }
   onVault (handler) { return this.on('vault', handler) }
   mergeEndorsements (subject, endorsements, askerPubkey) {
     return this._h('mergeEndorsements', { subject, endorsements, askerPubkey })

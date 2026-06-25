@@ -221,6 +221,16 @@ export class Identity {
     return this._call('vaultUnpair')
   }
 
+  /**
+   * Firma DELEGADA: pide a la maestra del vault (tu PC) que firme `payload`, usando
+   * el cert de este dispositivo. Aditivo y explícito — NO cambia `signData` (local).
+   * Requiere estar emparejado y el vault encendido. Devuelve { signature, publickey }
+   * donde publickey es tu identidad MAESTRA.
+   */
+  async vaultSign (payload) {
+    return this._call('vaultSign', { payload }, 20000)
+  }
+
   /** Suscribe a eventos de emparejamiento ('vault'): { phase:'challenge'|'paired'|'unpaired', ... }. */
   onVault (handler) {
     return this.on('vault', handler)

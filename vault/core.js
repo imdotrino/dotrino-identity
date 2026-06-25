@@ -19,7 +19,7 @@
  */
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
-import { enrollDevice as remoteEnroll } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -533,6 +533,15 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       kv.removeItem(VAULT_CERT_STORAGE)
       emitVault({ phase: 'unpaired' })
       return { ok: true }
+    },
+
+    // Firma DELEGADA: pide a la maestra del vault que firme `payload` (con el cert de
+    // este dispositivo). Aditivo y explícito — NO cambia `signData` (que sigue local),
+    // así nada se rompe si no estás emparejado o si el vault está apagado.
+    async vaultSign ({ payload }) {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      return remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload })
     },
 
     async listContacts () {
