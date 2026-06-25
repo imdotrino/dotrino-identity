@@ -12,7 +12,7 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, deriveSAS, pubkeyId } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDelegation, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
 
 const MSG = {
   ENROLL: 'vault.enroll',
@@ -24,7 +24,7 @@ const MSG = {
 /**
  * @param {Object} opts
  * @param {{v:number, iss:string, proxy:string, token:string, sn:string}} opts.qr  QR v2 del vault.
- * @param {(c:{deviceId:string, sas:string})=>void} [opts.onChallenge]  Para mostrar el SAS a comparar.
+ * @param {(c:{deviceId:string, code:string})=>void} [opts.onChallenge]  Para mostrar el código a tipear en el PC.
  * @param {string} [opts.label]
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
@@ -40,14 +40,17 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     // identify/cert son la misma P).
     const dev = device || await makeDeviceKey({ label })
     const deviceId = (await pubkeyId(dev.publickey)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2')
-    const sas = await deriveSAS(qr.iss, dev.publickey, qr.sn)
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, label, ts: Date.now() }
+    // El DISPOSITIVO genera el código y manda solo su COMPROMISO (no el código). El vault
+    // aprende el código únicamente cuando vos lo tipeás en el PC → aprobar exige tener el dispositivo.
+    const code = makePairingCode()
+    const commit = await commitCode({ code, dpub: dev.publickey, sn: qr.sn })
+    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, data })
 
     const enrolled = new Promise((resolve, reject) => {
       const off = client.on('message', (_from, p) => {
         if (!p || typeof p !== 'object') return
-        if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, sas }) } catch (_) {} }
+        if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, code }) } catch (_) {} }
         else if (p.type === MSG.ENROLLED) { cleanup(); resolve(p) }
         else if (p.type === MSG.ERROR) { cleanup(); reject(new Error(p.error)) }
       })

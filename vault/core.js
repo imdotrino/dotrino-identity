@@ -519,7 +519,7 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
       let device
       try { const k = JSON.parse(kv.getItem(KEY_STORAGE)); device = { publickey: JSON.stringify(k.publicJwk), privateJwk: k.privateJwk } } catch (_) { device = undefined }
-      const res = await remoteEnroll({ qr, device, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, sas: c.sas }) })
+      const res = await remoteEnroll({ qr, device, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify(res.device))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })

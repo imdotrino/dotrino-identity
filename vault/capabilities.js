@@ -77,6 +77,28 @@ export async function deriveSAS (master, dpub, sn) {
   return String(n % 1000000).padStart(6, '0')
 }
 
+/**
+ * Código de emparejamiento ALEATORIO de 6 dígitos. Lo genera el DISPOSITIVO y lo MUESTRA;
+ * el usuario lo tipea en el vault. El vault NO lo conoce: el dispositivo solo manda un
+ * COMPROMISO (`commitCode`), no el código → el vault lo aprende únicamente cuando vos se lo
+ * das, tipeándolo. Así, aprobar exige TENER el dispositivo (de ahí sale el código).
+ */
+export function makePairingCode () {
+  const b = crypto.getRandomValues(new Uint8Array(4))
+  const n = (((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0)
+  return String(n % 1000000).padStart(6, '0')
+}
+
+/**
+ * Compromiso del código: `SHA-256(code ‖ dpub ‖ sn)` en hex. Va en el ENROLL (no el código).
+ * Liga el código a ESTE dispositivo y sesión (no reusable para otro). El vault lo guarda y,
+ * cuando tipeás el código, recomputa y compara → verifica posesión sin conocer el código antes.
+ */
+export async function commitCode ({ code, dpub, sn }) {
+  const h = await crypto.subtle.digest('SHA-256', enc(canonicalStringify({ code: String(code), sub: dpub, sn })))
+  return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('')
+}
+
 /** Cuerpo canónico del certificado (lo que se firma): el cert SIN la firma. */
 export function delegationBody (cert) {
   return { v: cert.v, iss: cert.iss, sub: cert.sub, scope: cert.scope, iat: cert.iat, exp: cert.exp, nonce: cert.nonce }
