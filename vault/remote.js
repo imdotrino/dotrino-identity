@@ -91,3 +91,38 @@ export async function requestSign ({ master, proxy, device, cert, payload, timeo
     return { signature: res.signature, publickey: res.publickey }
   } finally { try { client.close() } catch (_) {} }
 }
+
+/** Helper genérico: una RPC al vault firmada por D + cert, esperando `okType`. */
+async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, timeoutMs = 15000 }) {
+  if (!master || !proxy || !device?.privateJwk || !cert) throw new Error('faltan datos de emparejamiento')
+  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
+  await client.connect()
+  try {
+    const signed = { ...data, publickey: device.publickey, ts: Date.now() }
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, data: signed })
+    const pending = new Promise((resolve, reject) => {
+      const off = client.on('message', (_f, p) => {
+        if (!p || typeof p !== 'object') return
+        if (p.type === okType) { cleanup(); resolve(p) }
+        else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
+      })
+      const t = setTimeout(() => { cleanup(); reject(new Error('el vault no respondió (¿está encendido?)')) }, timeoutMs)
+      const cleanup = () => { off(); clearTimeout(t) }
+    })
+    client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })
+    return await pending
+  } finally { try { client.close() } catch (_) {} }
+}
+
+/** Lee/escribe el store de hilos+aperturas EN el vault (con el cert del dispositivo). */
+export async function requestStore ({ master, proxy, device, cert, method, args } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.store', okType: 'vault.store.result', data: { op: 'store', method, args: args || {} } })
+  return res.result
+}
+
+/** Lista (solo lectura) los dispositivos enrolados en tu vault. */
+export async function requestDevices ({ master, proxy, device, cert } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
+  return { devices: res.devices || [], revoked: res.revoked || [] }
+}

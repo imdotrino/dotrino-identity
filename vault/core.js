@@ -19,7 +19,7 @@
  */
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -542,6 +542,21 @@ export async function createIdentityCore ({ kv, peers, makeSync = null }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       return remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload })
+    },
+
+    // Store DELEGADO: lee/escribe el store de hilos+aperturas EN tu vault (con el cert).
+    // Reusa el MISMO emparejamiento (no hay un pairing aparte para el store).
+    async vaultStore ({ method, args }) {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      return remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args })
+    },
+
+    // Lista (solo lectura) de dispositivos enrolados en tu vault.
+    async listVaultDevices () {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      return remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert })
     },
 
     async listContacts () {

@@ -231,6 +231,20 @@ export class Identity {
     return this._call('vaultSign', { payload }, 20000)
   }
 
+  /**
+   * Store DELEGADO: lee/escribe el store de hilos+aperturas (appendMessage,
+   * listThread, recordOpen, getOpens, getStats, …) EN tu vault, usando el cert de
+   * este dispositivo. Reusa el mismo emparejamiento. Requiere el vault encendido.
+   */
+  async vaultStore (method, args) {
+    return this._call('vaultStore', { method, args }, 20000)
+  }
+
+  /** Lista (solo lectura) los dispositivos enrolados en tu vault: { devices, revoked }. */
+  async listVaultDevices () {
+    return this._call('listVaultDevices', {}, 20000)
+  }
+
   /** Suscribe a eventos de emparejamiento ('vault'): { phase:'challenge'|'paired'|'unpaired', ... }. */
   onVault (handler) {
     return this.on('vault', handler)
