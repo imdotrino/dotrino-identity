@@ -195,6 +195,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   // Canal de eventos 'vault' (p.ej. el SAS a comparar durante el emparejamiento).
   const vaultListeners = new Set()
   const emitVault = (p) => { for (const fn of vaultListeners) { try { fn(p) } catch (_) {} } }
+  // Si el vault RECHAZA por cert revocado, este dispositivo perdió el acceso: limpiamos el
+  // cert local (ya no sirve) y emitimos 'revoked' → @dotrino/store borra SOLO el store de
+  // ESTE perfil (los demás perfiles quedan intactos). Cualquier otro error se propaga igual.
+  const handleVaultError = (e) => {
+    if (e && /\brevoked\b/.test(e.message || '')) {
+      try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
+      emitVault({ phase: 'revoked' })
+    }
+    throw e
+  }
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
   const loadVaultDevice = () => { try { return JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null') } catch (_) { return null } }
 
@@ -613,7 +623,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultSign ({ payload }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
-      return remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload })
+      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload }) }
+      catch (e) { return handleVaultError(e) }
     },
 
     // Store DELEGADO: lee/escribe el store de hilos+aperturas EN tu vault (con el cert).
@@ -621,14 +632,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultStore ({ method, args }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
-      return remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args })
+      try { return await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args }) }
+      catch (e) { return handleVaultError(e) }
     },
 
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
-      return remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert })
+      try { return await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert }) }
+      catch (e) { return handleVaultError(e) }
     },
 
     // El cert de delegación de este dispositivo (para presentarlo al proxy en `identify`
