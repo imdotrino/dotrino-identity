@@ -50,6 +50,16 @@ function filePeers (filePath) {
   }
   return {
     setProfile (p) { pid = p || null },
+    adoptLegacy (newPid) {
+      // Migración: copia el peers.json viejo (sin namespace) al perfil newPid.
+      try {
+        if (!fs.existsSync(filePath)) return
+        const legacy = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+        if (legacy && typeof legacy === 'object' && Object.keys(legacy).length) {
+          fs.writeFileSync(path.join(path.dirname(filePath), `peers.${newPid}.json`), JSON.stringify(legacy))
+        }
+      } catch (_) { /* sin peers viejos */ }
+    },
     async initPeerStorage () {
       const f = fileFor()
       try {

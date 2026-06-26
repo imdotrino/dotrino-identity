@@ -40,6 +40,20 @@ export function onDirty (fn) { _markDirty = fn }
 export function setProfile (pid) { _pid = pid || null }
 function peersKey () { return _pid ? `peers.${_pid}.v1` : IDB_PEERS_KEY }
 
+/** Migración: copia el peer book VIEJO (pre-multi-perfil, sin namespace) al perfil `pid`. */
+export async function adoptLegacy (pid) {
+  try {
+    _idb = _idb || await openIdb()
+    let legacy = await idbGet(_idb, IDB_PEERS_KEY) // 'peers.v1' (viejo)
+    if (!legacy || typeof legacy !== 'object' || !Object.keys(legacy).length) {
+      try { const raw = localStorage.getItem(PEERS_STORAGE); legacy = raw ? JSON.parse(raw) : null } catch (_) { legacy = null }
+    }
+    if (legacy && typeof legacy === 'object' && Object.keys(legacy).length) {
+      await idbPut(_idb, `peers.${pid}.v1`, legacy)
+    }
+  } catch (_) { /* sin peers viejos que adoptar */ }
+}
+
 function openIdb () {
   return new Promise((resolve, reject) => {
     let req

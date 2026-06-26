@@ -752,17 +752,27 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
 
   // ----- bootstrap -----
 
-  // Perfil activo (multi-perfil por dispositivo). Sin migración (ecosistema nuevo, no importa
-  // perder data): si no hay perfiles, se crea uno fresco. A partir de acá `kv` está scopeado a
-  // `currentPid` y `peers` apunta al peer book de ese perfil.
+  // Perfil activo (multi-perfil por dispositivo). Si no hay perfiles, se crea el primero; si
+  // existe una identidad ÚNICA vieja (pre-multi-perfil, claves sin namespace), se ADOPTA como
+  // "Perfil 1" — sin pérdida. A partir de acá `kv` está scopeado a `currentPid`.
   {
     let profiles = loadProfiles()
     currentPid = rawKv.getItem(CURRENT_STORAGE)
     if (!profiles.length) {
-      currentPid = 'p' + crypto.randomUUID().slice(0, 8)
-      profiles = [{ id: currentPid, name: '', pubkey: null }]
+      const pid = 'p' + crypto.randomUUID().slice(0, 8)
+      // Migración: adoptar la identidad única vieja (si la hay) copiando sus claves al namespace de pid.
+      const legacy = rawKv.getItem(KEY_STORAGE)
+      if (legacy) {
+        for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert']) {
+          const v = rawKv.getItem('dotrino.identity.' + s)
+          if (v != null) rawKv.setItem(`dotrino.identity.p.${pid}.${s}`, v)
+        }
+        try { await peers.adoptLegacy?.(pid) } catch (_) { /* peers viejos opcionales */ }
+      }
+      currentPid = pid
+      profiles = [{ id: pid, name: '', pubkey: null }]
       saveProfiles(profiles)
-      rawKv.setItem(CURRENT_STORAGE, currentPid)
+      rawKv.setItem(CURRENT_STORAGE, pid)
     } else if (!currentPid || !profiles.find((p) => p.id === currentPid)) {
       currentPid = profiles[0].id
       rawKv.setItem(CURRENT_STORAGE, currentPid)
