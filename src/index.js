@@ -306,6 +306,22 @@ export class Identity {
     return result
   }
 
+  /**
+   * Actualiza tu PERFIL (merge): `{ nickname?, avatar?, avatarVisible?, links?, fields? }`.
+   * `avatar` = data-URI 250×250 (o null para quitarla); `links`/`fields` = arrays con `visible`
+   * por ítem (oculto = no se comparte). No pisa lo que no mandes.
+   */
+  async updateMe (patch) {
+    const result = await this._call('updateMe', { patch })
+    if (result?.me) this._me = result.me
+    return result
+  }
+
+  /** Tu `me` completo (incluye ocultos). */
+  async getMe () { return this._call('getMe') }
+  /** Subconjunto PÚBLICO de tu perfil (solo lo visible) — para compartir/publicar. */
+  async publicMe () { return this._call('publicMe') }
+
   /** Pubkey ECDH (JWK string) propio para encripción. */
   async getEncryptionPubkey () {
     return this._call('getEncryptionPubkey')

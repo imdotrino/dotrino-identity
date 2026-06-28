@@ -108,6 +108,33 @@ async function verifyBytes (publicJwkStr, bytes, signatureBase64) {
  * @returns {Promise<{ handlers:Object, get me():Object, sync:Object|null,
  *                      onSyncStatus(fn):void }>}
  */
+// Sanea un patch de perfil (avatar/links/fields/nickname). Cada link/field lleva `visible`
+// (oculto = no se comparte). Caps de tamaño para no inflar el `me`. Los ids los pone la UI.
+function sanitizeProfilePatch (patch = {}) {
+  const out = {}
+  if (typeof patch.nickname === 'string') out.nickname = patch.nickname.slice(0, 40)
+  if (patch.avatar === null) out.avatar = null
+  else if (typeof patch.avatar === 'string') out.avatar = patch.avatar.slice(0, 120000) // ~90KB: data-URI 250x250
+  if (typeof patch.avatarVisible === 'boolean') out.avatarVisible = patch.avatarVisible
+  if (Array.isArray(patch.links)) {
+    out.links = patch.links.slice(0, 12).map((l) => ({
+      id: String(l?.id || '').slice(0, 24),
+      type: String(l?.type || 'web').slice(0, 16),
+      value: String(l?.value || '').slice(0, 200),
+      visible: l?.visible !== false
+    })).filter((l) => l.value)
+  }
+  if (Array.isArray(patch.fields)) {
+    out.fields = patch.fields.slice(0, 20).map((f) => ({
+      id: String(f?.id || '').slice(0, 24),
+      label: String(f?.label || '').slice(0, 40),
+      value: String(f?.value || '').slice(0, 280),
+      visible: f?.visible !== false
+    })).filter((f) => f.label || f.value)
+  }
+  return out
+}
+
 export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
@@ -353,6 +380,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   let me = null
 
   // ----- handlers (idénticos a la versión iframe) -----
+
+  // Merge de un patch de perfil en `me` (preserva lo demás), saneado. Refleja el nombre en la
+  // meta del perfil (para el switcher). Devuelve el `me` resultante.
+  function applyMeUpdate (patch) {
+    const clean = sanitizeProfilePatch(patch || {})
+    me = { ...(me || {}), ...clean, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
+    if (clean.avatar === null) delete me.avatar
+    saveMe(me)
+    if (typeof clean.nickname === 'string') {
+      const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
+      if (e && e.name !== clean.nickname) { e.name = clean.nickname; saveProfiles(list) }
+    }
+    return me
+  }
 
   const handlers = {
     async makeChallenge () {
@@ -656,9 +697,24 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     },
 
     async setMyNickname ({ nickname }) {
-      const next = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: String(nickname || '').slice(0, 40) }
-      saveMe(next)
-      return { me: next }
+      return { me: applyMeUpdate({ nickname }) }
+    },
+
+    // Perfil completo (avatar 250x250, links de redes, datos), cada ítem con `visible`
+    // (oculto = no se comparte). Merge: no pisa lo que no venga en el patch.
+    async updateMe ({ patch } = {}) {
+      return { me: applyMeUpdate(patch || {}) }
+    },
+    async getMe () { return me },
+    // Subconjunto PÚBLICO del perfil (solo lo marcado visible) — para compartir/publicar.
+    async publicMe () {
+      const m = me || {}
+      const out = { publickey: m.publickey, encryptionPubkey: m.encryptionPubkey }
+      if (m.nickname) out.nickname = m.nickname
+      if (m.avatar && m.avatarVisible !== false) out.avatar = m.avatar
+      if (Array.isArray(m.links)) { const v = m.links.filter((l) => l.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.links = v }
+      if (Array.isArray(m.fields)) { const v = m.fields.filter((f) => f.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.fields = v }
+      return out
     },
 
     async getEncryptionPubkey () { return encPublickeyJwkStr },
