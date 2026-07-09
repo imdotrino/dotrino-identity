@@ -307,9 +307,11 @@ export class Identity {
   }
 
   /**
-   * Actualiza tu PERFIL (merge): `{ nickname?, avatar?, avatarVisible?, links?, fields? }`.
+   * Actualiza tu PERFIL (merge): `{ nickname?, avatar?, avatarVisible?, links?, fields?,
+   * nombres?, apellidos?, email?, telefono?, direccion? }` (+ sus flags `<campo>Visible`).
    * `avatar` = data-URI 250×250 (o null para quitarla); `links`/`fields` = arrays con `visible`
-   * por ítem (oculto = no se comparte). No pisa lo que no mandes.
+   * por ítem (oculto = no se comparte). `telefono`/`direccion` son sensibles: ocultos por
+   * defecto (solo se comparten si su flag === true). No pisa lo que no mandes.
    */
   async updateMe (patch) {
     const result = await this._call('updateMe', { patch })

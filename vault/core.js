@@ -108,21 +108,37 @@ async function verifyBytes (publicJwkStr, bytes, signatureBase64) {
  * @returns {Promise<{ handlers:Object, get me():Object, sync:Object|null,
  *                      onSyncStatus(fn):void }>}
  */
-// Sanea un patch de perfil (avatar/links/fields/nickname). Cada link/field lleva `visible`
-// (oculto = no se comparte). Caps de tamaño para no inflar el `me`. Los ids los pone la UI.
+// Campos personales estándar del perfil (escalares fijos), con su cap de longitud.
+// Cada uno tiene un flag `<campo>Visible` (booleano) para mostrar/ocultar al compartir.
+const STD_FIELD_CAPS = [
+  ['nombres', 60], ['apellidos', 60], ['email', 120], ['telefono', 40], ['direccion', 200]
+]
+// Datos sensibles: OCULTOS por defecto. `publicMe` solo los incluye si su flag === true
+// (los demás campos estándar se comparten salvo que su flag sea false).
+const STD_FIELDS_SENSITIVE = new Set(['telefono', 'direccion'])
+
+// Sanea un patch de perfil (avatar/links/fields/nickname + campos estándar). Cada link/field
+// lleva `visible` (oculto = no se comparte). Caps de tamaño para no inflar el `me`. Los ids los pone la UI.
 function sanitizeProfilePatch (patch = {}) {
   const out = {}
   if (typeof patch.nickname === 'string') out.nickname = patch.nickname.slice(0, 40)
+  // Campos personales estándar (Nombres/Apellidos/Correo/Teléfono/Dirección) + su visibilidad.
+  for (const [k, cap] of STD_FIELD_CAPS) {
+    if (typeof patch[k] === 'string') out[k] = patch[k].slice(0, cap)
+    const vk = k + 'Visible'
+    if (typeof patch[vk] === 'boolean') out[vk] = patch[vk]
+  }
   if (patch.avatar === null) out.avatar = null
   else if (typeof patch.avatar === 'string') out.avatar = patch.avatar.slice(0, 120000) // ~90KB: data-URI 250x250
   if (typeof patch.avatarVisible === 'boolean') out.avatarVisible = patch.avatarVisible
   if (Array.isArray(patch.links)) {
-    out.links = patch.links.slice(0, 12).map((l) => ({
+    // Filtra vacíos ANTES del tope: un draft vacío no debe consumir cupo ni desplazar un enlace real.
+    out.links = patch.links.slice(0, 100).map((l) => ({
       id: String(l?.id || '').slice(0, 24),
       type: String(l?.type || 'web').slice(0, 16),
       value: String(l?.value || '').slice(0, 200),
       visible: l?.visible !== false
-    })).filter((l) => l.value)
+    })).filter((l) => l.value).slice(0, 30)
   }
   if (Array.isArray(patch.fields)) {
     out.fields = patch.fields.slice(0, 20).map((f) => ({
@@ -712,6 +728,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
       const out = { publickey: m.publickey, encryptionPubkey: m.encryptionPubkey }
       if (m.nickname) out.nickname = m.nickname
       if (m.avatar && m.avatarVisible !== false) out.avatar = m.avatar
+      // Campos estándar: sensibles (telefono/direccion) solo si su flag === true; el resto salvo flag === false.
+      for (const [k] of STD_FIELD_CAPS) {
+        if (!m[k]) continue
+        const shown = STD_FIELDS_SENSITIVE.has(k) ? (m[k + 'Visible'] === true) : (m[k + 'Visible'] !== false)
+        if (shown) out[k] = m[k]
+      }
       if (Array.isArray(m.links)) { const v = m.links.filter((l) => l.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.links = v }
       if (Array.isArray(m.fields)) { const v = m.fields.filter((f) => f.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.fields = v }
       return out

@@ -3,10 +3,29 @@ export interface IdentityOptions {
   timeoutMs?: number
 }
 
+export interface ProfileLink { id: string; type: string; value: string; visible?: boolean }
+export interface ProfileField { id: string; label: string; value: string; visible?: boolean }
+
 export interface Me {
   publickey: string
   encryptionPubkey?: string
   nickname?: string
+  avatar?: string | null
+  avatarVisible?: boolean
+  links?: ProfileLink[]
+  fields?: ProfileField[]
+  /** Campos personales estándar (fijos). */
+  nombres?: string
+  apellidos?: string
+  email?: string
+  telefono?: string
+  direccion?: string
+  /** Visibilidad por campo estándar. telefono/direccion ocultos por defecto. */
+  nombresVisible?: boolean
+  apellidosVisible?: boolean
+  emailVisible?: boolean
+  telefonoVisible?: boolean
+  direccionVisible?: boolean
 }
 
 export interface EnvelopeV1 {
