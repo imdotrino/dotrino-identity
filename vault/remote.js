@@ -135,3 +135,14 @@ export async function requestDevices ({ master, proxy, device, cert } = {}) {
   const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
   return { devices: res.devices || [], revoked: res.revoked || [] }
 }
+
+/**
+ * RENUEVA el cert de este dispositivo (requiere el cert aún VIGENTE y no revocado):
+ * el vault firma uno fresco para la misma sub-clave y scope, sin QR ni aprobación.
+ * @returns {Promise<{ cert: object }>}
+ */
+export async function requestRenew ({ master, proxy, device, cert } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
+  if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('cert renovado inválido')
+  return { cert: res.cert }
+}

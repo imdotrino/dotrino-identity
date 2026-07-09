@@ -19,7 +19,7 @@
  */
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -250,6 +250,29 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   }
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
   const loadVaultDevice = () => { try { return JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null') } catch (_) { return null } }
+
+  // ----- renovación AUTOMÁTICA del cert (sin QR ni aprobación) -----
+  // Con el cert aún vigente y quedando <15 días, cualquier uso del vault dispara en
+  // segundo plano un `vault.renew`: el vault firma un cert fresco (30 días) para la
+  // misma sub-clave y scope. Mientras uses el ecosistema ~1 vez al mes, nunca vence.
+  // Un cert YA vencido o revocado no puede renovarse (ahí sí, re-emparejar).
+  const RENEW_WINDOW_MS = 15 * 24 * 60 * 60 * 1000
+  const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
+  let renewLastTry = 0
+  function maybeRenewVaultCert () {
+    try {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) return
+      const now = Date.now()
+      if (v.cert.exp <= now || v.cert.exp - now > RENEW_WINDOW_MS) return
+      if (now - renewLastTry < RENEW_RETRY_MS) return
+      renewLastTry = now
+      remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert }).then(({ cert }) => {
+        kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
+        emitVault({ phase: 'renewed', exp: cert.exp })
+      }).catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
+    } catch (_) {}
+  }
 
   // ----- me (kv-backed) -----
 
@@ -664,6 +687,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultStatus () {
       const v = loadVaultCert()
       if (!v?.cert) return { paired: false }
+      maybeRenewVaultCert()
       return { paired: true, deviceId: v.deviceId, master: v.master, proxy: v.proxy, scope: v.cert.scope, exp: v.cert.exp, pairedAt: v.pairedAt }
     },
 
@@ -680,6 +704,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultSign ({ payload }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      maybeRenewVaultCert()
       try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload }) }
       catch (e) { return handleVaultError(e) }
     },
@@ -689,6 +714,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultStore ({ method, args }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      maybeRenewVaultCert()
       try { return await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args }) }
       catch (e) { return handleVaultError(e) }
     },
@@ -697,6 +723,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      maybeRenewVaultCert()
       try { return await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert }) }
       catch (e) { return handleVaultError(e) }
     },
