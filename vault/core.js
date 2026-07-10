@@ -471,14 +471,55 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // meta del perfil (para el switcher). Devuelve el `me` resultante.
   function applyMeUpdate (patch) {
     const clean = sanitizeProfilePatch(patch || {})
-    me = { ...(me || {}), ...clean, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
+    me = { ...(me || {}), ...clean, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, updatedAt: Date.now() }
     if (clean.avatar === null) delete me.avatar
     saveMe(me)
     if (typeof clean.nickname === 'string') {
       const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
       if (e && e.name !== clean.nickname) { e.name = clean.nickname; saveProfiles(list) }
     }
+    pushProfileToVault() // best-effort: mismo perfil en todos los dispositivos
     return me
+  }
+
+  // ----- PERFIL COMPARTIDO entre dispositivos (vía el vault) -----
+  // El vault guarda la copia autoritativa del perfil (profileSet/profileGet en su
+  // store). Al editar aquí se EMPUJA; al arrancar se JALA y gana el más nuevo
+  // (updatedAt). Las llaves (publickey/encryptionPubkey) son POR dispositivo y
+  // nunca se sincronizan. Todo best-effort: sin vault encendido no molesta.
+  let profilePushTimer = null
+  function pushProfileToVault () {
+    const v = loadVaultCert(); const device = loadVaultDevice()
+    if (!v?.cert || !device || v.cert.exp <= Date.now()) return
+    clearTimeout(profilePushTimer)
+    profilePushTimer = setTimeout(() => {
+      const { publickey, encryptionPubkey, ...content } = me || {}
+      remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileSet', args: { me: content } })
+        .catch(() => {}) // el vault puede estar apagado; se reintenta en la próxima edición
+    }, 800) // debounce: ediciones seguidas = un solo push
+  }
+  async function pullProfileFromVault () {
+    try {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device || v.cert.exp <= Date.now()) return
+      const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileGet', args: {} })
+      const remoteMe = res?.me
+      if (!remoteMe) {
+        // el vault aún no tiene perfil: sembrar con el local (si tiene contenido)
+        if (me?.nickname || me?.avatar) pushProfileToVault()
+        return
+      }
+      if ((remoteMe.updatedAt || 0) > (me?.updatedAt || 0)) {
+        const { publickey, encryptionPubkey, ...content } = remoteMe
+        me = { ...(me || {}), ...content, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
+        saveMe(me)
+        if (typeof content.nickname === 'string') {
+          const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
+          if (e && e.name !== content.nickname) { e.name = content.nickname; saveProfiles(list) }
+        }
+        emitVault({ phase: 'profile-sync', updatedAt: remoteMe.updatedAt })
+      }
+    } catch (_) { /* vault apagado: el perfil local sigue mandando */ }
   }
 
   const handlers = {
@@ -735,6 +776,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })
+      pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
       return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope }
     },
 
@@ -971,6 +1013,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
     kv.setItem(ME_STORAGE, JSON.stringify(me))
   }
+  // Perfil compartido: jalar del vault en background (gana el más nuevo).
+  pullProfileFromVault()
 
   // Registrar el pubkey (y nombre) del perfil activo en su meta → para avatar/listado sin abrir cada perfil.
   {

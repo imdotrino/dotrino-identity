@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/identity",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "Identidad y rating de usuarios compartidos entre apps de Dotrino (vault iframe + postMessage)",
   "type": "module",
   "main": "src/index.js",
