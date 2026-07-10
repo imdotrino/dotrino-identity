@@ -15,17 +15,42 @@ import {
 import { createIdentityCore } from './core.js'
 
 ;(async () => {
-  // kv estilo localStorage (síncrono) para keypairs, me y nonces.
+  // kv estilo localStorage (síncrono) para me, nonces, delegaciones, certs.
   const kv = {
     getItem: (k) => localStorage.getItem(k),
     setItem: (k, v) => localStorage.setItem(k, v),
     removeItem: (k) => localStorage.removeItem(k)
   }
 
+  // keyStore: las llaves PRIVADAS viven como CryptoKey NO EXTRACTABLES en
+  // IndexedDB (clonado estructurado). Nadie —ni este código, ni un XSS en este
+  // origen— puede leer sus bytes; solo firmar/derivar con ellas. Las llaves
+  // planas (JWK) viejas de localStorage se migran y se borran (core.js).
+  const keyStore = await (() => new Promise((resolve) => {
+    const req = indexedDB.open('dotrino-identity-keys', 1)
+    req.onupgradeneeded = () => req.result.createObjectStore('keys')
+    req.onsuccess = () => {
+      const db = req.result
+      const op = (mode, fn) => new Promise((res, rej) => {
+        const tx = db.transaction('keys', mode)
+        const r = fn(tx.objectStore('keys'))
+        r.onsuccess = () => res(r.result ?? null)
+        r.onerror = () => rej(r.error)
+      })
+      resolve({
+        get: (name) => op('readonly', (st) => st.get(name)),
+        set: (name, pair) => op('readwrite', (st) => st.put(pair, name)),
+        remove: (name) => op('readwrite', (st) => st.delete(name))
+      })
+    }
+    req.onerror = () => resolve(null) // sin IDB (raro): cae al modo kv legado
+  }))()
+
   const core = await createIdentityCore({
     kv,
     peers: { initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty },
-    makeSync: createSync
+    makeSync: createSync,
+    keyStore
   })
 
   const { handlers } = core

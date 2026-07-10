@@ -151,7 +151,7 @@ function sanitizeProfilePatch (patch = {}) {
   return out
 }
 
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null }) {
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
@@ -172,41 +172,61 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   const loadProfiles = () => { try { return JSON.parse(rawKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { return [] } }
   const saveProfiles = (list) => rawKv.setItem(PROFILES_STORAGE, JSON.stringify(list))
 
-  // ----- keypair loaders (kv-backed) -----
+  // ----- keypair loaders -----
+  // Con `keyStore` (IndexedDB del navegador): la privada vive como CryptoKey
+  // NO EXTRACTABLE — puede FIRMAR/DERIVAR pero nadie (ni este código, ni un XSS)
+  // puede leer sus bytes. Migración transparente: si existe el JWK plano viejo en
+  // kv, se importa como no extractable y se BORRA el plano. Sin keyStore
+  // (Node/tests) se conserva el comportamiento kv anterior.
 
-  async function loadOrCreateKeypair () {
-    const raw = kv.getItem(KEY_STORAGE)
+  const ALGO_OF = {
+    sign: { algo: { name: 'ECDSA', namedCurve: 'P-256' }, privUses: ['sign'], pubUses: ['verify'], pairUses: ['sign', 'verify'] },
+    enc: { algo: { name: 'ECDH', namedCurve: 'P-256' }, privUses: ['deriveBits', 'deriveKey'], pubUses: [], pairUses: ['deriveBits', 'deriveKey'] }
+  }
+
+  async function loadOrCreatePair (kind, storageKey) {
+    const { algo, privUses, pubUses, pairUses } = ALGO_OF[kind]
+    const importPub = (jwk) => crypto.subtle.importKey('jwk', jwk, algo, true, pubUses)
+    if (keyStore) {
+      const name = _scoped(storageKey)
+      const stored = await keyStore.get(name).catch(() => null)
+      if (stored?.privateKey && stored?.publicJwk) {
+        return { privateKey: stored.privateKey, publicKey: await importPub(stored.publicJwk), publicJwk: stored.publicJwk }
+      }
+      // migrar el JWK plano viejo (si hay) → no extractable + borrar el plano
+      const raw = kv.getItem(storageKey)
+      if (raw) {
+        try {
+          const { privateJwk, publicJwk } = JSON.parse(raw)
+          const privateKey = await crypto.subtle.importKey('jwk', privateJwk, algo, false, privUses)
+          await keyStore.set(name, { privateKey, publicJwk })
+          kv.removeItem(storageKey)
+          return { privateKey, publicKey: await importPub(publicJwk), publicJwk }
+        } catch (_) {}
+      }
+      const pair = await crypto.subtle.generateKey(algo, false, pairUses) // privada NO extractable
+      const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+      await keyStore.set(name, { privateKey: pair.privateKey, publicJwk })
+      return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicJwk }
+    }
+    // ---- camino legado (sin keyStore): JWK en kv, extractable ----
+    const raw = kv.getItem(storageKey)
     if (raw) {
       try {
         const { privateJwk, publicJwk } = JSON.parse(raw)
-        const privateKey = await crypto.subtle.importKey('jwk', privateJwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign'])
-        const publicKey = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify'])
-        return { privateKey, publicKey, publicJwk }
+        const privateKey = await crypto.subtle.importKey('jwk', privateJwk, algo, true, privUses)
+        return { privateKey, publicKey: await importPub(publicJwk), publicJwk }
       } catch (_) {}
     }
-    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+    const pair = await crypto.subtle.generateKey(algo, true, pairUses)
     const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
     const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
-    kv.setItem(KEY_STORAGE, JSON.stringify({ privateJwk, publicJwk }))
+    kv.setItem(storageKey, JSON.stringify({ privateJwk, publicJwk }))
     return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicJwk }
   }
 
-  async function loadOrCreateEncKeypair () {
-    const raw = kv.getItem(ENC_KEY_STORAGE)
-    if (raw) {
-      try {
-        const { privateJwk, publicJwk } = JSON.parse(raw)
-        const privateKey = await crypto.subtle.importKey('jwk', privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
-        const publicKey = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, [])
-        return { privateKey, publicKey, publicJwk }
-      } catch (_) {}
-    }
-    const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
-    const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
-    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
-    kv.setItem(ENC_KEY_STORAGE, JSON.stringify({ privateJwk, publicJwk }))
-    return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicJwk }
-  }
+  const loadOrCreateKeypair = () => loadOrCreatePair('sign', KEY_STORAGE)
+  const loadOrCreateEncKeypair = () => loadOrCreatePair('enc', ENC_KEY_STORAGE)
 
   // ----- nonce replay protection (kv-backed) -----
 
@@ -249,7 +269,25 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     throw e
   }
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
-  const loadVaultDevice = () => { try { return JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null') } catch (_) { return null } }
+  const loadVaultDevice = () => {
+    try {
+      const d = JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null')
+      if (!d) return null
+      // Marcador nuevo (o JWK legado que ES la llave del perfil): usar la CryptoKey
+      // no extractable del perfil para firmar; nada de privadas en claro.
+      if (d.useIdentityKey || (d.publickey === publickeyJwkStr && !d.privateJwk)) {
+        return { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+      }
+      // MIGRACIÓN: el emparejamiento viejo persistía la privada del perfil en
+      // claro aquí. Si es la misma llave del perfil, reemplazar por el marcador
+      // (borra el último JWK plano) y firmar con la CryptoKey.
+      if (d.privateJwk && d.publickey === publickeyJwkStr) {
+        kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
+        return { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+      }
+      return d // legado real (dispositivo con llave propia distinta)
+    } catch (_) { return null }
+  }
 
   // ----- renovación AUTOMÁTICA del cert (sin QR ni aprobación) -----
   // Con el cert aún vigente y quedando <15 días, cualquier uso del vault dispara en
@@ -358,26 +396,35 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   }
 
   async function exportLocalForSync () {
-    const raw = kv.getItem(KEY_STORAGE)
-    const keys = raw ? JSON.parse(raw) : null
-    const encRaw = kv.getItem(ENC_KEY_STORAGE)
-    const encKeys = encRaw ? JSON.parse(encRaw) : null
+    // Las llaves privadas NO viajan al sync (no extractables): Drive respalda
+    // perfil+contactos; la identidad se recupera ENROLANDO el navegador al vault.
     return {
-      privateJwk: keys?.privateJwk || null,
-      publicJwk: keys?.publicJwk || null,
-      encPrivateJwk: encKeys?.privateJwk || null,
-      encPublicJwk: encKeys?.publicJwk || null,
+      privateJwk: null,
+      publicJwk: keypair?.publicJwk || null,
+      encPrivateJwk: null,
+      encPublicJwk: encKeypair?.publicJwk || null,
       me: loadMe(),
       peers: loadPeers()
     }
   }
 
+  async function adoptJwkPair (kind, storageKey, privateJwk, publicJwk) {
+    const { algo, privUses } = ALGO_OF[kind]
+    if (keyStore) {
+      const privateKey = await crypto.subtle.importKey('jwk', privateJwk, algo, false, privUses)
+      await keyStore.set(_scoped(storageKey), { privateKey, publicJwk })
+      kv.removeItem(storageKey)
+    } else {
+      kv.setItem(storageKey, JSON.stringify({ privateJwk, publicJwk }))
+    }
+  }
+
   async function applyMergedFromSync (merged) {
-    const localKeys = kv.getItem(KEY_STORAGE)
+    const localKeys = kv.getItem(KEY_STORAGE) || (keyStore && (await keyStore.get(_scoped(KEY_STORAGE)).catch(() => null)))
     if (!localKeys && merged.privateJwk && merged.publicJwk) {
-      kv.setItem(KEY_STORAGE, JSON.stringify({ privateJwk: merged.privateJwk, publicJwk: merged.publicJwk }))
+      await adoptJwkPair('sign', KEY_STORAGE, merged.privateJwk, merged.publicJwk)
       if (merged.encPrivateJwk && merged.encPublicJwk) {
-        kv.setItem(ENC_KEY_STORAGE, JSON.stringify({ privateJwk: merged.encPrivateJwk, publicJwk: merged.encPublicJwk }))
+        await adoptJwkPair('enc', ENC_KEY_STORAGE, merged.encPrivateJwk, merged.encPublicJwk)
       }
       keypair = await loadOrCreateKeypair()
       publickeyJwkStr = JSON.stringify(keypair.publicJwk)
@@ -665,6 +712,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
       for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert']) {
         rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
       }
+      // …y sus CryptoKeys no extractables del keyStore (IndexedDB).
+      if (keyStore) {
+        for (const s of ['keypair', 'enc-keypair']) {
+          try { await keyStore.remove(`dotrino.identity.p.${id}.${s}`) } catch (_) {}
+        }
+      }
       if (currentPid === id) { currentPid = list[0].id; rawKv.setItem(CURRENT_STORAGE, currentPid) }
       return { ok: true, current: currentPid }
     },
@@ -675,10 +728,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
     async vaultPair ({ qr }) {
       // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
       // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
-      let device
-      try { const k = JSON.parse(kv.getItem(KEY_STORAGE)); device = { publickey: JSON.stringify(k.publicJwk), privateJwk: k.privateJwk } } catch (_) { device = undefined }
+      // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
+      // y NO se persiste ningún JWK del dispositivo (marcador useIdentityKey).
+      const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
       const res = await remoteEnroll({ qr, device, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
-      kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify(res.device))
+      kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })
       return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope }
@@ -805,7 +859,10 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
 
     async exportIdentity () {
       const raw = kv.getItem(KEY_STORAGE)
-      if (!raw) throw new Error('No keypair to export')
+      if (!raw) {
+        throw new Error('Este perfil guarda su llave de forma NO exportable (protección contra robo). ' +
+          'Para usar tu identidad en otro navegador, conecta ese navegador a tu bóveda (vault) desde profile.dotrino.com.')
+      }
       const keys = JSON.parse(raw)
       const encRaw = kv.getItem(ENC_KEY_STORAGE)
       const encKeys = encRaw ? JSON.parse(encRaw) : null
@@ -830,13 +887,10 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
 
     async importIdentity ({ privateJwk, publicJwk, encPrivateJwk, encPublicJwk, me: meIn, peers: peersIn }) {
       if (!privateJwk || !publicJwk) throw new Error('privateJwk and publicJwk required')
-      await crypto.subtle.importKey('jwk', privateJwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign'])
       await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify'])
-      kv.setItem(KEY_STORAGE, JSON.stringify({ privateJwk, publicJwk }))
+      await adoptJwkPair('sign', KEY_STORAGE, privateJwk, publicJwk)
       if (encPrivateJwk && encPublicJwk) {
-        await crypto.subtle.importKey('jwk', encPrivateJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
-        await crypto.subtle.importKey('jwk', encPublicJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, [])
-        kv.setItem(ENC_KEY_STORAGE, JSON.stringify({ privateJwk: encPrivateJwk, publicJwk: encPublicJwk }))
+        await adoptJwkPair('enc', ENC_KEY_STORAGE, encPrivateJwk, encPublicJwk)
       } else {
         kv.removeItem(ENC_KEY_STORAGE)
       }
@@ -889,6 +943,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null })
   publickeyJwkStr = JSON.stringify(keypair.publicJwk)
   encKeypair = await loadOrCreateEncKeypair()
   encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
+
+  // Purga del JWK legado SIN namespace (pre-multi-perfil): la migración a
+  // perfiles lo COPIABA sin borrarlo. Con keyStore (llaves no extractables) no
+  // puede quedar ninguna privada en claro: si la llave activa ya vive en el
+  // keyStore y coincide con la legada, se elimina el plano.
+  if (keyStore) {
+    try {
+      const legacy = JSON.parse(rawKv.getItem(KEY_STORAGE) || 'null')
+      if (legacy && JSON.stringify(legacy.publicJwk) === publickeyJwkStr) {
+        rawKv.removeItem(KEY_STORAGE)
+        rawKv.removeItem(ENC_KEY_STORAGE)
+      }
+    } catch (_) {}
+  }
 
   await initPeerStorage()
 

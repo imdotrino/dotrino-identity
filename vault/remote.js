@@ -46,7 +46,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     // NO se manda el código ni un compromiso: el vault lo aprende SOLO cuando lo tipeás, y al
     // ECHARLO de vuelta el dispositivo confía. Un vault falso no conoce el código → no empareja.
     const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, label, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, data })
+    const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
 
     const enrolled = new Promise((resolve, reject) => {
       const off = client.on('message', (_from, p) => {
@@ -79,13 +79,13 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
  * @returns {Promise<{ signature:string, publickey:string }>}  publickey = la maestra.
  */
 export async function requestSign ({ master, proxy, device, cert, payload, timeoutMs = 15000 } = {}) {
-  if (!master || !proxy || !device?.privateJwk || !cert) throw new Error('faltan datos de emparejamiento')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
     const data = { op: 'sign', payload, publickey: device.publickey, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, data })
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
     const pending = new Promise((resolve, reject) => {
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return
@@ -103,13 +103,13 @@ export async function requestSign ({ master, proxy, device, cert, payload, timeo
 
 /** Helper genérico: una RPC al vault firmada por D + cert, esperando `okType`. */
 async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, timeoutMs = 15000 }) {
-  if (!master || !proxy || !device?.privateJwk || !cert) throw new Error('faltan datos de emparejamiento')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
     const signed = { ...data, publickey: device.publickey, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, data: signed })
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data: signed })
     const pending = new Promise((resolve, reject) => {
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return

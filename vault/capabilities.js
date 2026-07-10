@@ -175,10 +175,17 @@ export async function signDelegationWith (privateKey, iss, { sub, scope, iat, ex
  * Firma datos con la clave de DISPOSITIVO (formato byte-idéntico a `signData` del
  * vault → lo que el dispositivo/bridge usa para firmar cada pin/acción).
  */
-export async function signWithDevice ({ privateJwk, data }) {
+export async function signWithDevice ({ privateJwk, privateKey, publickey, data }) {
+  // `privateKey` (CryptoKey, posiblemente NO extractable) tiene prioridad: firma
+  // sin tocar bytes de la privada. Con CryptoKey es obligatorio pasar `publickey`.
+  if (privateKey) {
+    if (!publickey) throw new Error('signWithDevice: con privateKey (CryptoKey) se requiere publickey')
+    const signature = await rawSign(privateKey, enc(canonicalStringify(data)))
+    return { signature, publickey }
+  }
   const priv = await crypto.subtle.importKey('jwk', privateJwk, ECDSA, true, ['sign'])
   const signature = await rawSign(priv, enc(canonicalStringify(data)))
-  return { signature, publickey: JSON.stringify(publicOf(privateJwk)) }
+  return { signature, publickey: publickey || JSON.stringify(publicOf(privateJwk)) }
 }
 
 /**
