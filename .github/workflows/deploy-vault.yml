@@ -25,6 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Cache-busting por deploy: los .js del iframe se cachean 4 h en el borde,
+      # pero el HTML solo 10 min. Versionar los imports (?v=<sha>) hace que cada
+      # deploy sea URL nueva → el iframe se propaga en <=10 min, no en 4 h.
+      - name: Versionar imports (propagación rápida del iframe)
+        run: |
+          V=${GITHUB_SHA::8}
+          sed -i "s|src=\"./vault.js\"|src=\"./vault.js?v=$V\"|" vault/index.html
+          sed -i -E "s|from '(\./[a-zA-Z0-9_-]+\.js)'|from '\1?v=$V'|g" vault/*.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
