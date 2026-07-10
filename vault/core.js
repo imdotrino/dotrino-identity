@@ -151,7 +151,7 @@ function sanitizeProfilePatch (patch = {}) {
   return out
 }
 
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null }) {
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
@@ -522,7 +522,76 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     } catch (_) { /* vault apagado: el perfil local sigue mandando */ }
   }
 
+  // ----- CANDADO por contraseña (OPCIONAL, POR PERFIL, LOCAL de este dispositivo) -----
+  // El hash (PBKDF2) vive solo en el kv de ESTE navegador: no viaja al vault ni a
+  // otros dispositivos (cada uno decide si protege su acceso y con qué contraseña).
+  // Al desbloquear, la prueba va a sessionStorage (por PESTAÑA): sobrevive al
+  // refresco y muere al cerrar la pestaña. No cifra datos: es un gate de acceso.
+  const PWD_STORAGE = 'dotrino.identity.pwd'
+  const PWD_SESSION = 'dotrino.identity.pwd.proof'
+  const PWD_ITER = 300000
+  let locked = false
+  const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  async function derivePwd (password, saltB64, iter) {
+    const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0))
+    const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(password)), 'PBKDF2', false, ['deriveBits'])
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, km, 256)
+    return b64(bits)
+  }
+  const loadPwd = () => { try { return JSON.parse(kv.getItem(PWD_STORAGE) || 'null') } catch (_) { return null } }
+  const sessionProof = () => { try { return sessionKv?.getItem(_scoped(PWD_SESSION)) || null } catch (_) { return null } }
+  function refreshLockState () {
+    const pwd = loadPwd()
+    locked = !!pwd && sessionProof() !== pwd.verifier
+  }
+  // Métodos disponibles AUN bloqueado (gestionar perfiles y el propio candado;
+  // nada que lea datos o firme).
+  const LOCK_EXEMPT = new Set([
+    'profileLockStatus', 'unlockProfile', 'listProfiles', 'currentProfile',
+    'switchProfile', 'createProfile'
+  ])
+
   const handlers = {
+    async profileLockStatus () {
+      refreshLockState()
+      return { protected: !!loadPwd(), locked }
+    },
+    async unlockProfile ({ password }) {
+      const pwd = loadPwd()
+      if (!pwd) { locked = false; return { ok: true, locked: false } }
+      // Freno de fuerza bruta (un PIN de 4 dígitos se adivina probando): tras 5
+      // fallos, espera exponencial (2^n s, tope 5 min) persistida en el kv.
+      const tries = (() => { try { return JSON.parse(kv.getItem('dotrino.identity.pwd.tries') || 'null') } catch (_) { return null } })() || { n: 0, at: 0 }
+      const waitMs = tries.n >= 5 ? Math.min(2 ** (tries.n - 4) * 1000, 5 * 60 * 1000) : 0
+      const left = tries.at + waitMs - Date.now()
+      if (left > 0) throw new Error(`demasiados intentos: espera ${Math.ceil(left / 1000)} s`)
+      const proof = await derivePwd(password, pwd.salt, pwd.iter)
+      if (proof !== pwd.verifier) {
+        kv.setItem('dotrino.identity.pwd.tries', JSON.stringify({ n: tries.n + 1, at: Date.now() }))
+        throw new Error('contraseña incorrecta')
+      }
+      kv.removeItem('dotrino.identity.pwd.tries')
+      try { sessionKv?.setItem(_scoped(PWD_SESSION), proof) } catch (_) {}
+      locked = false
+      return { ok: true, locked: false }
+    },
+    // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
+    async setProfilePassword ({ password }) {
+      if (locked) throw new Error('perfil bloqueado')
+      if (!password || String(password).length < 4) throw new Error('la contraseña debe tener al menos 4 caracteres')
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)))
+      const verifier = await derivePwd(password, salt, PWD_ITER)
+      kv.setItem(PWD_STORAGE, JSON.stringify({ v: 1, salt, iter: PWD_ITER, verifier }))
+      try { sessionKv?.setItem(_scoped(PWD_SESSION), verifier) } catch (_) {}
+      return { ok: true }
+    },
+    async removeProfilePassword () {
+      if (locked) throw new Error('perfil bloqueado')
+      kv.removeItem(PWD_STORAGE)
+      try { sessionKv?.removeItem(_scoped(PWD_SESSION)) } catch (_) {}
+      return { ok: true }
+    },
+
     async makeChallenge () {
       const nonce = crypto.randomUUID()
       rememberNonce(nonce)
@@ -1033,6 +1102,18 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       mergeFn: mergeForSync
     })
     onDirty(() => { if (sync) sync.markDirty() })
+  }
+
+  // ----- gate del candado: TODO handler no exento exige perfil desbloqueado -----
+  refreshLockState()
+  for (const name of Object.keys(handlers)) {
+    if (LOCK_EXEMPT.has(name)) continue
+    const fn = handlers[name]
+    handlers[name] = async (params) => {
+      if (locked) refreshLockState() // otra pestaña pudo desbloquear… no: session es por pestaña; re-chequea por si se quitó el pwd
+      if (locked) throw new Error('perfil bloqueado: desbloquéalo con tu contraseña (unlockProfile)')
+      return fn(params)
+    }
   }
 
   return {

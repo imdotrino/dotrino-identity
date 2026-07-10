@@ -46,11 +46,20 @@ import { createIdentityCore } from './core.js'
     req.onerror = () => resolve(null) // sin IDB (raro): cae al modo kv legado
   }))()
 
+  // sessionKv: la prueba de desbloqueo del candado por contraseña vive en
+  // sessionStorage — POR PESTAÑA: sobrevive al refresco, muere al cerrarla.
+  const sessionKv = {
+    getItem: (k) => sessionStorage.getItem(k),
+    setItem: (k, v) => sessionStorage.setItem(k, v),
+    removeItem: (k) => sessionStorage.removeItem(k)
+  }
+
   const core = await createIdentityCore({
     kv,
     peers: { initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty },
     makeSync: createSync,
-    keyStore
+    keyStore,
+    sessionKv
   })
 
   const { handlers } = core
@@ -115,7 +124,10 @@ import { createIdentityCore } from './core.js'
     try { parentOrigin = new URL(document.referrer).origin } catch {}
     if (parentOrigin && isAllowed(parentOrigin)) {
       rememberEmbedder(window.parent, parentOrigin)
-      window.parent.postMessage({ _cci: true, type: 'ready', me: core.me }, parentOrigin)
+      // Perfil BLOQUEADO por contraseña → ready sin datos (ni apodo ni pubkey):
+      // la app debe desbloquear (unlockProfile) y refrescar con getMe.
+      const lock = await handlers.profileLockStatus().catch(() => ({ locked: false }))
+      window.parent.postMessage({ _cci: true, type: 'ready', ...(lock.locked ? { locked: true } : { me: core.me }) }, parentOrigin)
     } else {
       // Sin referrer (política estricta del padre) no podemos verificar el origen:
       // señalamos ready SIN datos (no revela nada; y las peticiones de orígenes

@@ -32,8 +32,66 @@ export class Identity {
     // ready() es idempotente (devuelve la misma promesa), así que esto es
     // seguro de llamar en cada connect().
     await singleton.ready()
+    // Perfil protegido con contraseña/PIN (candado LOCAL del dispositivo): pedirla
+    // aquí, una vez por PESTAÑA (el iframe recuerda el desbloqueo en sessionStorage
+    // → no re-pide al refrescar). Las apps no tienen que hacer nada.
+    if (singleton._locked && typeof document !== 'undefined' && options.promptUnlock !== false) {
+      await singleton._promptUnlock()
+    }
     return singleton
   }
+
+  /** Overlay mínimo de desbloqueo (PIN/contraseña). Resuelve al desbloquear. */
+  async _promptUnlock () {
+    const es = !(navigator.language || 'es').startsWith('en')
+    const T = es
+      ? { t: 'Perfil protegido', p: 'PIN o contraseña', b: 'Desbloquear', e: 'Contraseña incorrecta' }
+      : { t: 'Protected profile', p: 'PIN or password', b: 'Unlock', e: 'Wrong password' }
+    return new Promise((resolve) => {
+      const back = document.createElement('div')
+      back.style.cssText = 'position:fixed;inset:0;background:rgba(10,8,20,.8);z-index:2147483000;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif'
+      back.innerHTML = `<form style="background:#171331;border:1px solid #2a2350;border-radius:16px;padding:22px;min-width:260px;max-width:90vw;color:#e7e3ff">
+        <div style="font-weight:700;margin-bottom:10px">🔒 ${T.t}</div>
+        <input type="password" inputmode="numeric" autocomplete="current-password" placeholder="${T.p}"
+               style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid #2a2350;background:#0b0820;color:inherit;font:inherit" />
+        <div data-err style="color:#e5484d;font-size:13px;min-height:18px;margin:6px 0 8px"></div>
+        <button type="submit" style="width:100%;padding:10px;border-radius:10px;border:0;background:#7c3aed;color:#fff;font:inherit;font-weight:600;cursor:pointer">${T.b}</button>
+      </form>`
+      const form = back.firstElementChild
+      const input = form.querySelector('input')
+      const err = form.querySelector('[data-err]')
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        err.textContent = ''
+        try {
+          await this._call('unlockProfile', { password: input.value })
+          this._locked = false
+          try { this._me = await this._call('getMe') } catch (_) {}
+          back.remove()
+          resolve(this)
+        } catch (ex) {
+          err.textContent = /incorrecta/.test(ex.message) ? T.e : ex.message
+          input.select()
+        }
+      })
+      document.body.appendChild(back)
+      input.focus()
+    })
+  }
+
+  /** Estado del candado del perfil activo: { protected, locked }. */
+  async profileLockStatus () { return this._call('profileLockStatus') }
+  /** Desbloquea el perfil (la prueba queda en sessionStorage: por pestaña). */
+  async unlockProfile (password) {
+    const r = await this._call('unlockProfile', { password })
+    this._locked = false
+    try { this._me = await this._call('getMe') } catch (_) {}
+    return r
+  }
+  /** Protege el perfil ACTIVO con contraseña/PIN — LOCAL de este dispositivo. */
+  async setProfilePassword (password) { return this._call('setProfilePassword', { password }) }
+  /** Quita la protección (requiere estar desbloqueado). */
+  async removeProfilePassword () { return this._call('removeProfilePassword') }
 
   static current () {
     return singleton
@@ -64,7 +122,8 @@ export class Identity {
 
         if (msg.type === 'ready') {
           clearTimeout(timeout)
-          this._me = msg.me
+          this._me = msg.me || null
+          this._locked = !!msg.locked
           this._readyResolve(this)
           return
         }
