@@ -99,49 +99,11 @@ export async function commitCode ({ code, dpub, sn }) {
   return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
 
-/**
- * Avatar generado (identicon de Dotrino): SVG DETERMINISTA a partir de una semilla
- * (típicamente el pubkey del perfil) → cada perfil/identidad nace con imagen, sin que el
- * usuario tenga que subir nada. Síncrono (hash FNV-1a + xorshift, sin necesidades de
- * seguridad: es solo decorativo) → usable directo en plantillas. Rejilla 5×5 simétrica
- * sobre una "moneda" redondeada, con color derivado del hash.
- */
-function _hashSeed (s) {
-  let h = 2166136261 >>> 0
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
-  const bytes = []
-  let x = (h ^ 0x9e3779b9) >>> 0
-  for (let i = 0; i < 16; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; x >>>= 0; bytes.push(x & 0xff) }
-  return { h: h >>> 0, bytes }
-}
-export function avatarSvg (seed, { size = 80 } = {}) {
-  const { h, bytes } = _hashSeed(String(seed || 'dotrino'))
-  const hue = h % 360
-  const hue2 = (hue + 40) % 360
-  const fg = `hsl(${hue} 62% 46%)`
-  const bg1 = `hsl(${hue} 48% 95%)`
-  const bg2 = `hsl(${hue2} 48% 90%)`
-  const cells = 5
-  const unit = size / cells
-  let rects = ''
-  for (let col = 0; col < 3; col++) {
-    for (let row = 0; row < cells; row++) {
-      if (!(bytes[col * cells + row] & 1)) continue
-      for (const c of (col === 2 ? [2] : [col, cells - 1 - col])) {
-        rects += `<rect x="${(c * unit).toFixed(2)}" y="${(row * unit).toFixed(2)}" width="${unit.toFixed(2)}" height="${unit.toFixed(2)}"/>`
-      }
-    }
-  }
-  const id = 'g' + (h % 100000)
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">` +
-    `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs>` +
-    `<rect width="${size}" height="${size}" rx="${(size * 0.5).toFixed(2)}" fill="url(#${id})"/>` +
-    `<g fill="${fg}" transform="translate(${(size * 0.12).toFixed(2)} ${(size * 0.12).toFixed(2)}) scale(0.76)">${rects}</g></svg>`
-}
-/** El avatar como data-URI listo para `<img src>` o `background-image`. */
-export function avatarDataUri (seed, opts) {
-  return 'data:image/svg+xml,' + encodeURIComponent(avatarSvg(seed, opts))
-}
+// El identicon vive en ./avatar.js (función pura, sin dependencias) y se
+// re-exporta aquí por compatibilidad: importarlo desde este módulo arrastra
+// core.js (55 KB), así que si SOLO quieres el avatar usa el subpath
+// '@dotrino/identity/avatar'.
+export { avatarSvg, avatarDataUri } from './avatar.js'
 
 /** Cuerpo canónico del certificado (lo que se firma): el cert SIN la firma. */
 export function delegationBody (cert) {

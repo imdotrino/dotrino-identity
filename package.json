@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/identity",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Identidad y rating de usuarios compartidos entre apps de Dotrino (vault iframe + postMessage)",
   "type": "module",
   "main": "src/index.js",
@@ -16,6 +16,9 @@
     },
     "./capabilities": {
       "import": "./vault/capabilities.js"
+    },
+    "./avatar": {
+      "import": "./vault/avatar.js"
     },
     "./vault/core.js": "./vault/core.js",
     "./vault/remote.js": "./vault/remote.js"
