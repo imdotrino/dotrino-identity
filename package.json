@@ -17,7 +17,8 @@
     "./capabilities": {
       "import": "./vault/capabilities.js"
     },
-    "./vault/core.js": "./vault/core.js"
+    "./vault/core.js": "./vault/core.js",
+    "./vault/remote.js": "./vault/remote.js"
   },
   "files": [
     "src",
