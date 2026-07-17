@@ -1,0 +1,5 @@
+Copia vendorizada de @dotrino/vault@0.3.0 (lib/src/index.js, sin dependencias).
+El iframe de identity se sirve estático (vanilla, sin build); así startDeviceVault
+resuelve en el navegador sin bundler. Importa @dotrino/identity/capabilities
+(=../../capabilities.js) y @dotrino/proxy-client (=../proxy-client/), ambos vía
+el import map de index.html. Re-vendorizar al subir @dotrino/vault.

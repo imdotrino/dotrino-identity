@@ -97,6 +97,97 @@ import { createIdentityCore } from './core.js'
   core.onSyncStatus((p) => broadcast('sync', p))
   core.onVaultEvent((p) => broadcast('vault', p))
 
+  // ---- Modo SELF: este navegador actúa como bóveda (daemon device-vault) ----
+  // startDeviceVault convierte la identidad P en CA: atiende enrolamientos y consultas
+  // de revocación por el proxy. Solo UN iframe por origin es el daemon activo
+  // (navigator.locks): la pestaña VISIBLE sostiene el lock; al pasar a background lo
+  // libera y otra pestaña visible lo toma. Así varias apps abiertas no compiten.
+  const SELF_FLAG = 'dotrino.self-vault.enabled' // persistido en localStorage (kv)
+  const SELF_LOCK = 'dotrino-self-vault'
+  let daemon = null           // handle de startDeviceVault cuando ESTE iframe es el activo
+  let _lockResolver = null    // resolver del callback del lock (libera al resolverlo)
+
+  // Adaptador: startDeviceVault exige identity.{me.publickey, signData, signDelegation,
+  // listDelegations, revokeDelegation}; el core los expone vía handlers + getter me.
+  const selfIdentity = {
+    get me () { return core.me },
+    signData: (data) => handlers.signData({ data }),
+    signDelegation: (sub, scope, opts) => handlers.signDelegation({ sub, scope, ...(opts || {}) }),
+    listDelegations: () => handlers.listDelegations({}),
+    revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce })
+  }
+
+  async function startSelfDaemon () {
+    if (daemon) return
+    try {
+      // Import dinámico: aísla fallos del vendor del arranque del vault (cargado por
+      // todas las apps). El import map de index.html resuelve @dotrino/vault.
+      const { startDeviceVault } = await import('@dotrino/vault')
+      daemon = await startDeviceVault(selfIdentity)
+      daemon.onPendingChange(() => broadcast('selfVault', { pending: daemon.listPending() }))
+      broadcast('selfVault', { running: true })
+    } catch (e) { daemon = null; broadcast('selfVault', { error: e?.message || String(e) }) }
+  }
+  function stopSelfDaemon () {
+    if (!daemon) return
+    try { daemon.close() } catch {}
+    daemon = null
+    broadcast('selfVault', { running: false })
+  }
+
+  // Adquiere el lock solo si el modo self está activado Y la pestaña es visible.
+  function holdSelfLock () {
+    if (!navigator.locks) return
+    if (kv.getItem(SELF_FLAG) !== '1' || document.visibilityState !== 'visible') return
+    navigator.locks.request(SELF_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      if (!lock) return // otra pestaña visible lo tiene
+      await startSelfDaemon()
+      await new Promise((resolve) => { _lockResolver = resolve }) // mantener el lock
+      stopSelfDaemon()
+    }).catch(() => {})
+  }
+  function releaseSelfLock () { if (_lockResolver) { _lockResolver(); _lockResolver = null } }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') holdSelfLock()
+    else releaseSelfLock()
+  })
+
+  // Handlers de UI (emparejamiento/gestión) expuestos por postMessage. Las ACCIONES
+  // (pairing/approve) requieren que ESTE iframe sea el daemon activo (la pestaña visible);
+  // la lectura (máquinas/pending) siempre funciona (lee delegaciones persistidas).
+  const selfHandlers = {
+    selfVaultStatus: async () => ({ enabled: kv.getItem(SELF_FLAG) === '1', running: !!daemon }),
+    setSelfVault: async ({ enabled }) => {
+      kv.setItem(SELF_FLAG, enabled ? '1' : '0')
+      if (enabled) holdSelfLock(); else releaseSelfLock()
+      return { ok: true, enabled: !!enabled }
+    },
+    selfVaultPairing: async (opts) => {
+      if (!daemon) throw new Error('esta pestaña no es la bóveda activa; ábrela como pestaña visible')
+      return daemon.startPairing(opts)
+    },
+    selfVaultPending: async () => (daemon ? daemon.listPending() : []),
+    selfVaultMachines: async () => {
+      if (daemon) return daemon.listMachines()
+      const { issued } = await handlers.listDelegations({})
+      return issued || []
+    },
+    selfVaultApprove: async ({ deviceId, code }) => {
+      if (!daemon) throw new Error('esta pestaña no es la bóveda activa')
+      return daemon.approve(deviceId, code)
+    },
+    selfVaultReject: async ({ deviceId }) => {
+      if (!daemon) throw new Error('esta pestaña no es la bóveda activa')
+      daemon.reject(deviceId)
+      return { ok: true }
+    },
+    selfVaultRevoke: async ({ nonce }) => {
+      if (daemon) return daemon.revoke(nonce)
+      return handlers.revokeDelegation({ nonce })
+    }
+  }
+
   window.addEventListener('message', async (event) => {
     const msg = event.data
     if (!msg || msg._cci !== true || msg.type !== 'request') return
@@ -107,7 +198,7 @@ import { createIdentityCore } from './core.js'
       { _cci: true, type: 'response', id, ...payload },
       event.origin
     )
-    const handler = handlers[method]
+    const handler = handlers[method] || selfHandlers[method]
     if (!handler) return reply({ error: `Unknown method: ${method}` })
     try {
       const result = await handler(params || {})
@@ -135,4 +226,6 @@ import { createIdentityCore } from './core.js'
       window.parent.postMessage({ _cci: true, type: 'ready' }, '*')
     }
   }
+  // Si el modo self-vault ya estaba activado, intentar tomar el lock (pestaña visible).
+  holdSelfLock()
 })()

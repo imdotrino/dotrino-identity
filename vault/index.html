@@ -22,7 +22,11 @@
   <!-- Transporte self-hosted (vendorizado): el emparejamiento de dispositivos importa
        @dotrino/proxy-client de forma perezosa; este import map lo resuelve sin CDN. -->
   <script type="importmap">
-  { "imports": { "@dotrino/proxy-client": "./vendor/proxy-client/index.js" } }
+  { "imports": {
+    "@dotrino/proxy-client": "./vendor/proxy-client/index.js",
+    "@dotrino/vault": "./vendor/vault/index.js",
+    "@dotrino/identity/capabilities": "./capabilities.js"
+  } }
   </script>
   <script type="module" src="./vault.js"></script>
 </body>
