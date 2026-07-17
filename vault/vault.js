@@ -13,6 +13,7 @@ import {
   initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
 } from './peerStore.js'
 import { createIdentityCore } from './core.js'
+import { pubkeyId } from './capabilities.js'
 
 ;(async () => {
   // kv estilo localStorage (síncrono) para me, nonces, delegaciones, certs.
@@ -157,6 +158,25 @@ import { createIdentityCore } from './core.js'
   // (pairing/approve) requieren que ESTE iframe sea el daemon activo (la pestaña visible);
   // la lectura (máquinas/pending) siempre funciona (lee delegaciones persistidas).
   const selfHandlers = {
+    // En modo self, listar máquinas enroladas lee LOCAL (listDelegations) en vez de
+    // hacer RPC al daemon del PC: somos nuestra propia maestra. Así ia/terminal listan
+    // agentes siempre, sin depender de qué pestaña sostenga el lock del daemon.
+    listVaultDevices: async () => {
+      if (kv.getItem(SELF_FLAG) !== '1') return handlers.listVaultDevices({})
+      const { issued, revoked } = await handlers.listDelegations({})
+      const now = Date.now()
+      const bySub = new Map()
+      for (const x of (issued || [])) {
+        if (!x.sub || x.revokedAt || (x.exp && x.exp <= now)) continue
+        if (!Array.isArray(x.scope) || !x.scope.includes('vault:sign')) continue
+        if (!bySub.has(x.sub) || (x.exp || 0) > (bySub.get(x.sub).exp || 0)) bySub.set(x.sub, x)
+      }
+      const devices = await Promise.all([...bySub.values()].map(async (x) => ({
+        deviceId: (await pubkeyId(x.sub)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2'),
+        sub: x.sub, label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce
+      })))
+      return { devices, revoked: (revoked || []).map((r) => r.nonce || r) }
+    },
     selfVaultStatus: async () => ({ enabled: kv.getItem(SELF_FLAG) === '1', running: !!daemon }),
     setSelfVault: async ({ enabled }) => {
       kv.setItem(SELF_FLAG, enabled ? '1' : '0')
@@ -198,7 +218,7 @@ import { createIdentityCore } from './core.js'
       { _cci: true, type: 'response', id, ...payload },
       event.origin
     )
-    const handler = handlers[method] || selfHandlers[method]
+    const handler = selfHandlers[method] || handlers[method]
     if (!handler) return reply({ error: `Unknown method: ${method}` })
     try {
       const result = await handler(params || {})
