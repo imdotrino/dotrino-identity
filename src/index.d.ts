@@ -173,6 +173,7 @@ export class Identity {
   selfVaultApprove (deviceId: string, code: string): Promise<any>
   selfVaultReject (deviceId: string): Promise<{ ok: true }>
   selfVaultRevoke (nonce: string): Promise<any>
+  selfVaultProbe (pubkeys: string[]): Promise<{ online: string[] }>
   onSelfVault (handler: (payload: any) => void): () => void
   on (event: 'peer_updated' | 'me_updated' | 'sync' | 'vault' | 'selfVault', handler: (payload: any) => void): () => void
 }

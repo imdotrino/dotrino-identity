@@ -340,6 +340,8 @@ export class Identity {
   async selfVaultReject (deviceId) { return this._call('selfVaultReject', { deviceId }) }
   /** Revoca una máquina/agente enrolado por nonce de delegación. */
   async selfVaultRevoke (nonce) { return this._call('selfVaultRevoke', { nonce }) }
+  /** Presencia online (ping/pong) de las máquinas enroladas. Devuelve { online: [pubkeys] }. */
+  async selfVaultProbe (pubkeys) { return this._call('selfVaultProbe', { pubkeys }, 10000) }
   /** Suscribe a eventos del self-vault ('selfVault'): { running?, pending?, error? }. */
   onSelfVault (handler) { return this.on('selfVault', handler) }
 

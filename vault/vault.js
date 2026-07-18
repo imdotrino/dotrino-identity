@@ -154,6 +154,34 @@ import { pubkeyId } from './capabilities.js'
     else releaseSelfLock()
   })
 
+  // Sonda de presencia (ping/pong por el proxy del daemon). Mandamos AMBOS tipos
+  // (ra.ping para agentes @dotrino/remote-agent —ia—; terminal.ping para terminal
+  // pre-migración) y consideramos online si responde cualquiera. Reusa el cliente
+  // del proxy del daemon activo en ESTE iframe; si no hay daemon, devuelve vacío.
+  function probeOnline (pubkeys, { timeoutMs = 4000 } = {}) {
+    return new Promise((resolve) => {
+      const online = new Set()
+      const client = daemon?.client
+      if (!client?.sendByPubkey || !pubkeys.length) return resolve(online)
+      let rest = pubkeys.length
+      const byNonce = new Map()
+      const off = client.on('message', (_f, p) => {
+        if (!p || typeof p !== 'object') return
+        if (p.type === 'ra.pong' || p.type === 'terminal.pong') {
+          const pk = byNonce.get(p.n)
+          if (pk) { online.add(pk); byNonce.delete(p.n); settle() }
+        }
+      })
+      function settle () { if (--rest <= 0) { off(); resolve(online) } }
+      for (const pk of pubkeys) {
+        const n = pk.slice(0, 6) + Math.random().toString(36).slice(2, 8)
+        byNonce.set(n, pk)
+        try { client.sendByPubkey(pk, { type: 'ra.ping', n }); client.sendByPubkey(pk, { type: 'terminal.ping', n }) } catch {}
+        setTimeout(settle, timeoutMs)
+      }
+    })
+  }
+
   // Handlers de UI (emparejamiento/gestión) expuestos por postMessage. Las ACCIONES
   // (pairing/approve) requieren que ESTE iframe sea el daemon activo (la pestaña visible);
   // la lectura (máquinas/pending) siempre funciona (lee delegaciones persistidas).
@@ -205,7 +233,10 @@ import { pubkeyId } from './capabilities.js'
     selfVaultRevoke: async ({ nonce }) => {
       if (daemon) return daemon.revoke(nonce)
       return handlers.revokeDelegation({ nonce })
-    }
+    },
+    // Presencia online (ping/pong) de las máquinas enroladas. Requiere que ESTE
+    // iframe sea el daemon activo (tiene el cliente del proxy); si no, devuelve [].
+    selfVaultProbe: async ({ pubkeys }) => ({ online: [...(await probeOnline(pubkeys || []))] })
   }
 
   window.addEventListener('message', async (event) => {
