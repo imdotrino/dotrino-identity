@@ -319,11 +319,11 @@ export class Identity {
   }
 
   // ----- Self-vault: ESTE dispositivo actúa como su propia bóveda/CA -----
-  // El daemon device-vault vive dentro del iframe (no requiere el binario del PC ni
-  // vault.dotrino.com/pair). Cualquier app puede activarlo, generar códigos de
-  // emparejamiento, aprobar SAS y revocar máquinas — todo por RPC al iframe.
-  // El daemon sólo corre en una pestaña visible a la vez (navigator.locks), pero los
-  // getters (status/pending/machines) y revoke sirven desde cualquier pestaña.
+  // El daemon device-vault vive dentro del iframe (no requiere el binario del PC).
+  // Se gestiona desde profile.dotrino.com/#myvault. Cualquier app puede activarlo,
+  // generar códigos de emparejamiento, aprobar SAS y revocar máquinas — todo por RPC
+  // al iframe. El daemon sólo corre en una pestaña visible a la vez (navigator.locks),
+  // pero los getters (status/pending/machines) y revoke sirven desde cualquier pestaña.
   /** { enabled, running }: si el modo self está activado y si esta pestaña sostiene el daemon. */
   async selfVaultStatus () { return this._call('selfVaultStatus') }
   /** Activa/desactiva el modo self-vault en este dispositivo. */
