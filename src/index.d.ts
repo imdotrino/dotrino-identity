@@ -155,7 +155,26 @@ export class Identity {
   syncStatus (): Promise<SyncStatus>
   syncNow (): Promise<SyncStatus>
   onSync (handler: (event: SyncEvent) => void): () => void
-  on (event: 'peer_updated' | 'me_updated' | 'sync', handler: (payload: any) => void): () => void
+  // vault (este dispositivo es cliente de un vault externo)
+  enrollDevice (qr: string): Promise<any>
+  vaultStatus (): Promise<any>
+  vaultUnpair (): Promise<any>
+  vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
+  vaultStore (method: string, args?: any): Promise<any>
+  listVaultDevices (): Promise<{ devices: any[]; revoked: any[] }>
+  getVaultCert (): Promise<any>
+  onVault (handler: (payload: any) => void): () => void
+  // self-vault (este dispositivo ES el vault, daemon dentro del iframe)
+  selfVaultStatus (): Promise<{ enabled: boolean; running: boolean }>
+  setSelfVault (enabled: boolean): Promise<{ ok: true; enabled: boolean }>
+  selfVaultPairing (opts?: any): Promise<any>
+  selfVaultPending (): Promise<any[]>
+  selfVaultMachines (): Promise<any[]>
+  selfVaultApprove (deviceId: string, code: string): Promise<any>
+  selfVaultReject (deviceId: string): Promise<{ ok: true }>
+  selfVaultRevoke (nonce: string): Promise<any>
+  onSelfVault (handler: (payload: any) => void): () => void
+  on (event: 'peer_updated' | 'me_updated' | 'sync' | 'vault' | 'selfVault', handler: (payload: any) => void): () => void
 }
 
 export interface SyncStatus {

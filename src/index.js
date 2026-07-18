@@ -318,6 +318,31 @@ export class Identity {
     return this.on('vault', handler)
   }
 
+  // ----- Self-vault: ESTE dispositivo actúa como su propia bóveda/CA -----
+  // El daemon device-vault vive dentro del iframe (no requiere el binario del PC ni
+  // vault.dotrino.com/pair). Cualquier app puede activarlo, generar códigos de
+  // emparejamiento, aprobar SAS y revocar máquinas — todo por RPC al iframe.
+  // El daemon sólo corre en una pestaña visible a la vez (navigator.locks), pero los
+  // getters (status/pending/machines) y revoke sirven desde cualquier pestaña.
+  /** { enabled, running }: si el modo self está activado y si esta pestaña sostiene el daemon. */
+  async selfVaultStatus () { return this._call('selfVaultStatus') }
+  /** Activa/desactiva el modo self-vault en este dispositivo. */
+  async setSelfVault (enabled) { return this._call('setSelfVault', { enabled }) }
+  /** Genera un código de emparejamiento + QR para enlazar otra máquina. Sólo sirve desde la pestaña activa. */
+  async selfVaultPairing (opts) { return this._call('selfVaultPairing', opts || {}, 60000) }
+  /** Lista de solicitudes de emparejamiento pendientes de aprobar. */
+  async selfVaultPending () { return this._call('selfVaultPending') }
+  /** Máquinas/agentes enrolados (delegaciones vigentes con scope vault:sign). */
+  async selfVaultMachines () { return this._call('selfVaultMachines') }
+  /** Aprueba una solicitud de emparejamiento comparando el código SAS. */
+  async selfVaultApprove (deviceId, code) { return this._call('selfVaultApprove', { deviceId, code }) }
+  /** Rechaza una solicitud de emparejamiento pendiente. */
+  async selfVaultReject (deviceId) { return this._call('selfVaultReject', { deviceId }) }
+  /** Revoca una máquina/agente enrolado por nonce de delegación. */
+  async selfVaultRevoke (nonce) { return this._call('selfVaultRevoke', { nonce }) }
+  /** Suscribe a eventos del self-vault ('selfVault'): { running?, pending?, error? }. */
+  onSelfVault (handler) { return this.on('selfVault', handler) }
+
   // ----- multi-perfil por dispositivo -----
   // Podés tener varios perfiles (identidades) en el mismo navegador, cada uno conectado o no
   // a su propio vault. Crear/cambiar setea el perfil activo; la app RECARGA la página y toma
