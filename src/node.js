@@ -20,15 +20,25 @@ import path from 'node:path'
 import os from 'node:os'
 import { createIdentityCore } from '../vault/core.js'
 
-/** kv síncrono respaldado por un archivo JSON (estilo localStorage). */
-function fileKv (filePath) {
+/**
+ * kv síncrono respaldado por un archivo JSON (estilo localStorage).
+ *
+ * `atRest` (opcional) cifra el archivo entero en disco: quien lo provee decide con qué
+ * (el vault lo liga a la máquina, ver `dotrino-vault/src/atrest.js`). Si el archivo estaba
+ * en claro se lee igual y queda cifrado en la primera escritura, sin pedir nada.
+ */
+function fileKv (filePath, atRest = null) {
   let data = {}
   try {
-    if (fs.existsSync(filePath)) data = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {}
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf8')
+      data = JSON.parse(atRest ? atRest.decrypt(raw) : raw) || {}
+    }
   } catch (_) { data = {} }
   const flush = () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(data))
+    const text = JSON.stringify(data)
+    fs.writeFileSync(filePath, atRest ? atRest.encrypt(text) : text, { mode: 0o600 })
   }
   return {
     getItem: (k) => (k in data ? data[k] : null),
@@ -91,6 +101,7 @@ export class Identity {
    */
   constructor (options = {}) {
     this._dir = options.dir || DEFAULT_DIR
+    this._atRest = options.atRest || null
     this._core = null
     this._listeners = new Map()
   }
@@ -109,7 +120,7 @@ export class Identity {
   async ready () {
     if (this._core) return this
     this._core = await createIdentityCore({
-      kv: fileKv(path.join(this._dir, 'identity.json')),
+      kv: fileKv(path.join(this._dir, 'identity.json'), this._atRest),
       peers: filePeers(path.join(this._dir, 'peers.json')),
       makeSync: null
     })
