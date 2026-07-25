@@ -5,20 +5,47 @@
  * —cuya privada NUNCA sale de la identidad—, hace el emparejamiento ENDURECIDO por el
  * proxy (ver dotrino-vault/docs/pairing-protocol.md) y devuelve el cert ya validado.
  *
- * Flujo: firma el ENROLL con D (prueba de posesión) → recibe el reto y computa SU
- * propio SAS (que el usuario compara con el del PC) → al ser aprobado en el PC, recibe
- * el cert y lo valida (firmado por la maestra que vio en el QR, y para SU clave).
+ * Flujo: genera un código de 6 dígitos, lo MUESTRA y manda solo su COMPROMISO dentro del
+ * ENROLL firmado con D (prueba de posesión) → el dueño tipea el código en la bóveda, que
+ * lo comprueba contra el compromiso y solo entonces firma → el dispositivo acepta el cert
+ * si le ECHAN su código y lo valida (firmado por la maestra que vio en el QR, y para SU clave).
  *
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, makePairingCode, pubkeyId } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
 
 const MSG = {
   ENROLL: 'vault.enroll',
   ENROLL_CHALLENGE: 'vault.enroll.challenge',
   ENROLLED: 'vault.enrolled',
+  REVOKED: 'vault.revoked',
   ERROR: 'vault.error'
+}
+
+/**
+ * ¿Es AUTÉNTICO este `vault.revoked`? Solo lo es si va firmado por la maestra PINEADA al
+ * emparejar, es para ESTE dispositivo y no ha caducado. Es la única puerta al autoborrado:
+ * un `vault.error` con la palabra «revocado» no borra nada (cierra el wipe-DoS, ver
+ * `dotrino-vault/docs/pairing-protocol.md §2.3`).
+ */
+export async function isAuthenticRevoke ({ body, signature, master, devicePubkey }) {
+  if (!body || body.op !== 'revoke' || typeof signature !== 'string') return false
+  if (body.sub !== devicePubkey) return false
+  if (typeof body.exp === 'number' && Date.now() > body.exp) return false
+  return verifyDeviceSig({ publickey: master, data: body, signature })
+}
+
+/**
+ * Identifica la conexión bajo la pubkey de este dispositivo. Además de hacerlo
+ * direccionable, es lo que hace que el proxy le entregue lo que tenía ENCOLADO (24 h) —
+ * entre otras cosas, un `vault.revoked` emitido mientras estaba apagado.
+ */
+async function identifyAsDevice (client, device) {
+  if (!client.token) return
+  const data = { op: 'identify', publickey: device.publickey, token: client.token, ts: Date.now() }
+  const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
+  await client.identify({ data, signature })
 }
 
 /**
@@ -43,9 +70,12 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     // El DISPOSITIVO genera el código y manda solo su COMPROMISO (no el código). El vault
     // aprende el código únicamente cuando vos lo tipeás en el PC → aprobar exige tener el dispositivo.
     const code = makePairingCode()
-    // NO se manda el código ni un compromiso: el vault lo aprende SOLO cuando lo tipeás, y al
-    // ECHARLO de vuelta el dispositivo confía. Un vault falso no conoce el código → no empareja.
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, label, ts: Date.now() }
+    // Se manda el COMPROMISO del código, nunca el código. El vault lo aprende solo cuando lo
+    // tipeas, recompone el compromiso y únicamente entonces firma el cert → aprobar exige
+    // haber leído el código de ESTA pantalla. Y al ECHARLO de vuelta, el dispositivo confía:
+    // una bóveda falsa no conoce el código y no puede enrolarlo.
+    const commit = await commitCode({ code, dpub: dev.publickey, sn: qr.sn })
+    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
 
     const enrolled = new Promise((resolve, reject) => {
@@ -78,41 +108,39 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
  * firma. Requiere que el vault esté online.
  * @returns {Promise<{ signature:string, publickey:string }>}  publickey = la maestra.
  */
-export async function requestSign ({ master, proxy, device, cert, payload, timeoutMs = 15000 } = {}) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
-  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
-  await client.connect()
-  try {
-    const data = { op: 'sign', payload, publickey: device.publickey, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
-    const pending = new Promise((resolve, reject) => {
-      const off = client.on('message', (_f, p) => {
-        if (!p || typeof p !== 'object') return
-        if (p.type === 'vault.signed') { cleanup(); resolve(p) }
-        else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
-      })
-      const t = setTimeout(() => { cleanup(); reject(new Error('el vault no respondió (¿está encendido?)')) }, timeoutMs)
-      const cleanup = () => { off(); clearTimeout(t) }
-    })
-    client.sendByPubkey(master, { type: 'vault.sign', data, signature, cert })
-    const res = await pending
-    return { signature: res.signature, publickey: res.publickey }
-  } finally { try { client.close() } catch (_) {} }
+export async function requestSign ({ master, proxy, device, cert, payload, onRevoked, timeoutMs = 15000 } = {}) {
+  const res = await vaultRpc({
+    master, proxy, device, cert, onRevoked, timeoutMs,
+    sendType: 'vault.sign', okType: 'vault.signed', data: { op: 'sign', payload }
+  })
+  return { signature: res.signature, publickey: res.publickey }
 }
 
-/** Helper genérico: una RPC al vault firmada por D + cert, esperando `okType`. */
-async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, timeoutMs = 15000 }) {
+/**
+ * Helper genérico: una RPC al vault firmada por D + cert, esperando `okType`.
+ *
+ * Se identifica al conectar para que el proxy entregue lo ENCOLADO: si mientras el
+ * dispositivo estaba apagado la bóveda emitió un `vault.revoked` firmado, llega aquí y se
+ * ejecuta el autoborrado (`onRevoked`) tras verificar la firma contra la maestra pineada.
+ */
+async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
+    try { await identifyAsDevice(client, device) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
     const signed = { ...data, publickey: device.publickey, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data: signed })
     const pending = new Promise((resolve, reject) => {
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return
+        if (p.type === MSG.REVOKED) {
+          isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey })
+            .then((ok) => { if (ok) { try { onRevoked?.() } catch (_) {} } })
+            .catch(() => {})
+          return
+        }
         if (p.type === okType) { cleanup(); resolve(p) }
         else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
       })
@@ -125,14 +153,14 @@ async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, 
 }
 
 /** Lee/escribe el store de hilos+aperturas EN el vault (con el cert del dispositivo). */
-export async function requestStore ({ master, proxy, device, cert, method, args } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.store', okType: 'vault.store.result', data: { op: 'store', method, args: args || {} } })
+export async function requestStore ({ master, proxy, device, cert, method, args, onRevoked } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.store', okType: 'vault.store.result', data: { op: 'store', method, args: args || {} } })
   return res.result
 }
 
 /** Lista (solo lectura) los dispositivos enrolados en tu vault. */
-export async function requestDevices ({ master, proxy, device, cert } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
+export async function requestDevices ({ master, proxy, device, cert, onRevoked } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
   return { devices: res.devices || [], revoked: res.revoked || [] }
 }
 
@@ -141,8 +169,8 @@ export async function requestDevices ({ master, proxy, device, cert } = {}) {
  * el vault firma uno fresco para la misma sub-clave y scope, sin QR ni aprobación.
  * @returns {Promise<{ cert: object }>}
  */
-export async function requestRenew ({ master, proxy, device, cert } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
+export async function requestRenew ({ master, proxy, device, cert, onRevoked } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
   if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('cert renovado inválido')
   return { cert: res.cert }
 }

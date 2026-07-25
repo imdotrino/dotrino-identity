@@ -249,23 +249,69 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // ----- delegaciones de capacidad emitidas + revocaciones (kv-backed) -----
 
   function loadJson (key) { try { return JSON.parse(kv.getItem(key) || '{}') || {} } catch (_) { return {} } }
-  const loadDelegations = () => loadJson(DELEGATIONS_STORAGE)
+
+  // PODA (los dos registros crecían para siempre): la renovación automática firma un cert
+  // nuevo cada 30 días, así que sin podar cada dispositivo dejaba 12 entradas muertas al año.
+  // Se tira lo que YA NO PUEDE SERVIR, nunca lo vivo:
+  //   · delegación → cuando su `exp` ya pasó (un cert vencido no autoriza nada).
+  //     OJO: no se poda «la anterior del mismo dispositivo» al renovar, porque el cert
+  //     viejo SIGUE VIGENTE hasta su exp y hay que poder revocarlo si te roban el aparato.
+  //   · revocación → 30 días después de revocar: para entonces el cert al que apunta está
+  //     vencido seguro (el tope duro de vida es `MAX_DELEGATION_MS`, y exp ≤ iat + 30 días
+  //     ≤ revokedAt + 30 días), y un cert vencido ya falla por `expired` sin mirar la lista.
+  const DELEGATION_MAX_LIFE_MS = 30 * 24 * 60 * 60 * 1000 // espejo de MAX_DELEGATION_MS (capabilities.js)
+
+  function loadDelegations () {
+    const o = loadJson(DELEGATIONS_STORAGE)
+    const now = Date.now()
+    let changed = false
+    for (const k of Object.keys(o)) {
+      const exp = o[k]?.exp
+      if (typeof exp === 'number' && exp < now) { delete o[k]; changed = true }
+    }
+    if (changed) kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
+    return o
+  }
   const saveDelegations = (o) => kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
-  const loadRevocations = () => loadJson(REVOCATIONS_STORAGE)
+
+  function loadRevocations () {
+    const o = loadJson(REVOCATIONS_STORAGE)
+    const now = Date.now()
+    let changed = false
+    for (const k of Object.keys(o)) {
+      const at = o[k]
+      if (typeof at === 'number' && now - at > DELEGATION_MAX_LIFE_MS) { delete o[k]; changed = true }
+    }
+    if (changed) kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
+    return o
+  }
   const saveRevocations = (o) => kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
 
   // ----- emparejamiento con el vault del usuario (este dispositivo enrolado) -----
-  // Canal de eventos 'vault' (p.ej. el SAS a comparar durante el emparejamiento).
+  // Canal de eventos 'vault' (p.ej. el código a tipear durante el emparejamiento).
   const vaultListeners = new Set()
   const emitVault = (p) => { for (const fn of vaultListeners) { try { fn(p) } catch (_) {} } }
-  // Si el vault RECHAZA por cert revocado, este dispositivo perdió el acceso: limpiamos el
-  // cert local (ya no sirve) y emitimos 'revoked' → @dotrino/store borra SOLO el store de
-  // ESTE perfil (los demás perfiles quedan intactos). Cualquier otro error se propaga igual.
+
+  /**
+   * BORRADO por revocación. Solo lo dispara un `vault.revoked` FIRMADO por la maestra
+   * pineada (lo verifica `remote.js` antes de llamar aquí). Emite 'revoked' →
+   * `@dotrino/store` borra el store de ESTE perfil (los demás quedan intactos).
+   */
+  const wipeVaultLink = () => {
+    try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
+    emitVault({ phase: 'revoked' })
+  }
+
+  /**
+   * El vault RECHAZÓ una petición diciendo «revocado». Ese mensaje NO va firmado: lo
+   * puede falsificar cualquiera que conozca la pubkey de este dispositivo, así que
+   * **jamás borra nada** (sería un wipe-DoS: destruir datos ajenos con un mensaje suelto,
+   * prohibido por `dotrino-vault/docs/pairing-protocol.md §2.3`). Lo único que hacemos es
+   * DEGRADAR: avisar a la app de que la bóveda nos está rechazando, y que sea el usuario
+   * quien decida. El borrado real llega por `vault.revoked` firmado (ver `wipeVaultLink`).
+   */
   const handleVaultError = (e) => {
-    if (e && /\brevoked\b/.test(e.message || '')) {
-      try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
-      emitVault({ phase: 'revoked' })
-    }
+    if (e && /\brevoked\b/.test(e.message || '')) emitVault({ phase: 'rejected', reason: e.message })
     throw e
   }
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
@@ -305,7 +351,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (v.cert.exp <= now || v.cert.exp - now > RENEW_WINDOW_MS) return
       if (now - renewLastTry < RENEW_RETRY_MS) return
       renewLastTry = now
-      remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert }).then(({ cert }) => {
+      remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink }).then(({ cert }) => {
         kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
         emitVault({ phase: 'renewed', exp: cert.exp })
       }).catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
@@ -870,7 +916,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
-      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload }) }
+      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
     },
 
@@ -880,7 +926,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
-      try { return await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args }) }
+      try { return await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
     },
 
@@ -889,7 +935,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
-      try { return await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert }) }
+      try { return await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
     },
 
