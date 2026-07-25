@@ -166,9 +166,10 @@ export async function requestStore ({ master, proxy, device, cert, method, args,
 }
 
 /** Lista (solo lectura) los dispositivos enrolados en tu vault. */
-export async function requestDevices ({ master, proxy, device, cert, onRevoked } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
-  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null }
+export async function requestDevices ({ master, proxy, device, cert, sinceSeq, onRevoked } = {}) {
+  const data = typeof sinceSeq === 'number' ? { op: 'devices', sinceSeq } : { op: 'devices' }
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data })
+  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null, chain: res.chain || null }
 }
 
 /**

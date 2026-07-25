@@ -32,6 +32,7 @@ export const REVOCATIONS_STORAGE = 'dotrino.identity.revocations'   // nonces re
 export const VAULT_DEVICE_STORAGE = 'dotrino.identity.vault.device' // sub-clave D de ESTE dispositivo (custodia en el iframe)
 export const VAULT_CERT_STORAGE = 'dotrino.identity.vault.cert'     // { cert, master, proxy, deviceId, pairedAt }
 export const ACTA_STORAGE = 'dotrino.identity.acta'                 // acta de perfil vigente (quién es del perfil y qué puede)
+export const ACTA_HISTORY_STORAGE = 'dotrino.identity.acta.history' // últimas actas selladas (§1.3)
 export const RENOUNCE_STORAGE = 'dotrino.identity.renounced'        // renuncias propias aún no absorbidas por el master
 // Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
 // namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
@@ -345,6 +346,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // `acta.js`, que es puro y está probado aparte.
   const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
   const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
+  // VENTANA DE RETENCIÓN (§1.3): el master conserva las últimas actas para que un miembro
+  // que estuvo apagado pueda comprobar el encadenamiento al volver. Un tercero no las
+  // necesita —le basta el snapshot actual—, pero entre miembros hay que poder verificar
+  // que la nueva desciende de la que uno tenía. Más viejo que la ventana ⇒ re-admitirse.
+  const ACTA_WINDOW = 50
+  const loadHistory = () => { try { return JSON.parse(kv.getItem(ACTA_HISTORY_STORAGE) || '[]') || [] } catch (_) { return [] } }
+  const pushHistory = (acta) => {
+    if (!acta) return
+    const h = loadHistory().filter((a) => a.seq !== acta.seq)
+    h.push(acta)
+    h.sort((a, b) => a.seq - b.seq)
+    kv.setItem(ACTA_HISTORY_STORAGE, JSON.stringify(h.slice(-ACTA_WINDOW)))
+  }
+
   const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }
   const saveRenounces = (l) => kv.setItem(RENOUNCE_STORAGE, JSON.stringify(l))
 
@@ -363,6 +378,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     if (!acta) throw new Error('este perfil todavía no tiene acta')
     const next = await Acta.applyChanges(acta, changes, { by: publickeyJwkStr })
     const sealed = await seal(next)
+    pushHistory(acta) // la que deja de ser vigente entra en la ventana de retención
     saveActa(sealed)
     emitVault({ phase: 'acta', seq: sealed.seq, sealer: sealed.sealer })
     return sealed
@@ -447,6 +463,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * Adopta un acta que llega de otro miembro, si gana según §2.4.1 (seq mayor que encadene,
    * o el traspaso a igual seq). Nunca retrocede.
    */
+  /**
+   * Adopta una CADENA de actas, una a una. Es lo que permite ponerse al día tras estar
+   * apagado sin bajar la guardia: cada eslabón se comprueba contra el anterior en vez de
+   * aceptar un salto a ciegas.
+   */
+  async function adoptChain (chain) {
+    let last = null
+    for (const a of [...(chain || [])].sort((x, y) => x.seq - y.seq)) {
+      const r = await adoptActa(a)
+      if (r.adopted) last = r
+    }
+    return last || { adopted: false, reason: 'nada-que-adoptar', seq: loadActa()?.seq ?? null }
+  }
+
   async function adoptActa (candidate) {
     const current = loadActa()
     const r = await Acta.canAdopt({ candidate, current })
@@ -1162,8 +1192,22 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { ok: true, ...r }
     },
 
+    /**
+     * Las actas que este master conserva desde `sinceSeq` (sin incluirla), para que un
+     * miembro que volvió pueda comprobar el encadenamiento. Vacío si se salió de la ventana.
+     */
+    async actaHistory ({ sinceSeq = 0 } = {}) {
+      const cur = loadActa()
+      const hist = loadHistory().filter((a) => a.seq > sinceSeq)
+      const all = cur && cur.seq > sinceSeq ? [...hist, cur] : hist
+      return { chain: all.sort((a, b) => a.seq - b.seq), window: ACTA_WINDOW }
+    },
+
     /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
     async adoptActa ({ acta } = {}) { return adoptActa(acta) },
+
+    /** Adopta una cadena completa (para ponerse al día tras estar apagado). */
+    async adoptActaChain ({ chain } = {}) { return adoptChain(chain) },
 
     /** Une este dispositivo al perfil de otra bóveda (solo si aquí no hay nada que perder). */
     async joinProfile ({ acta } = {}) { return joinProfile(acta) },
@@ -1253,9 +1297,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
       try {
-        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
+        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink })
         // El acta viaja con la lista: así los cambios de política llegan sin canal aparte.
-        if (res.acta) { try { await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta)) } catch (_) {} }
+        // Si estuve apagado, viene la CADENA y se adopta eslabón a eslabón (§1.3).
+        try {
+          if (res.chain?.length && res.chain[0].profileId === loadActa()?.profileId) await adoptChain(res.chain)
+          else if (res.acta) await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta))
+        } catch (_) {}
         return res
       } catch (e) { return handleVaultError(e) }
     },
