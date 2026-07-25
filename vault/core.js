@@ -20,6 +20,7 @@
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
 import * as Acta from './acta.js'
+import * as Content from './content.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
@@ -374,11 +375,48 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    */
   async function ensureActa (label = '') {
     if (loadActa()) return loadActa()
-    const acta = await seal(Acta.genesisActa({
+    const base = Acta.genesisActa({
       pub: publickeyJwkStr, encPub: encPublickeyJwkStr, label: label || me?.nickname || ''
-    }))
-    saveActa(acta)
-    return acta
+    })
+    // La primera generación de la clave de contenido va DENTRO del acta de génesis, no en
+    // un cambio aparte: un perfil recién nacido está en `seq 1`, no en `seq 2`.
+    try {
+      const { generation } = await Content.makeGeneration({ members: base.members, gen: 1 })
+      base.keyring = [generation]
+    } catch (e) { console.warn('[identity] no se pudo crear la clave de contenido:', e.message) }
+    saveActa(await seal(base))
+    return loadActa()
+  }
+
+  // ----- CLAVE DE CONTENIDO del perfil (para que todos tus dispositivos lean lo mismo) -----
+  // Las llaves de FIRMA no se mueven nunca; la de CONTENIDO se comparte por diseño,
+  // envuelta a la llave de cifrado de cada miembro (ver content.js).
+
+  /** Mi copia de la clave de contenido vigente, o null si aún no me la han envuelto. */
+  const myCek = () => Content.myContentKey({
+    keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
+  })
+
+  /** Envuelve la clave vigente para un miembro recién admitido (no hace falta rotar). */
+  async function wrapForNewMember (pub) {
+    const acta = loadActa()
+    const gen = (acta?.keyring || []).at(-1)
+    const m = acta?.members.find((x) => x.pub === pub)
+    if (!gen || !m?.encPub) return false
+    const mine = await myCek()
+    if (!mine) return false
+    const wrap = await Content.wrapForMember({ cek: mine.cek, memberEncPub: m.encPub })
+    await sealChanges([{ op: 'wrap', gen: mine.gen, pub, wrap }])
+    return true
+  }
+
+  /** Rota la clave: generación nueva envuelta SOLO a los miembros actuales. */
+  async function rotateCek () {
+    const acta = loadActa()
+    const gen = ((acta.keyring || []).at(-1)?.gen || 0) + 1
+    const { generation, sinLlave } = await Content.makeGeneration({ members: acta.members, gen })
+    await sealChanges([{ op: 'keyring', generation }])
+    return { gen, sinLlave }
   }
 
   /**
@@ -1033,7 +1071,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async admitMember ({ pub, encPub = null, label = '', caps = ['store', 'read'], cert = null, continuity = null } = {}) {
       const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, caps, cert, continuity } }])
-      return { ok: true, seq: acta.seq }
+      // Que entre al perfil incluye poder LEER lo que ya hay: se le envuelve la clave
+      // vigente (no hace falta rotar; rotar es para cuando alguien SALE).
+      let wrapped = false
+      try { wrapped = await wrapForNewMember(pub) } catch (_) {}
+      return { ok: true, seq: acta.seq, wrapped }
     },
 
     async setCaps ({ pub, caps } = {}) {
@@ -1043,7 +1085,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     async removeMember ({ pub } = {}) {
       const acta = await sealChanges([{ op: 'remove', pub }])
-      return { ok: true, seq: acta.seq }
+      // Expulsar rota la clave: el que sale no podrá abrir el contenido NUEVO. Lo que ya
+      // leyó no vuelve — eso no se puede deshacer y no se promete.
+      let rotated = null
+      try { rotated = await rotateCek() } catch (_) {}
+      return { ok: true, seq: acta.seq, rotated }
     },
 
     /**
@@ -1082,6 +1128,21 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!(await Acta.verifyRenounce(record))) throw new Error('renuncia inválida: la firma no es del propio miembro')
       const acta = await sealChanges([{ op: 'renounce', record }])
       return { ok: true, seq: acta.seq }
+    },
+
+    /**
+     * La clave de contenido de este perfil, ya abierta con la llave de cifrado de este
+     * dispositivo. `null` si todavía no te la han envuelto (o si te expulsaron).
+     */
+    async contentKey () { return myCek() },
+
+    /**
+     * Rota la clave de contenido: generación nueva envuelta solo a los miembros de ahora.
+     * Corta el acceso al contenido FUTURO de quien ya no está; lo que ya leyó, ya lo leyó.
+     */
+    async rotateContentKey () {
+      const r = await rotateCek()
+      return { ok: true, ...r }
     },
 
     /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */

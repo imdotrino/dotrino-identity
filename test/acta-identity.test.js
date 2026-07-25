@@ -128,3 +128,33 @@ test('firma re-enrutada: sin `sign` y sin bóveda, error claro en vez de firmar 
   assert.equal(ident.publickey, id.me.publickey)
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('la clave de contenido: nace con el perfil, se comparte al admitir y rota al expulsar', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+
+  const mia = await id.contentKey()
+  assert.ok(mia?.cek, 'el perfil nace con su clave de contenido')
+  assert.equal(mia.gen, 1)
+
+  // Un miembro con llave de cifrado propia entra y recibe la MISMA clave.
+  const otro = await makeDeviceKey({ label: 'Celular' })
+  const enc = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const encJwk = await crypto.subtle.exportKey('jwk', enc.publicKey)
+  const encPub = JSON.stringify({ kty: encJwk.kty, crv: encJwk.crv, x: encJwk.x, y: encJwk.y })
+
+  const r = await id.admitMember({ pub: otro.publickey, encPub, label: 'Celular', caps: ['store', 'read'] })
+  assert.equal(r.wrapped, true, 'entrar al perfil incluye poder leer lo que ya hay')
+
+  const acta = (await id.profileActa()).acta
+  assert.ok(acta.keyring.at(-1).wraps[otro.publickey], 'tiene su envoltura')
+
+  // Al expulsarlo se rota: generación nueva, y él ya no está en ninguna.
+  const out = await id.removeMember(otro.publickey)
+  assert.equal(out.rotated.gen, 2, 'expulsar rota la clave')
+  const acta2 = (await id.profileActa()).acta
+  assert.ok(!acta2.keyring.some((g) => g.wraps[otro.publickey]), 'sus envolturas se van con él')
+  const ahora = await id.contentKey()
+  assert.equal(ahora.gen, 2, 'los que quedan usan la nueva')
+  fs.rmSync(dir, { recursive: true, force: true })
+})

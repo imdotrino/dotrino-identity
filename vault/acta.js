@@ -80,6 +80,9 @@ export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() 
     members: [{ pub, encPub, label: String(label || '').slice(0, 60), caps: [...CAPS], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
+    // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA
+    // a cada miembro (ver content.js). Envuelto es público: solo lo abre su destinatario.
+    keyring: [],
     updatedAt: now
   }
 }
@@ -150,6 +153,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
     members: acta.members.map((m) => ({ ...m, caps: [...m.caps] })),
     revoked: [...(acta.revoked || [])],
     renounced: [...(acta.renounced || [])],
+    keyring: (acta.keyring || []).map((g) => ({ ...g, wraps: { ...g.wraps } })),
     updatedAt: now
   }
   delete next.sig
@@ -184,12 +188,32 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
         const i = next.members.findIndex((m) => m.pub === ch.pub)
         if (i < 0) throw new Error('remove: ese miembro no está en el acta')
         if (next.members[i].pub === next.sealer) throw new Error('remove: no puedes expulsar al master; primero traspasa el sellado')
-        next.members.splice(i, 1)
+        const fuera = next.members.splice(i, 1)[0]
+        // Sus envolturas se van con él: sin ellas no puede abrir ninguna generación. (El
+        // acceso al contenido FUTURO se corta rotando, ver content.js; lo ya leído no vuelve.)
+        next.keyring = next.keyring.map((g) => {
+          const { [fuera.pub]: _, ...resto } = g.wraps || {}
+          return { ...g, wraps: resto }
+        })
         break
       }
       case 'handover': {
         if (!find(ch.to)) throw new Error('handover: el nuevo master tiene que ser miembro (admítelo en el mismo cambio)')
         next.sealer = ch.to
+        break
+      }
+      case 'keyring': {
+        // Generación NUEVA de la clave de contenido (al rotar: expulsar a alguien).
+        const g = ch.generation
+        if (!g || !Number.isInteger(g.gen)) throw new Error('keyring: generación inválida')
+        next.keyring = [...next.keyring.filter((x) => x.gen !== g.gen), g].sort((a, b) => a.gen - b.gen)
+        break
+      }
+      case 'wrap': {
+        // Envolver la clave YA existente para un miembro nuevo (al admitir: no hace falta rotar).
+        const g = next.keyring.find((x) => x.gen === ch.gen)
+        if (!g) throw new Error('wrap: esa generación no está en el llavero')
+        g.wraps = { ...g.wraps, [ch.pub]: ch.wrap }
         break
       }
       case 'revoke': {

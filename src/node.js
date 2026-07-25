@@ -162,6 +162,10 @@ export class Identity {
   renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
   absorbRenounce (record) { return this._h('absorbRenounce', { record }) }
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
+  /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
+  contentKey () { return this._h('contentKey') }
+  /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
+  rotateContentKey () { return this._h('rotateContentKey') }
   // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)
   enrollDevice (qr) { return this._h('vaultPair', { qr }) }
   vaultStatus () { return this._h('vaultStatus') }

@@ -299,6 +299,10 @@ export class Identity {
 
   /** Adopta un acta recibida de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
   async adoptActa (acta) { return this._call('adoptActa', { acta }) }
+  /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
+  async contentKey () { return this._call('contentKey') }
+  /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
+  async rotateContentKey () { return this._call('rotateContentKey') }
 
   // ----- Emparejar ESTE navegador/dispositivo con el vault del usuario (Fase 1) -----
 
