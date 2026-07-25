@@ -158,6 +158,9 @@ export function createEnrollDesk ({
     pend.dpub = d.dpub
     pend.deviceId = deviceId
     pend.commit = d.commit
+    // Llave de CIFRADO del dispositivo: con ella se le envuelve la clave de contenido del
+    // perfil al admitirlo. Sin ella entra, pero no podrá leer lo que haya guardado.
+    if (typeof d.encPub === 'string') pend.encPub = d.encPub
     // Certificado de continuidad (opcional): lo firma la identidad que se une, con su
     // propia llave. Se comprueba aquí y se guarda con el miembro al aprobar.
     if (d.continuity) {
@@ -213,7 +216,7 @@ export function createEnrollDesk ({
     try {
       if (typeof identity.admitMember === 'function') {
         const caps = scopeToCaps(pend.scope)
-        if (caps.length) await identity.admitMember({ pub: pend.dpub, label: pend.label || '', caps, cert, continuity: pend.continuity || null })
+        if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', caps, cert, continuity: pend.continuity || null })
       }
       acta = (await identity.profileActa?.())?.acta || null
     } catch (e) { log('[vault] no se pudo admitir en el acta:', e.message) }

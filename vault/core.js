@@ -1137,6 +1137,23 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     async contentKey () { return myCek() },
 
     /**
+     * Cifra algo con la clave de contenido del perfil. Devuelve el sobre `{gen,iv,ct}`.
+     * La llave privada de cifrado NUNCA sale de aquí: se cifra y descifra dentro.
+     */
+    async sealContent ({ plaintext } = {}) {
+      const mine = await myCek()
+      if (!mine) throw new Error('este dispositivo todavía no tiene la clave de contenido del perfil')
+      return Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: String(plaintext) })
+    },
+
+    /** Abre un sobre de contenido con el llavero del perfil (todas las generaciones). */
+    async openContent ({ envelope } = {}) {
+      return Content.decryptWithKeyring({
+        envelope, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
+      })
+    },
+
+    /**
      * Rota la clave de contenido: generación nueva envuelta solo a los miembros de ahora.
      * Corta el acceso al contenido FUTURO de quien ya no está; lo que ya leyó, ya lo leyó.
      */
@@ -1166,7 +1183,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const continuity = (mio && mio.members.length === 1)
         ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
         : null
-      const res = await remoteEnroll({ qr, device, continuity, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
+      const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       // Conectarse a una bóveda es ENTRAR A SU PERFIL: el acta viene con el cert.
@@ -1203,12 +1220,31 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     // Store DELEGADO: lee/escribe el store de hilos+aperturas EN tu vault (con el cert).
     // Reusa el MISMO emparejamiento (no hay un pairing aparte para el store).
+    /**
+     * Store DELEGADO, CIFRADO de punta a punta. Los argumentos y el resultado viajan
+     * cifrados con la clave de contenido del perfil: el proxy transporta pero no ve nada
+     * de lo que guardas. Si todavía no tengo la clave (nadie me la ha envuelto), va en
+     * claro como antes — y se dice en el resultado en vez de fallar en silencio.
+     */
     async vaultStore ({ method, args }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
-      try { return await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, args, onRevoked: wipeVaultLink }) }
-      catch (e) { return handleVaultError(e) }
+      const mine = await myCek().catch(() => null)
+      let payload = { method, args }
+      if (mine) {
+        payload = { method, enc: await Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: JSON.stringify(args ?? {}) }) }
+      }
+      try {
+        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: payload.method, args: payload.args, enc: payload.enc, onRevoked: wipeVaultLink })
+        // La respuesta vuelve cifrada con la misma clave si la bóveda pudo.
+        if (res && typeof res === 'object' && res.__enc && mine) {
+          return JSON.parse(await Content.decryptWithKeyring({
+            envelope: res.__enc, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
+          }))
+        }
+        return res
+      } catch (e) { return handleVaultError(e) }
     },
 
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
@@ -1226,9 +1262,17 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     // El cert de delegación de este dispositivo (para presentarlo al proxy en `identify`
     // → "una identidad": el proxy bindea tu pubkey también bajo tu maestra M). Sin secretos.
+    /**
+     * Lo que este dispositivo presenta al identificarse ante el proxy: su cert de
+     * delegación y su ACTA de perfil. Con el cert, el proxy enruta lo dirigido a la
+     * maestra; con el acta, lo dirigido a la PERSONA (cualquiera de sus dispositivos).
+     * Sin secretos: las dos cosas son públicas y auto-verificables.
+     */
     async getVaultCert () {
       const v = loadVaultCert()
-      return v?.cert ? { cert: v.cert, master: v.master } : null
+      const acta = loadActa()
+      if (!v?.cert) return acta ? { cert: null, master: null, acta } : null
+      return { cert: v.cert, master: v.master, acta }
     },
 
     async listContacts () {

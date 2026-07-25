@@ -164,6 +164,10 @@ export class Identity {
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
   /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
   contentKey () { return this._h('contentKey') }
+  /** Cifra con la clave de contenido del perfil (la privada de cifrado no sale del vault). */
+  sealContent (plaintext) { return this._h('sealContent', { plaintext }) }
+  /** Abre un sobre de contenido con el llavero del perfil. */
+  openContent (envelope) { return this._h('openContent', { envelope }) }
   /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
   rotateContentKey () { return this._h('rotateContentKey') }
   // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)

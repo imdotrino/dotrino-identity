@@ -41,11 +41,12 @@ export async function isAuthenticRevoke ({ body, signature, master, devicePubkey
  * direccionable, es lo que hace que el proxy le entregue lo que tenía ENCOLADO (24 h) —
  * entre otras cosas, un `vault.revoked` emitido mientras estaba apagado.
  */
-async function identifyAsDevice (client, device) {
+async function identifyAsDevice (client, device, { cert = null, acta = null } = {}) {
   if (!client.token) return
   const data = { op: 'identify', publickey: device.publickey, token: client.token, ts: Date.now() }
   const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
-  await client.identify({ data, signature })
+  // cert → el proxy enruta lo dirigido a la maestra; acta → lo dirigido a la PERSONA.
+  await client.identify({ data, signature, cert, acta })
 }
 
 /**
@@ -56,7 +57,7 @@ async function identifyAsDevice (client, device) {
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, approveTimeoutMs = 180000 } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000 } = {}) {
   if (!qr?.iss || !qr?.proxy || !qr?.token || !qr?.sn) throw new Error('qr inválido (v2): faltan iss/proxy/token/sn')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy, enableWebRTC: false, autoReconnect: false })
@@ -77,7 +78,9 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     const commit = await commitCode({ code, dpub: dev.publickey, sn: qr.sn })
     // `continuity`: si esta identidad ya existía, va firmada por ella misma para que lo
     // que hizo antes se pueda seguir atribuyendo a la misma persona (ver acta.js).
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), ...(continuity ? { continuity } : {}) }
+    // `encPub`: la llave de CIFRADO de este dispositivo. Sin ella la bóveda no puede
+    // envolverle la clave de contenido del perfil, y entraría sin poder leer nada.
+    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {}) }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
 
     const enrolled = new Promise((resolve, reject) => {
@@ -125,13 +128,13 @@ export async function requestSign ({ master, proxy, device, cert, payload, onRev
  * dispositivo estaba apagado la bóveda emitió un `vault.revoked` firmado, llega aquí y se
  * ejecuta el autoborrado (`onRevoked`) tras verificar la firma contra la maestra pineada.
  */
-async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
+async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
-    try { await identifyAsDevice(client, device) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
+    try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
     const signed = { ...data, publickey: device.publickey, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data: signed })
     const pending = new Promise((resolve, reject) => {
@@ -155,8 +158,10 @@ async function vaultRpc ({ master, proxy, device, cert, sendType, okType, data, 
 }
 
 /** Lee/escribe el store de hilos+aperturas EN el vault (con el cert del dispositivo). */
-export async function requestStore ({ master, proxy, device, cert, method, args, onRevoked } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.store', okType: 'vault.store.result', data: { op: 'store', method, args: args || {} } })
+export async function requestStore ({ master, proxy, device, cert, method, args, enc, onRevoked } = {}) {
+  // `enc`: argumentos cifrados con la clave de contenido del perfil (el proxy no los ve).
+  const data = enc ? { op: 'store', method, enc } : { op: 'store', method, args: args || {} }
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.store', okType: 'vault.store.result', data })
   return res.result
 }
 

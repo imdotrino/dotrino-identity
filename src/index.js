@@ -301,6 +301,10 @@ export class Identity {
   async adoptActa (acta) { return this._call('adoptActa', { acta }) }
   /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
   async contentKey () { return this._call('contentKey') }
+  /** Cifra con la clave de contenido del perfil (la privada de cifrado no sale del vault). */
+  async sealContent (plaintext) { return this._call('sealContent', { plaintext }) }
+  /** Abre un sobre de contenido con el llavero del perfil. */
+  async openContent (envelope) { return this._call('openContent', { envelope }) }
   /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
   async rotateContentKey () { return this._call('rotateContentKey') }
 
