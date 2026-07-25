@@ -30,6 +30,7 @@
  * `docs/pairing-protocol.md`).
  */
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
+import { verifyContinuity } from '@dotrino/identity/acta'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -157,6 +158,12 @@ export function createEnrollDesk ({
     pend.dpub = d.dpub
     pend.deviceId = deviceId
     pend.commit = d.commit
+    // Certificado de continuidad (opcional): lo firma la identidad que se une, con su
+    // propia llave. Se comprueba aquí y se guarda con el miembro al aprobar.
+    if (d.continuity) {
+      const okC = await verifyContinuity(d.continuity)
+      pend.continuity = (okC && d.continuity.member === d.dpub) ? d.continuity : null
+    }
     pend.from = from // la bóveda NO conoce el código: lo aprende cuando lo tipeas
     if (d.label) pend.label = String(d.label).slice(0, 60)
 
@@ -206,7 +213,7 @@ export function createEnrollDesk ({
     try {
       if (typeof identity.admitMember === 'function') {
         const caps = scopeToCaps(pend.scope)
-        if (caps.length) await identity.admitMember({ pub: pend.dpub, label: pend.label || '', caps, cert })
+        if (caps.length) await identity.admitMember({ pub: pend.dpub, label: pend.label || '', caps, cert, continuity: pend.continuity || null })
       }
       acta = (await identity.profileActa?.())?.acta || null
     } catch (e) { log('[vault] no se pudo admitir en el acta:', e.message) }

@@ -1,4 +1,4 @@
-Copia vendorizada de @dotrino/vault@0.5.0 (lib/src/{index,enroll}.js, sin dependencias).
+Copia vendorizada de @dotrino/vault@0.6.0 (lib/src/{index,enroll}.js, sin dependencias).
 El iframe de identity se sirve estatico (vanilla, sin build); asi startDeviceVault
 resuelve en el navegador sin bundler. index.js importa ./enroll.js (relativo, se
 vendoriza tambien) y @dotrino/identity/capabilities (=../../capabilities.js) y

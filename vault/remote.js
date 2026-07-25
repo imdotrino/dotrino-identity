@@ -56,7 +56,7 @@ async function identifyAsDevice (client, device) {
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', approveTimeoutMs = 180000 } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, approveTimeoutMs = 180000 } = {}) {
   if (!qr?.iss || !qr?.proxy || !qr?.token || !qr?.sn) throw new Error('qr inválido (v2): faltan iss/proxy/token/sn')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy, enableWebRTC: false, autoReconnect: false })
@@ -75,7 +75,9 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     // haber leído el código de ESTA pantalla. Y al ECHARLO de vuelta, el dispositivo confía:
     // una bóveda falsa no conoce el código y no puede enrolarlo.
     const commit = await commitCode({ code, dpub: dev.publickey, sn: qr.sn })
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now() }
+    // `continuity`: si esta identidad ya existía, va firmada por ella misma para que lo
+    // que hizo antes se pueda seguir atribuyendo a la misma persona (ver acta.js).
+    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), ...(continuity ? { continuity } : {}) }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
 
     const enrolled = new Promise((resolve, reject) => {

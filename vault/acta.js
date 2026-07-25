@@ -168,7 +168,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
           label: String(m.label || '').slice(0, 60),
           caps: cleanCaps(m.caps),
           addedAt: now,
-          cert: m.cert || null
+          cert: m.cert || null,
+          // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
+          ...(m.continuity ? { continuity: m.continuity } : {})
         })
         break
       }
@@ -263,6 +265,30 @@ export function memberCan (acta, pub, cap, extraRenounces = []) {
   return effectiveCaps(acta, pub, extraRenounces).includes(cap)
 }
 
+// ----- continuidad: unir una identidad que ya existía -----
+
+/**
+ * CERTIFICADO DE CONTINUIDAD. Cuando una identidad que ya existía entra en otro perfil,
+ * firma —con su propia llave— que a partir de ahora es miembro de él. Sirve de puente:
+ * lo que hizo antes (su reputación, lo que firmó, quien la tenía de contacto) se puede
+ * seguir atribuyendo a la misma persona en vez de quedar huérfano.
+ *
+ * No otorga nada por sí solo: es una declaración del que se une, y solo tiene efecto
+ * dentro del acta donde el master la mete.
+ */
+export async function makeContinuity ({ member, from, privateKey, privateJwk, now = Date.now() }) {
+  const body = { op: 'continuity', member, from: from || member, ts: now }
+  const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: member, data: body })
+  return { ...body, sig: signature }
+}
+
+/** ¿La firmó de verdad la identidad que dice venir? (única comprobación posible). */
+export async function verifyContinuity (record) {
+  if (!record || record.op !== 'continuity' || !isPub(record.member) || typeof record.sig !== 'string') return false
+  const { sig, ...body } = record
+  return verifyDeviceSig({ publickey: record.member, data: body, signature: sig })
+}
+
 // ----- adopción y empates (§2.4.1) -----
 
 /**
@@ -311,5 +337,6 @@ export async function canAdopt ({ candidate, current }) {
 export default {
   ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, isHandover,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
+  makeContinuity, verifyContinuity,
   effectiveCaps, memberCan, canAdopt
 }
