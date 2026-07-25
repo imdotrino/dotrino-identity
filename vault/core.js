@@ -1027,9 +1027,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     async isMaster () { return amMaster() },
 
-    /** Admite un miembro (solo el master). El cert lo emite quien llama, antes o después. */
-    async admitMember ({ pub, encPub = null, label = '', caps = ['store', 'read'], cert = null } = {}) {
-      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, caps, cert } }])
+    /**
+     * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.
+     * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
+     */
+    async admitMember ({ pub, encPub = null, label = '', caps = ['store', 'read'], cert = null, continuity = null } = {}) {
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, caps, cert, continuity } }])
       return { ok: true, seq: acta.seq }
     },
 
