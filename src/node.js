@@ -150,6 +150,18 @@ export class Identity {
   signDelegation (sub, scope, opts = {}) { return this._h('signDelegation', { sub, scope, ...opts }) }
   revokeDelegation (nonce) { return this._h('revokeDelegation', { nonce }) }
   listDelegations () { return this._h('listDelegations') }
+  // Acta de perfil (qué llaves son del perfil y qué puede cada una; ver acta-de-perfil.md)
+  profileActa () { return this._h('profileActa') }
+  profileMembers () { return this._h('profileMembers') }
+  myMembership () { return this._h('myMembership') }
+  isMaster () { return this._h('isMaster') }
+  admitMember (member) { return this._h('admitMember', member) }
+  setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }
+  removeMember (pub) { return this._h('removeMember', { pub }) }
+  handoverMaster (to, member = null) { return this._h('handoverMaster', { to, member }) }
+  renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
+  absorbRenounce (record) { return this._h('absorbRenounce', { record }) }
+  adoptActa (acta) { return this._h('adoptActa', { acta }) }
   // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)
   enrollDevice (qr) { return this._h('vaultPair', { qr }) }
   vaultStatus () { return this._h('vaultStatus') }

@@ -256,6 +256,50 @@ export class Identity {
     return this._call('listDelegations')
   }
 
+  // ----- Acta de perfil: qué llaves son tuyas y qué puede hacer cada una -----
+  // Un perfil es un conjunto de llaves ligadas por certificados, con una política firmada
+  // por UN solo sellador (el «master»). Ninguna llave privada viaja nunca.
+  // Diseño: dotrino-vault/docs/acta-de-perfil.md
+
+  /** El acta vigente + si este dispositivo es el master + sus capacidades efectivas. */
+  async profileActa () { return this._call('profileActa') }
+
+  /** Miembros del perfil, ya con id legible y capacidades efectivas. */
+  async profileMembers () { return this._call('profileMembers') }
+
+  /** Dónde estoy yo: { inProfile, profileId, seq, isMaster, caps, id }. */
+  async myMembership () { return this._call('myMembership') }
+
+  /** ¿Es ESTE dispositivo el master (el único que puede cambiar el acta)? */
+  async isMaster () { return this._call('isMaster') }
+
+  /** Admite un miembro nuevo (solo el master). */
+  async admitMember (member) { return this._call('admitMember', member) }
+
+  /** Cambia las capacidades de un miembro (solo el master). */
+  async setCaps (pub, caps) { return this._call('setCaps', { pub, caps }) }
+
+  /** Expulsa a un miembro (solo el master; al master no se le puede expulsar). */
+  async removeMember (pub) { return this._call('removeMember', { pub }) }
+
+  /**
+   * Traspasa el master a otro miembro — dispositivo → bóveda, o bóveda → bóveda al mudarse
+   * de PC. Si `member` viene, se admite y se nombra en el MISMO seq (sin ventana intermedia).
+   */
+  async handoverMaster (to, member = null) { return this._call('handoverMaster', { to, member }) }
+
+  /**
+   * Este dispositivo se quita capacidades a sí mismo (p. ej. dejar de firmar). Es
+   * unilateral y funciona con la bóveda apagada, que es justo cuando hace falta.
+   */
+  async renounceCaps (caps) { return this._call('renounceCaps', { caps }) }
+
+  /** Absorbe en el acta una renuncia de otro miembro (solo el master). */
+  async absorbRenounce (record) { return this._call('absorbRenounce', { record }) }
+
+  /** Adopta un acta recibida de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
+  async adoptActa (acta) { return this._call('adoptActa', { acta }) }
+
   // ----- Emparejar ESTE navegador/dispositivo con el vault del usuario (Fase 1) -----
 
   /**

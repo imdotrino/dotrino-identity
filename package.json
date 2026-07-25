@@ -21,7 +21,10 @@
       "import": "./vault/avatar.js"
     },
     "./vault/core.js": "./vault/core.js",
-    "./vault/remote.js": "./vault/remote.js"
+    "./vault/remote.js": "./vault/remote.js",
+    "./acta": {
+      "import": "./vault/acta.js"
+    }
   },
   "files": [
     "src",

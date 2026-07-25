@@ -19,6 +19,7 @@
  */
 
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
+import * as Acta from './acta.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
@@ -29,6 +30,8 @@ export const DELEGATIONS_STORAGE = 'dotrino.identity.delegations'   // caps emit
 export const REVOCATIONS_STORAGE = 'dotrino.identity.revocations'   // nonces revocados
 export const VAULT_DEVICE_STORAGE = 'dotrino.identity.vault.device' // sub-clave D de ESTE dispositivo (custodia en el iframe)
 export const VAULT_CERT_STORAGE = 'dotrino.identity.vault.cert'     // { cert, master, proxy, deviceId, pairedAt }
+export const ACTA_STORAGE = 'dotrino.identity.acta'                 // acta de perfil vigente (quién es del perfil y qué puede)
+export const RENOUNCE_STORAGE = 'dotrino.identity.renounced'        // renuncias propias aún no absorbidas por el master
 // Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
 // namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
 export const PROFILES_STORAGE = 'dotrino.identity.profiles' // [{ id, name, pubkey }]
@@ -335,6 +338,62 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     } catch (_) { return null }
   }
 
+  // ----- ACTA DE PERFIL: qué llaves son de este perfil y qué puede hacer cada una -----
+  // Diseño en `dotrino-vault/docs/acta-de-perfil.md`. Aquí solo se guarda, se lee y se
+  // sella; las reglas (sellador único, seq/prev, no dejar el perfil sin firmante) viven en
+  // `acta.js`, que es puro y está probado aparte.
+  const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
+  const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
+  const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }
+  const saveRenounces = (l) => kv.setItem(RENOUNCE_STORAGE, JSON.stringify(l))
+
+  /** ¿Es ESTE dispositivo el master (el único que puede sellar)? */
+  const amMaster = () => loadActa()?.sealer === publickeyJwkStr
+
+  /** Sella con la llave del perfil (CryptoKey, puede ser no extractable). */
+  const seal = (acta) => Acta.sealActa({ acta, privateKey: keypair.privateKey })
+
+  /**
+   * Aplica cambios, sella y guarda. Solo funciona si este dispositivo es el master: es la
+   * regla 1 del modelo, y `applyChanges` la vuelve a comprobar por su cuenta.
+   */
+  async function sealChanges (changes) {
+    const acta = loadActa()
+    if (!acta) throw new Error('este perfil todavía no tiene acta')
+    const next = await Acta.applyChanges(acta, changes, { by: publickeyJwkStr })
+    const sealed = await seal(next)
+    saveActa(sealed)
+    emitVault({ phase: 'acta', seq: sealed.seq, sealer: sealed.sealer })
+    return sealed
+  }
+
+  /**
+   * Si el perfil todavía no tiene acta, la crea: un miembro (esta llave), que es el master,
+   * con todas las capacidades. `profileId` = la pubkey de este perfil → el perfil se llama
+   * como la identidad que el usuario ya tenía, así que no hay nada que migrar.
+   */
+  async function ensureActa (label = '') {
+    if (loadActa()) return loadActa()
+    const acta = await seal(Acta.genesisActa({
+      pub: publickeyJwkStr, encPub: encPublickeyJwkStr, label: label || me?.nickname || ''
+    }))
+    saveActa(acta)
+    return acta
+  }
+
+  /**
+   * Adopta un acta que llega de otro miembro, si gana según §2.4.1 (seq mayor que encadene,
+   * o el traspaso a igual seq). Nunca retrocede.
+   */
+  async function adoptActa (candidate) {
+    const current = loadActa()
+    const r = await Acta.canAdopt({ candidate, current })
+    if (!r.adopt) return { adopted: false, reason: r.reason, seq: current?.seq ?? null }
+    saveActa(candidate)
+    emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, adopted: r.reason })
+    return { adopted: true, reason: r.reason, seq: candidate.seq }
+  }
+
   // ----- renovación AUTOMÁTICA del cert (sin QR ni aprobación) -----
   // Con el cert aún vigente y quedando <15 días, cualquier uso del vault dispara en
   // segundo plano un `vault.renew`: el vault firma un cert fresco (30 días) para la
@@ -594,7 +653,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // nada que lea datos o firme).
   const LOCK_EXEMPT = new Set([
     'profileLockStatus', 'unlockProfile', 'listProfiles', 'currentProfile',
-    'switchProfile', 'createProfile'
+    'switchProfile', 'createProfile',
+    'profileActa', 'profileMembers', 'myMembership', 'isMaster'
   ])
 
   const handlers = {
@@ -845,6 +905,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: String(name || '').slice(0, 40) }
       saveMe(me)
       const list = loadProfiles(); list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr }); saveProfiles(list)
+      await ensureActa(me.nickname) // el perfil nuevo nace con su acta (él mismo es el master)
       return { id: pid, name: me.nickname, pubkey: publickeyJwkStr }
     },
     async switchProfile ({ id } = {}) {
@@ -865,7 +926,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!list.find((p) => p.id === id)) throw new Error('perfil no existe')
       list = list.filter((p) => p.id !== id); saveProfiles(list)
       // Borrado directo del namespace del perfil (incluye su store del vault si lo tuviera).
-      for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert']) {
+      for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert', 'acta', 'renounced']) {
         rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
       }
       // …y sus CryptoKeys no extractables del keyStore (IndexedDB).
@@ -877,6 +938,105 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (currentPid === id) { currentPid = list[0].id; rawKv.setItem(CURRENT_STORAGE, currentPid) }
       return { ok: true, current: currentPid }
     },
+
+    // ----- ACTA DE PERFIL -----
+    // Quién es de este perfil y qué puede hacer cada uno. Solo el master sella; los demás
+    // adoptan. Ver `dotrino-vault/docs/acta-de-perfil.md`.
+
+    async profileActa () {
+      const acta = loadActa()
+      if (!acta) return null
+      return { acta, isMaster: amMaster(), myCaps: Acta.effectiveCaps(acta, publickeyJwkStr, loadRenounces()) }
+    },
+
+    async profileMembers () {
+      const acta = loadActa()
+      if (!acta) return { members: [], profileId: null, seq: 0, sealer: null }
+      const pend = loadRenounces()
+      const members = await Promise.all(acta.members.map(async (m) => ({
+        pub: m.pub,
+        id: await Acta.memberId(m.pub),
+        label: m.label || '',
+        caps: Acta.effectiveCaps(acta, m.pub, pend),
+        addedAt: m.addedAt || null,
+        isMe: m.pub === publickeyJwkStr,
+        isMaster: m.pub === acta.sealer
+      })))
+      return { members, profileId: acta.profileId, seq: acta.seq, sealer: acta.sealer, updatedAt: acta.updatedAt }
+    },
+
+    async myMembership () {
+      const acta = loadActa()
+      if (!acta) return { inProfile: false }
+      const m = acta.members.find((x) => x.pub === publickeyJwkStr)
+      return {
+        inProfile: !!m,
+        profileId: acta.profileId,
+        seq: acta.seq,
+        isMaster: acta.sealer === publickeyJwkStr,
+        caps: Acta.effectiveCaps(acta, publickeyJwkStr, loadRenounces()),
+        id: m ? await Acta.memberId(m.pub) : null
+      }
+    },
+
+    async isMaster () { return amMaster() },
+
+    /** Admite un miembro (solo el master). El cert lo emite quien llama, antes o después. */
+    async admitMember ({ pub, encPub = null, label = '', caps = ['store', 'read'], cert = null } = {}) {
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, caps, cert } }])
+      return { ok: true, seq: acta.seq }
+    },
+
+    async setCaps ({ pub, caps } = {}) {
+      const acta = await sealChanges([{ op: 'caps', pub, caps }])
+      return { ok: true, seq: acta.seq }
+    },
+
+    async removeMember ({ pub } = {}) {
+      const acta = await sealChanges([{ op: 'remove', pub }])
+      return { ok: true, seq: acta.seq }
+    },
+
+    /**
+     * Traspasa el master a otro miembro. Admitir y nombrar van en el MISMO seq: el nuevo
+     * sellador tiene que ser miembro para poder serlo, y así no hay ventana intermedia.
+     * Cubre igual dispositivo → bóveda y bóveda → bóveda (mudarse de PC).
+     */
+    async handoverMaster ({ to, member = null } = {}) {
+      const changes = []
+      if (member) changes.push({ op: 'admit', member: { ...member, pub: to } })
+      changes.push({ op: 'handover', to })
+      const acta = await sealChanges(changes)
+      return { ok: true, seq: acta.seq, sealer: acta.sealer }
+    },
+
+    /**
+     * RENUNCIA (§2.2): este dispositivo se quita capacidades a sí mismo. No pasa por el
+     * master —por eso funciona con la bóveda apagada, que es justo cuando hace falta (te
+     * robaron el aparato)— y solo puede QUITAR, así que cualquiera puede honrarla.
+     */
+    async renounceCaps ({ caps } = {}) {
+      const acta = loadActa()
+      if (!acta) throw new Error('este perfil todavía no tiene acta')
+      const record = await Acta.makeRenounce({ member: publickeyJwkStr, caps, privateKey: keypair.privateKey })
+      const pend = loadRenounces().filter((r) => r.member !== publickeyJwkStr)
+      pend.push(record)
+      saveRenounces(pend)
+      emitVault({ phase: 'renounced', caps: record.caps })
+      // Si además soy el master, la absorbo ya en el acta.
+      if (amMaster()) { try { await sealChanges([{ op: 'renounce', record }]) } catch (_) {} }
+      return { ok: true, record, caps: Acta.effectiveCaps(loadActa(), publickeyJwkStr, loadRenounces()) }
+    },
+
+    /** Absorbe en el acta una renuncia ajena ya verificada (solo el master). */
+    async absorbRenounce ({ record } = {}) {
+      if (!(await Acta.verifyRenounce(record))) throw new Error('renuncia inválida: la firma no es del propio miembro')
+      const acta = await sealChanges([{ op: 'renounce', record }])
+      return { ok: true, seq: acta.seq }
+    },
+
+    /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
+    async adoptActa ({ acta } = {}) { return adoptActa(acta) },
 
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
@@ -1128,6 +1288,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
     kv.setItem(ME_STORAGE, JSON.stringify(me))
   }
+  // Acta de perfil: si no existe, nace ahora (un miembro, este dispositivo, que es el master).
+  try { await ensureActa() } catch (e) { console.warn('[identity] no se pudo crear el acta de perfil:', e.message) }
+
   // Perfil compartido: jalar del vault en background (gana el más nuevo).
   pullProfileFromVault()
 
