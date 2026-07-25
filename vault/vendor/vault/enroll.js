@@ -44,6 +44,11 @@ export const MSG_ENROLLED = 'vault.enrolled'
 export const MSG_REVOKED = 'vault.revoked'
 export const MSG_ERROR = 'vault.error'
 
+/** Los scopes del cert se corresponden 1:1 con las capacidades del acta (§D7). */
+const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read' }
+export const scopeToCaps = (scope) =>
+  (Array.isArray(scope) ? scope : [scope]).map((s) => SCOPE_TO_CAP[s]).filter(Boolean)
+
 /** Token aleatorio de 128 bits en hex. */
 export function randToken () {
   const b = crypto.getRandomValues(new Uint8Array(16))
@@ -193,10 +198,24 @@ export function createEnrollDesk ({
     }
 
     const { cert } = await identity.signDelegation(pend.dpub, pend.scope, { ttlMs: pend.ttlMs, label: pend.label })
+
+    // Aprobar un emparejamiento ES admitir al dispositivo en el perfil: el cert es la
+    // credencial y el acta es la política, y no tiene sentido emitir una sin la otra.
+    // Las capacidades salen del scope que se pidió al emparejar (cert ∩ acta, §2.3).
+    let acta = null
+    try {
+      if (typeof identity.admitMember === 'function') {
+        const caps = scopeToCaps(pend.scope)
+        if (caps.length) await identity.admitMember({ pub: pend.dpub, label: pend.label || '', caps, cert })
+      }
+      acta = (await identity.profileActa?.())?.acta || null
+    } catch (e) { log('[vault] no se pudo admitir en el acta:', e.message) }
+
     audit('enroll', { device: pend.deviceId, label: pend.label || '', scope: pend.scope })
     // Echamos el código tipeado junto al cert: el DISPOSITIVO acepta solo si coincide
     // con el que generó → una bóveda falsa (que no lo conoce) no puede enrolarlo.
-    reply(pend.from, { type: MSG_ENROLLED, code, cert, iss })
+    // El acta viaja con el cert: el dispositivo ya sabe de quién es el perfil al que entra.
+    reply(pend.from, { type: MSG_ENROLLED, code, cert, iss, acta })
     pend.state = 'DONE'
     pending.delete(pend.token)
     fire(onPendingChange)

@@ -110,12 +110,16 @@ import { pubkeyId } from './capabilities.js'
 
   // Adaptador: startDeviceVault exige identity.{me.publickey, signData, signDelegation,
   // listDelegations, revokeDelegation}; el core los expone vía handlers + getter me.
+  // `admitMember`/`profileActa` son opcionales para el mostrador de enrolamiento, pero sin
+  // ellos aprobar emitiría el cert SIN meter al dispositivo en el acta: se pasan también.
   const selfIdentity = {
     get me () { return core.me },
     signData: (data) => handlers.signData({ data }),
     signDelegation: (sub, scope, opts) => handlers.signDelegation({ sub, scope, ...(opts || {}) }),
     listDelegations: () => handlers.listDelegations({}),
-    revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce })
+    revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce }),
+    admitMember: (m) => handlers.admitMember(m),
+    profileActa: () => handlers.profileActa({})
   }
 
   async function startSelfDaemon () {

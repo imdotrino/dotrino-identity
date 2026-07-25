@@ -382,6 +382,30 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   }
 
   /**
+   * UNIRSE a otro perfil (el de la bóveda a la que te acabas de conectar). No es adoptar
+   * una versión nueva de TU acta: es cambiar de perfil, así que solo procede si aquí no
+   * hay nada que perder — es decir, si este dispositivo es el único miembro del suyo.
+   *
+   * Si ya tienes otros dispositivos, los dos lados tienen master y hay que ELEGIR cuál
+   * manda (§2.4.3): eso es una decisión del dueño, no un efecto colateral de escanear un
+   * código, así que se devuelve el conflicto para que lo resuelva la consola.
+   */
+  async function joinProfile (candidate) {
+    const v = await Acta.verifyActa({ acta: candidate })
+    if (!v.ok) return { joined: false, reason: 'acta-invalida:' + v.reason }
+    if (!candidate.members.some((m) => m.pub === publickeyJwkStr)) {
+      return { joined: false, reason: 'no-soy-miembro' }
+    }
+    const current = loadActa()
+    if (current && current.profileId !== candidate.profileId && current.members.length > 1) {
+      return { joined: false, reason: 'ya-tienes-perfil-propio', members: current.members.length }
+    }
+    saveActa(candidate)
+    emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, joined: true })
+    return { joined: true, profileId: candidate.profileId, seq: candidate.seq }
+  }
+
+  /**
    * Adopta un acta que llega de otro miembro, si gana según §2.4.1 (seq mayor que encadene,
    * o el traspaso a igual seq). Nunca retrocede.
    */
@@ -841,11 +865,33 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return rec
     },
 
+    /**
+     * Firma. Con `sign` en el acta, firma aquí mismo (como siempre). Si este dispositivo
+     * RENUNCIÓ a firmar —o el master se lo quitó— la petición se re-enruta a quien sí
+     * firma (tu bóveda) y vuelve su firma: la identidad de cara a los demás sigue siendo
+     * UNA, y este aparato deja de poder firmar por ti aunque lo roben.
+     *
+     * El `identify` del transporte es la excepción y SIEMPRE se firma en local: es lo que
+     * identifica esta conexión ante el proxy, no una firma tuya de cara a nadie, y sin él
+     * el dispositivo no podría ni hablar con la bóveda para pedirle que firme.
+     */
     async signData ({ data }) {
       if (data == null) throw new Error('data required')
-      const bytes = new TextEncoder().encode(canonicalStringify(data))
-      const signature = await signBytes(keypair.privateKey, bytes)
-      return { signature, publickey: publickeyJwkStr }
+      const local = async () => {
+        const bytes = new TextEncoder().encode(canonicalStringify(data))
+        return { signature: await signBytes(keypair.privateKey, bytes), publickey: publickeyJwkStr }
+      }
+      const acta = loadActa()
+      const puedeFirmar = !acta || Acta.memberCan(acta, publickeyJwkStr, 'sign', loadRenounces())
+      if (puedeFirmar || data?.op === 'identify') return local()
+
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) {
+        throw new Error('perfil-sin-firmante: este dispositivo ya no firma por ti y no está conectado a ninguna bóveda que pueda hacerlo')
+      }
+      maybeRenewVaultCert()
+      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink }) }
+      catch (e) { return handleVaultError(e) }
     },
 
     // ----- delegación de capacidad: la maestra firma un cert para una sub-clave -----
@@ -1038,6 +1084,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
     async adoptActa ({ acta } = {}) { return adoptActa(acta) },
 
+    /** Une este dispositivo al perfil de otra bóveda (solo si aquí no hay nada que perder). */
+    async joinProfile ({ acta } = {}) { return joinProfile(acta) },
+
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
     // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
@@ -1050,9 +1099,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const res = await remoteEnroll({ qr, device, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
-      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master })
+      // Conectarse a una bóveda es ENTRAR A SU PERFIL: el acta viene con el cert.
+      const join = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
+      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join })
       pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
-      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope }
+      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join }
     },
 
     async vaultStatus () {
@@ -1095,8 +1146,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
       maybeRenewVaultCert()
-      try { return await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink }) }
-      catch (e) { return handleVaultError(e) }
+      try {
+        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
+        // El acta viaja con la lista: así los cambios de política llegan sin canal aparte.
+        if (res.acta) { try { await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta)) } catch (_) {} }
+        return res
+      } catch (e) { return handleVaultError(e) }
     },
 
     // El cert de delegación de este dispositivo (para presentarlo al proxy en `identify`

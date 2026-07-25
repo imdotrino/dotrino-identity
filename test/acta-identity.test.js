@@ -106,3 +106,25 @@ test('cada perfil tiene su propia acta', async () => {
   assert.equal(p2.seq, 1)
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('firma re-enrutada: sin `sign` y sin bóveda, error claro en vez de firmar igual', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const otro = await makeDeviceKey({ label: 'Bóveda' })
+  await id.admitMember({ pub: otro.publickey, label: 'Bóveda', caps: ['sign', 'store', 'read'] })
+
+  // Con `sign`, firma en local.
+  const firma = await id.signData({ hola: 'mundo' })
+  assert.equal(firma.publickey, id.me.publickey)
+
+  await id.renounceCaps(['sign'])
+
+  // Sin `sign` y sin bóveda a la que pedirle: falla con un mensaje que se entiende.
+  await assert.rejects(() => id.signData({ hola: 'mundo' }), /perfil-sin-firmante/)
+
+  // …pero el identify del transporte SIEMPRE se firma en local, o el dispositivo
+  // no podría ni hablar con la bóveda para pedirle que firme.
+  const ident = await id.signData({ op: 'identify', publickey: id.me.publickey, token: 'x', ts: Date.now() })
+  assert.equal(ident.publickey, id.me.publickey)
+  fs.rmSync(dir, { recursive: true, force: true })
+})

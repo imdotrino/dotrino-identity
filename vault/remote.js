@@ -98,7 +98,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', appro
     if (!v.ok) throw new Error('cert inválido: ' + v.reason)
     if (res.cert.iss !== qr.iss) throw new Error('cert firmado por una maestra distinta a la que viste')
     if (res.cert.sub !== dev.publickey) throw new Error('cert emitido para otro dispositivo')
-    return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId }
+    return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
   } finally { try { client.close() } catch (_) {} }
 }
 
@@ -161,7 +161,7 @@ export async function requestStore ({ master, proxy, device, cert, method, args,
 /** Lista (solo lectura) los dispositivos enrolados en tu vault. */
 export async function requestDevices ({ master, proxy, device, cert, onRevoked } = {}) {
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data: { op: 'devices' } })
-  return { devices: res.devices || [], revoked: res.revoked || [] }
+  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null }
 }
 
 /**
