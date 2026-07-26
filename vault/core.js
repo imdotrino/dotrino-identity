@@ -1071,6 +1071,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         pub: m.pub,
         id: await Acta.memberId(m.pub),
         label: m.label || '',
+        cn: m.cn || null,
+        isService: !!m.cn,
         caps: Acta.effectiveCaps(acta, m.pub, pend),
         addedAt: m.addedAt || null,
         isMe: m.pub === publickeyJwkStr,
@@ -1099,8 +1101,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.
      * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
      */
-    async admitMember ({ pub, encPub = null, label = '', caps = ['store', 'read'], cert = null, continuity = null } = {}) {
-      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, caps, cert, continuity } }])
+    async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null } = {}) {
+      // `cn`: si viene, este miembro es un SERVICIO y su único permiso es abrir el cajón de
+      // secretos de ESE nombre — no ve nada más del usuario. Sin `cn` es un dispositivo.
+      const finales = caps || (cn ? ['secrets'] : ['store', 'read'])
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity } }])
       // Que entre al perfil incluye poder LEER lo que ya hay: se le envuelve la clave
       // vigente (no hace falta rotar; rotar es para cuando alguien SALE).
       let wrapped = false

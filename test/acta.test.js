@@ -6,7 +6,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, isHandover,
-  makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS
+  makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
+  memberCanReadSecrets, memberScopes, isService
 } from '../vault/acta.js'
 
 /** Una llave de miembro (extractable, para poder firmar en el test con privateJwk). */
@@ -32,7 +33,8 @@ test('génesis: un miembro, es el master, y verifica', async () => {
   assert.equal(acta.sealer, a.pub)
   assert.equal(acta.sealedBy, a.pub)
   assert.equal(acta.seq, 1)
-  assert.deepEqual(acta.members[0].caps, [...CAPS])
+  assert.deepEqual(acta.members[0].caps, [...DEVICE_CAPS], 'el dueño nace como dispositivo: acceso a todo lo suyo')
+  assert.equal(acta.members[0].cn, null, 'y sin CN, porque no es un servicio')
   assert.equal(isHandover(acta), false)
 })
 
@@ -171,4 +173,47 @@ test('revocaciones: se apuntan y se podan solas al vencer', async () => {
     { op: 'revoke', nonce: 'vencida', until: Date.now() - 60000 }
   ], a)
   assert.deepEqual(dos.revoked.map((r) => r.nonce), ['viva'])
+})
+
+test('CN: un servicio solo abre SU cajón, y no puede tener permisos de dispositivo', async () => {
+  const a = await key(); const proxy = await key(); const geo = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
+
+  // Se admiten dos servicios, cada uno con su nombre.
+  const dos = await step(g, [
+    { op: 'admit', member: { pub: proxy.pub, cn: 'proxy', label: 'proxy', caps: ['secrets'] } },
+    { op: 'admit', member: { pub: geo.pub, cn: 'geo', label: 'geo', caps: ['secrets'] } }
+  ], a)
+
+  assert.equal(isService(dos, proxy.pub), true)
+  assert.equal(isService(dos, a.pub), false, 'el dueño es un dispositivo, no un servicio')
+
+  // La frontera: el proxy solo ve lo del proxy.
+  assert.equal(memberCanReadSecrets(dos, proxy.pub, 'proxy'), true)
+  assert.equal(memberCanReadSecrets(dos, proxy.pub, 'geo'), false, 'no ve el cajón de otro')
+  assert.equal(memberCanReadSecrets(dos, a.pub, 'proxy'), false, 'un dispositivo no tiene cajón')
+  assert.deepEqual(memberScopes(dos, proxy.pub), ['vault:secrets:proxy'])
+
+  // Y no se le pueden dar permisos de dispositivo, ni al admitirlo ni después.
+  const tres = await step(dos, [{ op: 'caps', pub: proxy.pub, caps: ['sign', 'store', 'read', 'secrets'] }], a)
+  assert.deepEqual(effectiveCaps(tres, proxy.pub), ['secrets'], 'un servicio no se asciende cambiándole permisos')
+
+  const cuatro = await step(tres, [{ op: 'admit', member: { pub: (await key()).pub, cn: 'bot', caps: ['sign', 'secrets'] } }], a)
+  assert.deepEqual(cuatro.members.at(-1).caps, ['secrets'])
+})
+
+test('CN inválido o mezclado: el acta no cuadra', async () => {
+  const a = await key(); const x = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+
+  await assert.rejects(
+    () => applyChanges(g, [{ op: 'admit', member: { pub: x.pub, cn: 'Proxy Mayúsculas', caps: ['secrets'] } }], { by: a.pub }),
+    /CN inválido/
+  )
+  // Un acta escrita a mano que mezcle las dos cosas no pasa la comprobación de forma.
+  const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['sign', 'secrets'], addedAt: Date.now() }] }
+  assert.equal((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
+  // Y `secrets` sin CN tampoco.
+  const sinCn = { ...g, members: [...g.members, { pub: x.pub, cn: null, caps: ['secrets'], addedAt: Date.now() }] }
+  assert.equal((await verifyActa({ acta: sinCn })).reason, 'secretos-sin-cn')
 })

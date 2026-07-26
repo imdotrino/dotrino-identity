@@ -50,6 +50,19 @@ const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read
 export const scopeToCaps = (scope) =>
   (Array.isArray(scope) ? scope : [scope]).map((s) => SCOPE_TO_CAP[s]).filter(Boolean)
 
+/**
+ * El CN de un servicio sale de su scope: `vault:secrets:proxy` ⇒ CN `proxy`. Con CN, el
+ * miembro entra al acta como SERVICIO —solo abre su propio cajón— en vez de como un
+ * dispositivo del usuario. Es la frontera, y vive en el acta para que se pueda comprobar.
+ */
+export function scopeToCn (scope) {
+  for (const s of (Array.isArray(scope) ? scope : [scope])) {
+    const m = /^vault:secrets:([a-z0-9-]{1,32})$/.exec(String(s || ''))
+    if (m) return m[1]
+  }
+  return null
+}
+
 /** Token aleatorio de 128 bits en hex. */
 export function randToken () {
   const b = crypto.getRandomValues(new Uint8Array(16))
@@ -215,8 +228,9 @@ export function createEnrollDesk ({
     let acta = null
     try {
       if (typeof identity.admitMember === 'function') {
-        const caps = scopeToCaps(pend.scope)
-        if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', caps, cert, continuity: pend.continuity || null })
+        const cn = scopeToCn(pend.scope)
+        const caps = cn ? ['secrets'] : scopeToCaps(pend.scope)
+        if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
       }
       acta = (await identity.profileActa?.())?.acta || null
     } catch (e) { log('[vault] no se pudo admitir en el acta:', e.message) }

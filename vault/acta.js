@@ -32,10 +32,37 @@ import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
 
 export const ACTA_V = 1
 
-/** Lista CERRADA de capacidades. Sellar y admitir no están: eso es ser el master. */
-export const CAPS = Object.freeze(['sign', 'store', 'read'])
+/**
+ * Lista CERRADA de capacidades. Sellar y admitir no están: eso es ser el master.
+ *
+ * `secrets` es distinta de las otras tres: solo la pueden tener los miembros con **CN**
+ * (los servicios), y lo que abre es únicamente el cajón de SU nombre. Ver `cn` abajo.
+ */
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets'])
 
-/** Cada capacidad es uno de los scopes que ya existen en los certs (sin scopes nuevos). */
+/** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read'])
+
+/** Capacidades de un SERVICIO (con CN): solo su propio cajón de secretos. */
+export const SERVICE_CAPS = Object.freeze(['secrets'])
+
+/** Un CN válido: minúsculas, números y guiones (igual que el namespace de secretos). */
+export const isValidCn = (cn) => typeof cn === 'string' && /^[a-z0-9-]{1,32}$/.test(cn)
+
+/**
+ * Scope del cert que corresponde a cada capacidad. `secrets` necesita el CN para
+ * completarse: el miembro `proxy` obtiene `vault:secrets:proxy` y nada más — no existe un
+ * scope de secretos «de todos».
+ */
+export function capScope (cap, cn = null) {
+  if (cap === 'sign') return 'vault:sign'
+  if (cap === 'store') return 'vault:store'
+  if (cap === 'read') return 'vault:read'
+  if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
+  return null
+}
+
+/** Compat: el mapa directo, para las tres capacidades de dispositivo. */
 export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read' })
 
 const enc = (s) => new TextEncoder().encode(s)
@@ -77,7 +104,7 @@ export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() 
     sealedBy: pub,
     seq: 1,
     prev: null,
-    members: [{ pub, encPub, label: String(label || '').slice(0, 60), caps: [...CAPS], addedAt: now, cert: null }],
+    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...DEVICE_CAPS], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
     // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA
@@ -98,6 +125,15 @@ export function checkShape (acta) {
   for (const m of acta.members) {
     if (!isPub(m?.pub) || !Array.isArray(m?.caps)) return 'member'
     if (m.caps.some((c) => !CAPS.includes(c))) return 'cap-desconocida'
+    // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
+    // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
+    // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
+    if (m.cn != null) {
+      if (!isValidCn(m.cn)) return 'cn-invalido'
+      if (m.caps.some((c) => !SERVICE_CAPS.includes(c))) return 'servicio-con-capacidades-de-dispositivo'
+    } else if (m.caps.includes('secrets')) {
+      return 'secretos-sin-cn'
+    }
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
   if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
@@ -166,11 +202,15 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
         const m = ch.member
         if (!isPub(m?.pub)) throw new Error('admit: falta la pubkey del miembro')
         if (find(m.pub)) throw new Error('admit: ese miembro ya está en el acta')
+        const cn = m.cn != null ? String(m.cn) : null
+        if (cn !== null && !isValidCn(cn)) throw new Error('admit: CN inválido (minúsculas, números y guiones)')
         next.members.push({
           pub: m.pub,
           encPub: m.encPub || null,
           label: String(m.label || '').slice(0, 60),
-          caps: cleanCaps(m.caps),
+          cn,
+          // Un servicio (con CN) solo puede tener `secrets`; un dispositivo, las otras tres.
+          caps: cleanCaps(m.caps).filter((c) => (cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c)),
           addedAt: now,
           cert: m.cert || null,
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
@@ -181,7 +221,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
       case 'caps': {
         const m = find(ch.pub)
         if (!m) throw new Error('caps: ese miembro no está en el acta')
-        m.caps = cleanCaps(ch.caps)
+        // No se puede ascender un servicio a dispositivo cambiándole las capacidades: para
+        // eso hay que sacarlo y volver a admitirlo, que es un gesto visible.
+        m.caps = cleanCaps(ch.caps).filter((c) => (m.cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c))
         break
       }
       case 'remove': {
@@ -284,6 +326,26 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
   return m.caps.filter((c) => !quitadas.has(c))
 }
 
+/**
+ * ¿Puede este miembro leer el cajón de secretos `ns`? Solo si su CN es exactamente ése.
+ * Es la frontera que pediste: la llave del proxy no ve nada más que lo del proxy.
+ */
+export function memberCanReadSecrets (acta, pub, ns) {
+  const m = (acta?.members || []).find((x) => x.pub === pub)
+  if (!m || !m.cn) return false
+  return m.cn === ns && effectiveCaps(acta, pub).includes('secrets')
+}
+
+/** Los scopes de cert que le corresponden a un miembro según el acta. */
+export function memberScopes (acta, pub, extraRenounces = []) {
+  const m = (acta?.members || []).find((x) => x.pub === pub)
+  if (!m) return []
+  return effectiveCaps(acta, pub, extraRenounces).map((c) => capScope(c, m.cn)).filter(Boolean)
+}
+
+/** ¿Es un servicio (tiene CN) o un dispositivo del usuario? */
+export const isService = (acta, pub) => !!(acta?.members || []).find((x) => x.pub === pub)?.cn
+
 /** ¿Puede este miembro hacer `cap` según el acta? (con el cert se cruza aparte: cert ∩ acta). */
 export function memberCan (acta, pub, cap, extraRenounces = []) {
   return effectiveCaps(acta, pub, extraRenounces).includes(cap)
@@ -362,5 +424,5 @@ export default {
   ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, isHandover,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
-  effectiveCaps, memberCan, canAdopt
+  effectiveCaps, memberCan, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
 }
