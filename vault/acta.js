@@ -70,9 +70,12 @@ const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart
 const isPub = (v) => typeof v === 'string' && v.length > 0
 const cleanCaps = (caps) => [...new Set((Array.isArray(caps) ? caps : []).filter((c) => CAPS.includes(c)))].sort()
 
-/** El acta SIN la firma: es lo que se sella y sobre lo que se calcula el hash. */
+/**
+ * El acta SIN la firma ni la tarjeta: es lo que se sella y sobre lo que se calcula el hash.
+ * La `card` va aparte porque lleva su propia firma y se comparte sola (ver `makeProfileCard`).
+ */
 export function actaBody (acta) {
-  const { sig, ...body } = acta || {}
+  const { sig, card, ...body } = acta || {}
   return body
 }
 
@@ -146,7 +149,11 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
   const shape = checkShape(acta)
   if (shape) throw new Error('acta inválida: ' + shape)
   const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: acta.sealedBy, data: actaBody(acta) })
-  return { ...acta, sig: signature }
+  const sealed = { ...acta, sig: signature }
+  // La TARJETA se firma en el mismo gesto y viaja con el acta: así cualquier miembro puede
+  // entregársela a un contacto sin ser el master y sin contarle nada de más.
+  sealed.card = await makeProfileCard({ acta: sealed, privateKey, privateJwk })
+  return sealed
 }
 
 /**
@@ -351,6 +358,73 @@ export function memberCan (acta, pub, cap, extraRenounces = []) {
   return effectiveCaps(acta, pub, extraRenounces).includes(cap)
 }
 
+// ----- TARJETA DE PERFIL: lo mínimo que se comparte con otra persona -----
+
+/**
+ * Para escribirle a alguien cifrado hay que conocer las llaves de CIFRADO de todos sus
+ * dispositivos — si no, el mensaje solo lo abre el aparato desde el que hablaste. Pero
+ * pasarle el ACTA a un contacto le contaría de más: cuántos dispositivos tienes, cómo se
+ * llaman y qué puede cada uno. Nada de eso es asunto suyo.
+ *
+ * Así que se comparte una TARJETA: el mínimo imprescindible —el perfil, su versión y las
+ * llaves— firmada por el master, y por lo tanto verificable sin tener el acta. Sin
+ * etiquetas, sin permisos, sin certificados.
+ *
+ * La firma el MASTER al sellar, y viaja con el acta, para que cualquier miembro pueda
+ * entregarla aunque no sea él quien manda.
+ */
+export function cardBody (acta) {
+  return {
+    v: 1,
+    profileId: acta.profileId,
+    seq: acta.seq,
+    sealedBy: acta.sealedBy,
+    // Solo las llaves. Los servicios (con CN) NO van: no son la persona, y no tienen por
+    // qué recibir los mensajes de nadie.
+    keys: acta.members
+      .filter((m) => !m.cn && m.encPub)
+      .map((m) => ({ pub: m.pub, encPub: m.encPub }))
+      .sort((a, b) => (a.pub < b.pub ? -1 : 1)),
+    iat: acta.updatedAt
+  }
+}
+
+/** Firma la tarjeta de este acta (lo hace el master al sellar). */
+export async function makeProfileCard ({ acta, privateKey, privateJwk }) {
+  const body = cardBody(acta)
+  const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: acta.sealedBy, data: body })
+  return { ...body, sig: signature }
+}
+
+/** Verifica que la tarjeta la firmó quien dice (`sealedBy`). Que ÉSE sea el master de esa
+ * persona se decide al adoptarla, comparándola con la que ya tenías (`canAdoptCard`). */
+export async function verifyProfileCard (card) {
+  if (!card || card.v !== 1 || !isPub(card.profileId) || !isPub(card.sealedBy)) return false
+  if (!Number.isInteger(card.seq) || !Array.isArray(card.keys) || typeof card.sig !== 'string') return false
+  const { sig, ...body } = card
+  return verifyDeviceSig({ publickey: card.sealedBy, data: body, signature: sig })
+}
+
+/**
+ * ¿Me quedo con esta tarjeta en vez de la que tenía de esa persona?
+ *   · la primera vez, sí (confías en el contacto que agregaste: es el mismo criterio
+ *     que ya usas al añadirlo);
+ *   · después, solo si el `seq` es mayor o igual Y la firmó el mismo master que la
+ *     anterior — así nadie te cuela dispositivos ajenos en el perfil de tu contacto,
+ *     y nunca se retrocede a una versión vieja.
+ * Si el master cambió legítimamente (traspaso), la tarjeta nueva la firma el entrante y
+ * hay que re-confirmarla: se devuelve `master-cambiado` para que la app lo diga en vez de
+ * aceptarlo en silencio.
+ */
+export async function canAdoptCard ({ card, current }) {
+  if (!(await verifyProfileCard(card))) return { adopt: false, reason: 'firma-invalida' }
+  if (current && current.profileId !== card.profileId) return { adopt: false, reason: 'otro-perfil' }
+  if (!current) return { adopt: true, reason: 'primera-vez' }
+  if (card.seq < current.seq) return { adopt: false, reason: 'seq-menor' }
+  if (card.sealedBy !== current.sealedBy) return { adopt: false, reason: 'master-cambiado' }
+  return { adopt: true, reason: card.seq > current.seq ? 'seq-mayor' : 'igual' }
+}
+
 // ----- continuidad: unir una identidad que ya existía -----
 
 /**
@@ -424,5 +498,6 @@ export default {
   ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, isHandover,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
+  cardBody, makeProfileCard, verifyProfileCard, canAdoptCard,
   effectiveCaps, memberCan, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
 }

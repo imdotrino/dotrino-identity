@@ -158,3 +158,67 @@ test('la clave de contenido: nace con el perfil, se comparte al admitir y rota a
   assert.equal(ahora.gen, 2, 'los que quedan usan la nueva')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('tarjeta de perfil: un contacto puede cifrar a TODOS mis dispositivos', async () => {
+  // Bob tiene dos dispositivos en su perfil; Alice es otra persona.
+  const dirBob = tmp(); const dirBob2 = tmp(); const dirAlice = tmp()
+  const bob = await Identity.connect({ dir: dirBob })
+  const bob2 = await Identity.connect({ dir: dirBob2 })
+  const alice = await Identity.connect({ dir: dirAlice })
+
+  await bob.admitMember({
+    pub: bob2.me.publickey,
+    encPub: await bob2.getEncryptionPubkey(),
+    label: 'Celular de Bob',
+    caps: ['store', 'read']
+  })
+
+  // La tarjeta de Bob: solo perfil, versión y llaves.
+  const card = await bob.profileCard()
+  assert.ok(card, 'el acta trae su tarjeta firmada')
+  assert.equal(card.keys.length, 2, 'las llaves de sus dos dispositivos')
+  assert.equal(JSON.stringify(card).includes('Celular de Bob'), false, 'sin etiquetas: no es asunto de Alice')
+  assert.equal(JSON.stringify(card).includes('caps'), false, 'ni permisos')
+
+  // Alice la guarda y cifra "para Bob".
+  const ok = await alice.adoptPeerCard(card)
+  assert.equal(ok.adopted, true)
+  assert.equal(ok.devices, 2)
+
+  const sobre = await alice.encrypt([{ publickey: bob.me.publickey }], 'hola Bob')
+  assert.equal(Object.keys(sobre.wrap).length, 2, 'una envoltura por dispositivo de Bob')
+
+  // Los DOS dispositivos de Bob lo abren, incluido el que no habló con Alice nunca.
+  const aliceEnc = await alice.getEncryptionPubkey()
+  for (const [quien, dev] of [['bob', bob], ['bob2', bob2]]) {
+    const { plaintext } = await dev.decrypt(aliceEnc, null, sobre)
+    assert.equal(plaintext, 'hola Bob', quien + ' lo abre')
+  }
+
+  // Y alguien de fuera no.
+  const dirX = tmp(); const x = await Identity.connect({ dir: dirX })
+  await assert.rejects(() => x.decrypt(aliceEnc, null, sobre), /no está entre los destinatarios/)
+
+  for (const d of [dirBob, dirBob2, dirAlice, dirX]) fs.rmSync(d, { recursive: true, force: true })
+})
+
+test('tarjeta: no retrocede, y avisa si cambió el master', async () => {
+  const dirB = tmp(); const dirA = tmp()
+  const bob = await Identity.connect({ dir: dirB })
+  const alice = await Identity.connect({ dir: dirA })
+
+  const v1 = await bob.profileCard()
+  await alice.adoptPeerCard(v1)
+
+  const otro = await makeDeviceKey({ label: 'otro' })
+  const enc = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const jwk = await crypto.subtle.exportKey('jwk', enc.publicKey)
+  await bob.admitMember({ pub: otro.publickey, encPub: JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y }), caps: ['read'] })
+
+  const v2 = await bob.profileCard()
+  assert.equal((await alice.adoptPeerCard(v2)).reason, 'seq-mayor')
+  // La vieja ya no la acepta.
+  assert.equal((await alice.adoptPeerCard(v1)).adopted, false)
+
+  for (const d of [dirB, dirA]) fs.rmSync(d, { recursive: true, force: true })
+})

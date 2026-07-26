@@ -21,6 +21,7 @@
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
+import { pubkeyId as pubkeyIdOf } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
@@ -319,6 +320,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     if (e && /\brevoked\b/.test(e.message || '')) emitVault({ phase: 'rejected', reason: e.message })
     throw e
   }
+  /** Id estable y corto de una llave de cifrado: con esto se indexan las envolturas. */
+  const encKeyId = async (encPub) => (await pubkeyIdOf(encPub)).slice(0, 16)
+
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
   const loadVaultDevice = () => {
     try {
@@ -1208,6 +1212,28 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { chain: all.sort((a, b) => a.seq - b.seq), window: ACTA_WINDOW }
     },
 
+    /**
+     * MI tarjeta de perfil: lo mínimo que se le pasa a un contacto para que pueda cifrarme a
+     * todos mis dispositivos (perfil, versión y llaves de cifrado). Sin etiquetas, sin
+     * permisos, sin certificados: lo demás no es asunto de nadie.
+     */
+    async profileCard () { return loadActa()?.card || null },
+
+    /**
+     * Guarda la tarjeta de OTRA persona en su ficha de contacto. La primera vez se acepta
+     * (es el mismo criterio con el que agregaste el contacto); después solo si no retrocede
+     * y la firmó el mismo master. Si el master cambió, se avisa en vez de aceptarlo callando.
+     */
+    async adoptPeerCard ({ card } = {}) {
+      if (!card?.profileId) throw new Error('tarjeta inválida')
+      const peers = loadPeers()
+      const prev = peers[card.profileId]?.card || null
+      const r = await Acta.canAdoptCard({ card, current: prev })
+      if (!r.adopt) return { adopted: false, reason: r.reason, devices: (prev?.keys || []).length }
+      upsertPeer(card.profileId, { card, profileId: card.profileId })
+      return { adopted: true, reason: r.reason, devices: card.keys.length }
+    },
+
     /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
     async adoptActa ({ acta } = {}) { return adoptActa(acta) },
 
@@ -1361,6 +1387,15 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     async getEncryptionPubkey () { return encPublickeyJwkStr },
 
+    /**
+     * Cifra para uno o varios destinatarios. Dos cosas que cambian respecto de antes:
+     *
+     * 1. **El sobre va atado a la LLAVE, no a la conexión.** Cada envoltura se indexa por un
+     *    id derivado de la llave de cifrado del destinatario, en vez del token del proxy: así
+     *    puede abrirla también un dispositivo que no estaba conectado cuando se envió.
+     * 2. **Se cifra a TODOS los dispositivos de esa persona**, si conocemos su tarjeta de
+     *    perfil (§tarjeta). Le escribes a la persona, no al aparato desde el que te habló.
+     */
     async encrypt ({ recipients, plaintext }) {
       if (!Array.isArray(recipients) || recipients.length === 0) throw new Error('recipients required')
       if (typeof plaintext !== 'string') throw new Error('plaintext required')
@@ -1368,26 +1403,40 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const kRaw = await crypto.subtle.exportKey('raw', k)
       const iv = crypto.getRandomValues(new Uint8Array(12))
       const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, new TextEncoder().encode(plaintext))
-      const wrap = {}
+
+      // Expandir cada destinatario a TODOS los dispositivos de su perfil que conozcamos.
+      const encPubs = new Set()
+      const peers = loadPeers()
       for (const r of recipients) {
-        if (!r || !r.token || !r.encryptionPubkey) continue
+        if (!r) continue
+        if (r.encryptionPubkey) encPubs.add(r.encryptionPubkey)
+        const card = (r.publickey && peers[r.publickey]?.card) || null
+        for (const kk of (card?.keys || [])) if (kk.encPub) encPubs.add(kk.encPub)
+      }
+
+      const wrap = {}
+      for (const encPub of encPubs) {
         try {
-          const peerPub = await importPeerEncPubkey(r.encryptionPubkey)
+          const peerPub = await importPeerEncPubkey(encPub)
           const sharedKey = await deriveSharedAesKey(encKeypair.privateKey, peerPub)
           const wrapIv = crypto.getRandomValues(new Uint8Array(12))
           const wrappedCt = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, sharedKey, kRaw)
-          wrap[r.token] = { iv: bufToBase64(wrapIv), ct: bufToBase64(new Uint8Array(wrappedCt)) }
+          wrap[await encKeyId(encPub)] = { iv: bufToBase64(wrapIv), ct: bufToBase64(new Uint8Array(wrappedCt)) }
         } catch (e) { /* destinatario omitido */ }
       }
-      return { v: 1, iv: bufToBase64(iv), ct: bufToBase64(new Uint8Array(ct)), wrap }
+      return { v: 2, iv: bufToBase64(iv), ct: bufToBase64(new Uint8Array(ct)), wrap }
     },
 
+    /**
+     * Descifra. Busca MI envoltura por el id de mi llave de cifrado (v2); `myToken` ya no
+     * hace falta y se acepta solo por compatibilidad de llamada.
+     */
     async decrypt ({ senderEncryptionPubkey, myToken, envelope }) {
       if (!senderEncryptionPubkey) throw new Error('senderEncryptionPubkey required')
-      if (!myToken) throw new Error('myToken required')
-      if (!envelope || envelope.v !== 1) throw new Error('Unsupported envelope')
-      const myEntry = envelope.wrap && envelope.wrap[myToken]
-      if (!myEntry) throw new Error('No wrap entry for this recipient')
+      if (!envelope || (envelope.v !== 1 && envelope.v !== 2)) throw new Error('Unsupported envelope')
+      const myId = await encKeyId(encPublickeyJwkStr)
+      const myEntry = envelope.wrap && (envelope.wrap[myId] || (myToken ? envelope.wrap[myToken] : null))
+      if (!myEntry) throw new Error('este dispositivo no está entre los destinatarios del mensaje')
       const senderPub = await importPeerEncPubkey(senderEncryptionPubkey)
       const sharedKey = await deriveSharedAesKey(encKeypair.privateKey, senderPub)
       const kRaw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBuf(myEntry.iv) }, sharedKey, base64ToBuf(myEntry.ct))

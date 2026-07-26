@@ -299,6 +299,11 @@ export class Identity {
 
   /** Adopta un acta recibida de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
   async adoptActa (acta) { return this._call('adoptActa', { acta }) }
+  /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
+   *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
+  async profileCard () { return this._call('profileCard') }
+  /** Guarda la tarjeta de otra persona en su ficha de contacto (verificándola). */
+  async adoptPeerCard (card) { return this._call('adoptPeerCard', { card }) }
   /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
   async contentKey () { return this._call('contentKey') }
   /** Cifra con la clave de contenido del perfil (la privada de cifrado no sale del vault). */

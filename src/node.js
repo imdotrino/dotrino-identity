@@ -173,6 +173,11 @@ export class Identity {
   renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
   absorbRenounce (record) { return this._h('absorbRenounce', { record }) }
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
+  /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
+   *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
+  profileCard () { return this._h('profileCard') }
+  /** Guarda la tarjeta de otra persona en su ficha de contacto (verificándola). */
+  adoptPeerCard (card) { return this._h('adoptPeerCard', { card }) }
   /** La clave de contenido del perfil, abierta con la llave de cifrado de este dispositivo. */
   contentKey () { return this._h('contentKey') }
   /** Cifra con la clave de contenido del perfil (la privada de cifrado no sale del vault). */
