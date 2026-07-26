@@ -55,7 +55,7 @@
     "url": "git+https://github.com/imdotrino/dotrino-identity.git"
   },
   "dependencies": {
-    "@dotrino/proxy-client": "0.6.3"
+    "@dotrino/proxy-client": "0.8.0"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5"
