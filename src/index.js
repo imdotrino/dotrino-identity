@@ -323,8 +323,8 @@ export class Identity {
    * código a comparar; resuelve cuando el dueño aprueba en su PC (espera hasta 3 min).
    * @returns {Promise<{ ok:boolean, deviceId:string, master:string, exp:number, scope:string[] }>}
    */
-  async enrollDevice (qr) {
-    return this._call('vaultPair', { qr }, 200000)
+  async enrollDevice (qr, { label = '' } = {}) {
+    return this._call('vaultPair', { qr, label }, 200000)
   }
 
   /** Estado de emparejamiento: { paired, deviceId?, master?, scope?, exp?, pairedAt? }. */

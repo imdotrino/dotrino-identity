@@ -187,7 +187,7 @@ export class Identity {
   /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
   rotateContentKey () { return this._h('rotateContentKey') }
   // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)
-  enrollDevice (qr) { return this._h('vaultPair', { qr }) }
+  enrollDevice (qr, { label = '' } = {}) { return this._h('vaultPair', { qr, label }) }
   vaultStatus () { return this._h('vaultStatus') }
   unpairDevice () { return this._h('vaultUnpair') }
   vaultSign (payload) { return this._h('vaultSign', { payload }) }

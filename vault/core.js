@@ -1246,7 +1246,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
     // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
-    async vaultPair ({ qr }) {
+    async vaultPair ({ qr, label = '' }) {
       // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
       // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
       // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
@@ -1258,7 +1258,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const continuity = (mio && mio.members.length === 1)
         ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
         : null
-      const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
+      const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
       // Conectarse a una bóveda es ENTRAR A SU PERFIL: el acta viene con el cert.
