@@ -21,6 +21,7 @@
  * servidor de geo sin cargar el iframe.
  */
 import { canonicalStringify, bufToBase64, base64ToBuf } from './core.js'
+import { pubkeyId, keyLabel } from './keyid.js'
 
 const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' }
 const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
@@ -46,12 +47,9 @@ async function rawVerify (publicJwkStr, bytes, sigB64) {
 const publicOf = (privateJwk) => ({ kty: privateJwk.kty, crv: privateJwk.crv, x: privateJwk.x, y: privateJwk.y })
 const scopeAllows = (scope, expected) => Array.isArray(scope) ? scope.includes(expected) : scope === expected
 
-/** id corto y estable de un pubkey (sha-256 hex de los campos canónicos del JWK). */
-export async function pubkeyId (publicJwkStr) {
-  const jwk = typeof publicJwkStr === 'string' ? JSON.parse(publicJwkStr) : publicJwkStr
-  const h = await crypto.subtle.digest('SHA-256', enc(canonicalStringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })))
-  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+// El id de una llave y su huella legible viven en `./keyid.js`, que no tiene dependencias:
+// así una interfaz puede mostrar `AB12-CD34` sin arrastrar todo esto. Una sola implementación.
+export { pubkeyId, keyLabel }
 
 /**
  * Verifica que `signature` (base64) sobre `data` fue hecha por la privada de

@@ -1005,8 +1005,21 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // ----- perfiles (multi-perfil por dispositivo) -----
     // Cambiar/crear setea el perfil activo; la app RECARGA la página y re-inicializa con él
     // (no reactivo, por diseño). Las apps abiertas conservan el perfil con el que cargaron.
+    /**
+     * Los perfiles de este dispositivo, para el conmutador. Incluye el AVATAR de cada uno:
+     * sin él, la lista caía siempre al identicon automático y tu foto no aparecía —aunque la
+     * hubieras subido— porque el avatar vive en el `me` de cada perfil, no en el registro.
+     */
     async listProfiles () {
-      return loadProfiles().map((p) => ({ id: p.id, name: p.name || '', pubkey: p.pubkey || null, current: p.id === currentPid }))
+      return loadProfiles().map((p) => {
+        let avatar = null
+        try {
+          const raw = p.id === currentPid ? JSON.stringify(me || null) : rawKv.getItem(`dotrino.identity.p.${p.id}.me`)
+          const m = raw ? JSON.parse(raw) : null
+          if (m && typeof m.avatar === 'string') avatar = m.avatar
+        } catch (_) {}
+        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid }
+      })
     },
     async currentProfile () {
       const e = loadProfiles().find((p) => p.id === currentPid) || {}
