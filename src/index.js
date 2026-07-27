@@ -299,6 +299,13 @@ export class Identity {
 
   /** Adopta un acta recibida de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
   async adoptActa (acta) { return this._call('adoptActa', { acta }) }
+  /**
+   * Une ESTE perfil a la cuenta de otro (la de una bóveda). No es adoptar una versión nueva
+   * de la tuya: esta llave pasa a ser de OTRA cuenta y deja de tener la suya, así que solo
+   * procede sobre un perfil creado con `{ forVault: true }`. Si no, devuelve
+   * `{ joined: false, reason: 'perfil-con-datos' }` y no escribe nada.
+   */
+  async joinProfile (acta) { return this._call('joinProfile', { acta }) }
   /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
    *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
   async profileCard () { return this._call('profileCard') }
@@ -321,10 +328,16 @@ export class Identity {
    * nunca sale), hace el emparejamiento endurecido por el proxy y guarda el cert.
    * Emite un evento 'vault' { phase:'challenge', deviceId, sas } para que muestres el
    * código a comparar; resuelve cuando el dueño aprueba en su PC (espera hasta 3 min).
+   *
+   * `join` dice **de qué cuenta se está hablando** (`vinculacion-de-cuentas.md` §3):
+   *   · `'new'`     → crea aquí una cuenta MÁS, con llave nueva, y es esa la que entra en la
+   *                   bóveda. La que estabas usando no se toca. **Es lo normal.**
+   *   · `'current'` → sigue con la cuenta abierta; solo vale si nació para adoptar o si ya
+   *                   está emparejada con esa misma bóveda. Si no, falla antes de tocar la red.
    * @returns {Promise<{ ok:boolean, deviceId:string, master:string, exp:number, scope:string[] }>}
    */
-  async enrollDevice (qr, { label = '' } = {}) {
-    return this._call('vaultPair', { qr, label }, 200000)
+  async enrollDevice (qr, { label = '', join = 'current' } = {}) {
+    return this._call('vaultPair', { qr, label, join }, 200000)
   }
 
   /** Estado de emparejamiento: { paired, deviceId?, master?, scope?, exp?, pairedAt? }. */
@@ -410,8 +423,14 @@ export class Identity {
   async listProfiles () { return this._call('listProfiles') }
   /** El perfil activo: { id, name, pubkey }. */
   async currentProfile () { return this._call('currentProfile') }
-  /** Crea un perfil nuevo (identidad fresca) y lo deja activo. La app debe recargar. */
-  async createProfile (name) { return this._call('createProfile', { name }) }
+  /**
+   * Crea un perfil nuevo (identidad fresca) y lo deja activo. La app debe recargar.
+   *
+   * `forVault: true` lo marca como **nacido para adoptar** la cuenta de una bóveda (camino B
+   * de `vinculacion-de-cuentas.md`): es el único permiso que acepta `joinProfile`, y se
+   * consume al unirse. Sin esa marca, la cuenta es de este dispositivo y nadie se la lleva.
+   */
+  async createProfile (name, { forVault = false } = {}) { return this._call('createProfile', { name, forVault }) }
   /** Cambia el perfil activo. La app debe recargar la página. */
   async switchProfile (id) { return this._call('switchProfile', { id }) }
   /** Renombra un perfil (o el activo si no se pasa id). */

@@ -178,6 +178,19 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   const loadProfiles = () => { try { return JSON.parse(rawKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { return [] } }
   const saveProfiles = (list) => rawKv.setItem(PROFILES_STORAGE, JSON.stringify(list))
 
+  // ----- la MARCA de «este perfil nació para adoptar la cuenta de una bóveda» -----
+  // Unirse a otra cuenta borra la que este perfil tenía, así que no puede pasar por
+  // accidente ni deducirse de heurísticas tipo «parece vacío»: se pide a propósito con
+  // `createProfile({ forVault: true })` y esa marca es el único permiso que vale.
+  // Además identity NO PUEDE ver el contenido del store (vive en otro origen), así que
+  // «vacío» no es algo que pueda comprobar por su cuenta.
+  // Ver `dotrino-vault/docs/vinculacion-de-cuentas.md` §5.1.
+  const isPendingJoin = (pid = currentPid) => !!loadProfiles().find((p) => p.id === pid)?.pendingJoin
+  const clearPendingJoin = (pid = currentPid) => {
+    const list = loadProfiles(); const e = list.find((p) => p.id === pid)
+    if (e?.pendingJoin) { delete e.pendingJoin; saveProfiles(list) }
+  }
+
   // ----- keypair loaders -----
   // Con `keyStore` (IndexedDB del navegador): la privada vive como CryptoKey
   // NO EXTRACTABLE — puede FIRMAR/DERIVAR pero nadie (ni este código, ni un XSS)
@@ -440,13 +453,18 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   }
 
   /**
-   * UNIRSE a otro perfil (el de la bóveda a la que te acabas de conectar). No es adoptar
-   * una versión nueva de TU acta: es cambiar de perfil, así que solo procede si aquí no
-   * hay nada que perder — es decir, si este dispositivo es el único miembro del suyo.
+   * UNIRSE a la cuenta de la bóveda con la que te acabas de emparejar (camino B de
+   * `dotrino-vault/docs/vinculacion-de-cuentas.md`). NO es adoptar una versión nueva de TU
+   * acta: es que ESTA llave pase a ser de OTRA cuenta, y por lo tanto **deja de tener la
+   * suya**.
    *
-   * Si ya tienes otros dispositivos, los dos lados tienen master y hay que ELEGIR cuál
-   * manda (§2.4.3): eso es una decisión del dueño, no un efecto colateral de escanear un
-   * código, así que se devuelve el conflicto para que lo resuelva la consola.
+   * Por eso solo procede sobre un perfil que **nació para esto** (`createProfile({ forVault:
+   * true })`). Sin la marca no se une: se devuelve el conflicto para que la consola ofrezca
+   * crear una cuenta nueva, y **no se escribe nada**.
+   *
+   * Antes bastaba con ser el único miembro del acta propia, y entonces se sobrescribía el
+   * acta sin preguntar: una cuenta con su contenido pasaba a colgar de otra en silencio —
+   * justo la fusión de cuentas que el modelo prohíbe (§4). Eso se acabó.
    */
   async function joinProfile (candidate) {
     const v = await Acta.verifyActa({ acta: candidate })
@@ -455,10 +473,29 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { joined: false, reason: 'no-soy-miembro' }
     }
     const current = loadActa()
-    if (current && current.profileId !== candidate.profileId && current.members.length > 1) {
-      return { joined: false, reason: 'ya-tienes-perfil-propio', members: current.members.length }
+
+    // Misma cuenta: no es unirse, es ponerse al día. Va por las reglas de adopción (§2.4.1).
+    if (current && current.profileId === candidate.profileId) {
+      const r = await adoptActa(candidate)
+      return { joined: r.adopted, reason: r.reason, profileId: candidate.profileId, seq: r.seq }
     }
+
+    if (current && !isPendingJoin()) {
+      return {
+        joined: false,
+        reason: 'perfil-con-datos',
+        profileId: current.profileId,
+        seq: current.seq,
+        members: current.members.length
+      }
+    }
+
     saveActa(candidate)
+    // El historial era de la cuenta anterior y no encadena con esta. La que se abandona es
+    // siempre una génesis recién nacida (lo garantiza la marca), así que no hay nada que
+    // retener; guardarla aquí solo mezclaría dos cuentas en la misma ventana (§1.3).
+    kv.setItem(ACTA_HISTORY_STORAGE, '[]')
+    clearPendingJoin()
     emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, joined: true })
     return { joined: true, profileId: candidate.profileId, seq: candidate.seq }
   }
@@ -1018,14 +1055,23 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
           const m = raw ? JSON.parse(raw) : null
           if (m && typeof m.avatar === 'string') avatar = m.avatar
         } catch (_) {}
-        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid }
+        // `pendingJoin`: nació para adoptar la cuenta de una bóveda y todavía no se unió.
+        // La consola lo usa para no ofrecerlo como una cuenta normal a medio hacer.
+        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid, pendingJoin: !!p.pendingJoin }
       })
     },
     async currentProfile () {
       const e = loadProfiles().find((p) => p.id === currentPid) || {}
       return { id: currentPid, name: e.name || me?.nickname || '', pubkey: publickeyJwkStr }
     },
-    async createProfile ({ name } = {}) {
+    /**
+     * Crea una cuenta más en este dispositivo, con su propia llave.
+     *
+     * `forVault: true` la marca como **nacida para adoptar** la cuenta de una bóveda
+     * (camino B): es el único permiso que acepta `joinProfile`, y se consume al unirse.
+     * Sin la marca, la cuenta es de este dispositivo y nadie se la puede llevar.
+     */
+    async createProfile ({ name, forVault = false } = {}) {
       const pid = 'p' + crypto.randomUUID().slice(0, 8)
       currentPid = pid
       rawKv.setItem(CURRENT_STORAGE, pid)
@@ -1035,9 +1081,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
       me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: String(name || '').slice(0, 40) }
       saveMe(me)
-      const list = loadProfiles(); list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr }); saveProfiles(list)
+      const list = loadProfiles()
+      list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr, ...(forVault ? { pendingJoin: true } : {}) })
+      saveProfiles(list)
       await ensureActa(me.nickname) // el perfil nuevo nace con su acta (él mismo es el master)
-      return { id: pid, name: me.nickname, pubkey: publickeyJwkStr }
+      return { id: pid, name: me.nickname, pubkey: publickeyJwkStr, pendingJoin: !!forVault }
     },
     async switchProfile ({ id } = {}) {
       if (!loadProfiles().find((p) => p.id === id)) throw new Error('perfil no existe')
@@ -1259,7 +1307,27 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
     // Genera D aquí dentro (su privada NUNCA sale de la identidad), hace el enroll
     // endurecido por el proxy y guarda el cert. NO cambia signData todavía (Fase 2).
-    async vaultPair ({ qr, label = '' }) {
+    /**
+     * Empareja este dispositivo con una bóveda.
+     *
+     * `join` dice **de qué cuenta estamos hablando** (V7: la intención es explícita, nunca
+     * se adivina):
+     *   · `'new'`     → camino B: crea aquí una cuenta más, con llave nueva, y ES ESA la que
+     *                   entra al acta de la bóveda. La que estabas usando **no se toca**.
+     *   · `'current'` → sigue con la cuenta abierta. Solo vale si nació para adoptar
+     *                   (`forVault`) o si ya está emparejada con ESA misma bóveda
+     *                   (re-emparejar). En cualquier otro caso falla **antes de tocar la
+     *                   red**, en vez de traerse un acta ajena y pisar la tuya.
+     */
+    async vaultPair ({ qr, label = '', join = 'current' }) {
+      if (join === 'new') {
+        await handlers.createProfile({ name: label || me?.nickname || '', forVault: true })
+      } else {
+        const yaConEsta = loadVaultCert()?.master === qr?.iss
+        if (loadActa() && !isPendingJoin() && !yaConEsta) {
+          throw new Error('este aparato ya está usando una cuenta: para usar también la de tu bóveda, crea una cuenta nueva aquí (la que tienes abierta no se toca)')
+        }
+      }
       // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
       // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
       // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
@@ -1267,18 +1335,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
       // Si esta identidad ya existía por su cuenta, se lleva un certificado de continuidad
       // firmado por ella misma: es el puente para que su reputación previa siga contando.
+      // Solo si esta llave tenía vida propia. Una recién creada para adoptar (camino B) no
+      // tiene pasado que salvar: mandarle un puente de continuidad sería puro ruido.
       const mio = loadActa()
-      const continuity = (mio && mio.members.length === 1)
+      const continuity = (mio && mio.members.length === 1 && !isPendingJoin())
         ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
         : null
       const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
       kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
       kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
-      // Conectarse a una bóveda es ENTRAR A SU PERFIL: el acta viene con el cert.
-      const join = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
-      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join })
+      // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
+      const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
+      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
       pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
-      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join }
+      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join: unido }
     },
 
     async vaultStatus () {

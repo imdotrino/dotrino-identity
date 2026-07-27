@@ -173,6 +173,8 @@ export class Identity {
   renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
   absorbRenounce (record) { return this._h('absorbRenounce', { record }) }
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
+  /** Une ESTE perfil a la cuenta de otro (solo si nació para eso: `createProfile(n, { forVault: true })`). */
+  joinProfile (acta) { return this._h('joinProfile', { acta }) }
   /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
    *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
   profileCard () { return this._h('profileCard') }
@@ -187,7 +189,7 @@ export class Identity {
   /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
   rotateContentKey () { return this._h('rotateContentKey') }
   // Emparejar ESTE dispositivo con el vault del usuario (Fase 1)
-  enrollDevice (qr, { label = '' } = {}) { return this._h('vaultPair', { qr, label }) }
+  enrollDevice (qr, { label = '', join = 'current' } = {}) { return this._h('vaultPair', { qr, label, join }) }
   vaultStatus () { return this._h('vaultStatus') }
   unpairDevice () { return this._h('vaultUnpair') }
   vaultSign (payload) { return this._h('vaultSign', { payload }) }
@@ -198,7 +200,7 @@ export class Identity {
   // Multi-perfil por dispositivo (crear/cambiar reinicializa con el nuevo perfil activo).
   listProfiles () { return this._h('listProfiles') }
   currentProfile () { return this._h('currentProfile') }
-  createProfile (name) { return this._h('createProfile', { name }) }
+  createProfile (name, { forVault = false } = {}) { return this._h('createProfile', { name, forVault }) }
   switchProfile (id) { return this._h('switchProfile', { id }) }
   renameProfile (id, name) { return this._h('renameProfile', { id, name }) }
   deleteProfile (id) { return this._h('deleteProfile', { id }) }
