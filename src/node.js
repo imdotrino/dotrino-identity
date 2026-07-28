@@ -175,6 +175,8 @@ export class Identity {
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
   /** Une ESTE perfil a la cuenta de otro (solo si nació para eso: `createProfile(n, { forVault: true })`). */
   joinProfile (acta) { return this._h('joinProfile', { acta }) }
+  /** Marca este perfil como nacido para ADOPTAR la cuenta de otro (camino A: lo usa la bóveda). */
+  prepareForAdoption () { return this._h('prepareForAdoption') }
   /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
    *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
   profileCard () { return this._h('profileCard') }

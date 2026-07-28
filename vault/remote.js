@@ -19,9 +19,16 @@ const MSG = {
   ENROLL: 'vault.enroll',
   ENROLL_CHALLENGE: 'vault.enroll.challenge',
   ENROLLED: 'vault.enrolled',
+  // --- camino A (la cuenta del aparato pasa a vivir en la bóveda) ---
+  // La bóveda, en vez del cert, manda QUIÉN es ella para que el aparato la meta en su
+  // acta; el aparato responde con el acta sellada y la bóveda devuelve la definitiva.
+  ENROLL_ADOPT: 'vault.enroll.adopt',
+  ACTA_SEALED: 'vault.acta.sealed',
+  ACTA_ADOPTED: 'vault.acta.adopted',
   REVOKED: 'vault.revoked',
   ERROR: 'vault.error'
 }
+export { MSG as VAULT_MSG }
 
 /**
  * ¿Es AUTÉNTICO este `vault.revoked`? Solo lo es si va firmado por la maestra PINEADA al
@@ -57,7 +64,7 @@ async function identifyAsDevice (client, device, { cert = null, acta = null } = 
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000 } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null } = {}) {
   if (!qr?.iss || !qr?.proxy || !qr?.token || !qr?.sn) throw new Error('qr inválido (v2): faltan iss/proxy/token/sn')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy, enableWebRTC: false, autoReconnect: false })
@@ -80,16 +87,40 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // que hizo antes se pueda seguir atribuyendo a la misma persona (ver acta.js).
     // `encPub`: la llave de CIFRADO de este dispositivo. Sin ella la bóveda no puede
     // envolverle la clave de contenido del perfil, y entraría sin poder leer nada.
-    const data = { op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {}) }
+    // `intent` (V7 de `vinculacion-de-cuentas.md`): va DENTRO de lo firmado, y la bóveda
+    // rechaza el que no coincida con el modo con el que ella abrió el emparejamiento. Así
+    // ninguno de los dos puede hacer, a mitad de camino, algo distinto de lo que el humano
+    // vio anunciado en las dos pantallas.
+    const adoptar = intent === 'adopt'
+    if (adoptar && typeof onAdopt !== 'function') throw new Error('enrollDevice(adopt): falta onAdopt')
+    const data = {
+      op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), intent,
+      ...(adoptar && profileId ? { profileId } : {}),
+      ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {})
+    }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
 
     const enrolled = new Promise((resolve, reject) => {
+      let sellando = false
       const off = client.on('message', (_from, p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, code }) } catch (_) {} }
         // El vault ECHA el código que tipeaste; aceptamos SOLO si coincide con el que generamos.
         // (Un código distinto = un vault que no lo conoce → lo ignoramos y seguimos esperando.)
         else if (p.type === MSG.ENROLLED) { if (p.code === code) { cleanup(); resolve(p) } }
+        // CAMINO A · la bóveda dice quién es (con el código de vuelta, misma defensa que el
+        // ENROLLED): este aparato la admite en SU acta, le envuelve la clave de contenido y
+        // le traspasa el mando, todo en un solo `seq`, y le manda el acta sellada.
+        else if (p.type === MSG.ENROLL_ADOPT && adoptar) {
+          if (p.code !== code || sellando) return
+          sellando = true
+          Promise.resolve(onAdopt({ pub: p.pub, encPub: p.encPub || null, label: p.label || '' }))
+            .then((acta) => { client.sendByPubkey(qr.iss, { type: MSG.ACTA_SEALED, acta, code }) })
+            .catch((e) => { cleanup(); reject(e) })
+        }
+        // La bóveda ya se vio como sellador y devuelve el acta definitiva (con los certs
+        // re-emitidos, §D9). Es la que este aparato adopta.
+        else if (p.type === MSG.ACTA_ADOPTED && adoptar) { cleanup(); resolve(p) }
         else if (p.type === MSG.ERROR) { cleanup(); reject(new Error(p.error)) }
       })
       const t = setTimeout(() => { cleanup(); reject(new Error('timeout esperando la aprobación en el vault')) }, approveTimeoutMs)
@@ -97,6 +128,14 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     })
     client.sendByPubkey(qr.iss, { type: MSG.ENROLL, data, signature })
     const res = await enrolled
+
+    // Camino A: aquí no hay cert que validar — este aparato NO delega su identidad, sigue
+    // siendo la cuenta. Lo que vuelve es el acta ya sellada por la bóveda.
+    if (adoptar) {
+      if (!res.acta) throw new Error('la bóveda no devolvió el acta adoptada')
+      if (res.acta.sealer !== qr.iss) throw new Error('el acta la sella una bóveda distinta a la que viste')
+      return { device: dev, cert: null, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta, adopted: true }
+    }
 
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
     const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey })

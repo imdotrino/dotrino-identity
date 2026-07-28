@@ -306,6 +306,8 @@ export class Identity {
    * `{ joined: false, reason: 'perfil-con-datos' }` y no escribe nada.
    */
   async joinProfile (acta) { return this._call('joinProfile', { acta }) }
+  /** Marca este perfil como nacido para ADOPTAR la cuenta de otro (camino A). */
+  async prepareForAdoption () { return this._call('prepareForAdoption') }
   /** MI tarjeta de perfil: lo mínimo que un contacto necesita para cifrarme a todos mis
    *  dispositivos (perfil, versión y llaves). Sin etiquetas ni permisos. */
   async profileCard () { return this._call('profileCard') }

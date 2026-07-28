@@ -34,6 +34,7 @@ export const VAULT_DEVICE_STORAGE = 'dotrino.identity.vault.device' // sub-clave
 export const VAULT_CERT_STORAGE = 'dotrino.identity.vault.cert'     // { cert, master, proxy, deviceId, pairedAt }
 export const ACTA_STORAGE = 'dotrino.identity.acta'                 // acta de perfil vigente (quién es del perfil y qué puede)
 export const ACTA_HISTORY_STORAGE = 'dotrino.identity.acta.history' // últimas actas selladas (§1.3)
+export const PENDING_JOIN_STORAGE = 'dotrino.identity.pendingJoin'  // «nací para adoptar la cuenta de otro»
 export const RENOUNCE_STORAGE = 'dotrino.identity.renounced'        // renuncias propias aún no absorbidas por el master
 // Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
 // namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
@@ -185,8 +186,15 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // Además identity NO PUEDE ver el contenido del store (vive en otro origen), así que
   // «vacío» no es algo que pueda comprobar por su cuenta.
   // Ver `dotrino-vault/docs/vinculacion-de-cuentas.md` §5.1.
-  const isPendingJoin = (pid = currentPid) => !!loadProfiles().find((p) => p.id === pid)?.pendingJoin
+  // La marca vive en DOS sitios porque hay dos formas de tener perfiles: en el
+  // navegador son entradas de una lista dentro del mismo almacén (`pendingJoin` en la
+  // entrada), y en la bóveda es UN directorio por perfil, donde esa lista está vacía y
+  // no hay ninguna entrada que marcar. El kv es lo único que existe siempre y ya está
+  // acotado al perfil abierto, así que ahí va la marca de la bóveda.
+  const isPendingJoin = (pid = currentPid) =>
+    kv.getItem(PENDING_JOIN_STORAGE) === '1' || !!loadProfiles().find((p) => p.id === pid)?.pendingJoin
   const clearPendingJoin = (pid = currentPid) => {
+    try { kv.removeItem(PENDING_JOIN_STORAGE) } catch (_) {}
     const list = loadProfiles(); const e = list.find((p) => p.id === pid)
     if (e?.pendingJoin) { delete e.pendingJoin; saveProfiles(list) }
   }
@@ -1318,8 +1326,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      *                   (`forVault`) o si ya está emparejada con ESA misma bóveda
      *                   (re-emparejar). En cualquier otro caso falla **antes de tocar la
      *                   red**, en vez de traerse un acta ajena y pisar la tuya.
+     *   · `'adopt'`    → camino A: la cuenta que YA vive en este aparato pasa a vivir en la
+     *                   bóveda. Sigue siendo la misma cuenta para todo el mundo (mismo
+     *                   `profileId`); lo que cambia es quién sella. Solo puede hacerlo el
+     *                   master: si esta cuenta ya la manda otra bóveda, no hay nada que
+     *                   regalar y falla en voz alta.
      */
     async vaultPair ({ qr, label = '', join = 'current' }) {
+      if (join === 'adopt') return handlers.vaultAdopt({ qr, label })
       if (join === 'new') {
         await handlers.createProfile({ name: label || me?.nickname || '', forVault: true })
       } else {
@@ -1349,6 +1363,76 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
       pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
       return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join: unido }
+    },
+
+    /**
+     * CAMINO A — «esta cuenta que tengo aquí, que la guarde mi computadora».
+     *
+     * La cuenta no se muda ni se copia: sigue siendo la misma (mismo `profileId`, misma
+     * reputación, lo mismo firmado). Lo único que cambia es **quién sella el acta**. Este
+     * aparato admite a la bóveda como miembro, le envuelve la clave de contenido para que
+     * pueda leer lo que ya hay, y le traspasa el mando — los tres cambios en un **único
+     * `seq`**, que es la regla que existe justamente para que no haya un momento raro en
+     * el que la cuenta tenga dos sellador​es o ninguno.
+     *
+     * Requisito (§2 del doc): solo puede hacerlo el master. Si esta cuenta ya la manda otra
+     * bóveda, este aparato no puede regalar lo que no tiene; el traspaso se hace desde la
+     * que manda hoy.
+     */
+    async vaultAdopt ({ qr, label = '' } = {}) {
+      const mio = loadActa()
+      if (!mio) throw new Error('este aparato todavía no tiene ninguna cuenta que entregar')
+      if (!amMaster()) throw new Error('no-eres-el-master: esta cuenta ya la manda otro dispositivo o bóveda; el traspaso se hace desde ahí')
+
+      const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+      const res = await remoteEnroll({
+        qr,
+        device,
+        intent: 'adopt',
+        profileId: mio.profileId,
+        encPub: encPublickeyJwkStr,
+        label: label || me?.nickname || '',
+        onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }),
+        // Admitir + envolver + traspasar, en UN solo sello. Se ejecuta cuando la bóveda ya
+        // fue aprobada por un humano (el código de 6 dígitos volvió correcto).
+        onAdopt: async ({ pub, encPub, label: vlabel }) => {
+          const cambios = [{ op: 'admit', member: { pub, encPub, label: vlabel || 'bóveda', caps: ['sign', 'store', 'read'] } }]
+          // Sin la clave de contenido envuelta, la bóveda entraría mandando pero sin poder
+          // leer nada de lo que guarda la cuenta que acaba de recibir.
+          const mine = await myCek()
+          if (mine && encPub) {
+            const wrap = await Content.wrapForMember({ cek: mine.cek, memberEncPub: encPub })
+            cambios.push({ op: 'wrap', gen: mine.gen, pub, wrap })
+          }
+          cambios.push({ op: 'handover', to: pub })
+          return sealChanges(cambios)
+        }
+      })
+      // La bóveda devuelve el acta ya sellada por ella (y con los certs re-emitidos): se
+      // adopta por las reglas de siempre (§2.4.1) — encaja porque el sellador es el que
+      // este mismo aparato nombró hace un momento.
+      // `misma-acta` = la bóveda guardó exactamente la que este aparato acababa de sellar
+      // y no la cambió. No hay nada que adoptar, y es justo lo que se esperaba: el
+      // traspaso ya iba dentro de esa acta.
+      const r = await adoptActa(res.acta)
+      const ok = r.adopted || r.reason === 'misma-acta'
+      emitVault({ phase: 'adopted', master: res.master, seq: res.acta?.seq, ok })
+      if (!ok) throw new Error('la bóveda devolvió un acta que no encaja: ' + r.reason)
+      return { ok: true, adopted: true, profileId: mio.profileId, seq: r.seq ?? res.acta?.seq, master: res.master, deviceId: res.deviceId }
+    },
+
+    /**
+     * Marca este perfil como **nacido para adoptar** la cuenta de otro (la marca que
+     * `joinProfile` exige, §5.1). Lo usa la BÓVEDA al abrir un perfil vacío para el camino
+     * A: sin la marca, adoptar la cuenta del aparato se leería como pisar una cuenta con
+     * datos y se rechazaría, que es exactamente lo que tiene que pasar cuando nadie lo pidió.
+     */
+    async prepareForAdoption () {
+      kv.setItem(PENDING_JOIN_STORAGE, '1')
+      const list = loadProfiles()
+      const e = list.find((p) => p.id === currentPid)
+      if (e) { e.pendingJoin = true; saveProfiles(list) }
+      return { ok: true, pending: true }
     },
 
     async vaultStatus () {
