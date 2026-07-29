@@ -16,6 +16,8 @@
 import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
 
 const MSG = {
+  HELLO: 'vault.hello',
+  HELLO_OK: 'vault.hello.ok',
   ENROLL: 'vault.enroll',
   ENROLL_CHALLENGE: 'vault.enroll.challenge',
   ENROLLED: 'vault.enrolled',
@@ -56,6 +58,36 @@ async function identifyAsDevice (client, device, { cert = null, acta = null } = 
   await client.identify({ data, signature, cert, acta })
 }
 
+
+/**
+ * La respuesta al `hello` va firmada y con el `sn` DENTRO de lo firmado. Comprobarlo
+ * ata la respuesta a ESTA sesión: no vale la de otro emparejamiento ni la de otra
+ * bóveda. Ojo con lo que NO prueba: cualquiera puede firmar con una llave suya, así
+ * que esto no dice que sea TU bóveda — eso lo dice el código de 6 dígitos, que solo
+ * aprende la bóveda donde tú lo tecleas.
+ */
+async function verificarHola (p, sn) {
+  const b = p?.body
+  if (!b?.iss || b.sn !== sn) throw new Error('la bóveda contestó a otro emparejamiento')
+  if (!(await verifyDeviceSig({ publickey: b.iss, data: b, signature: p.signature }))) {
+    throw new Error('la respuesta de la bóveda no está bien firmada')
+  }
+  return b
+}
+
+/** «¿Quién eres?» del QR corto: devuelve `{ iss, proxy, acct, m }` de la bóveda. */
+async function askVault (client, qr) {
+  return new Promise((resolve, reject) => {
+    const off = client.on('message', (_from, p) => {
+      if (p?.type === MSG.HELLO_OK) { fin(); verificarHola(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
+      else if (p?.type === MSG.ERROR) { fin(); reject(new Error(p.error)) }
+    })
+    const t = setTimeout(() => { fin(); reject(new Error('la bóveda no contestó: ese código pudo caducar')) }, 15000)
+    const fin = () => { off(); clearTimeout(t) }
+    try { client.send(qr.conn, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { fin(); reject(e) }
+  })
+}
+
 /**
  * @param {Object} opts
  * @param {{v:number, iss:string, proxy:string, token:string, sn:string}} opts.qr  QR v2 del vault.
@@ -65,11 +97,16 @@ async function identifyAsDevice (client, device, { cert = null, acta = null } = 
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
  */
 export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null } = {}) {
-  if (!qr?.iss || !qr?.proxy || !qr?.token || !qr?.sn) throw new Error('qr inválido (v2): faltan iss/proxy/token/sn')
+  if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('qr inválido: falta la bóveda o el nonce')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-  const client = new WebSocketProxyClient({ url: qr.proxy, enableWebRTC: false, autoReconnect: false })
+  const client = new WebSocketProxyClient({ url: qr.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
+    // QR CORTO: no trae la llave, solo la dirección de la bóveda en el proxy. Se le
+    // pregunta quién es, punto a punto, presentando el `sn`; solo contesta si esa sesión
+    // de emparejamiento sigue abierta. Lo que acredita la llave no es el QR: es la firma
+    // del certificado y el código de 6 dígitos, que solo aprende la bóveda donde lo tecleas.
+    if (!qr.iss) qr = { ...qr, ...(await askVault(client, qr)) }
     // Por defecto genera una sub-clave nueva; pero el iframe pasa SU PROPIA llave de
     // identidad (P) como `device` → el cert delega tu identidad y hay UNA sola (signData/
     // identify/cert son la misma P).
@@ -94,7 +131,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     const adoptar = intent === 'adopt'
     if (adoptar && typeof onAdopt !== 'function') throw new Error('enrollDevice(adopt): falta onAdopt')
     const data = {
-      op: 'enroll', dpub: dev.publickey, token: qr.token, sn: qr.sn, commit, label, ts: Date.now(), intent,
+      op: 'enroll', dpub: dev.publickey, token: qr.token || qr.sn, sn: qr.sn, commit, label, ts: Date.now(), intent,
       ...(adoptar && profileId ? { profileId } : {}),
       ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {})
     }
