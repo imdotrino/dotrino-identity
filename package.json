@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/identity",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "description": "Identidad y rating de usuarios compartidos entre apps de Dotrino (vault iframe + postMessage)",
   "type": "module",
   "main": "src/index.js",
@@ -55,7 +55,7 @@
     "url": "git+https://github.com/imdotrino/dotrino-identity.git"
   },
   "dependencies": {
-    "@dotrino/proxy-client": "0.8.0"
+    "@dotrino/proxy-client": "0.9.1"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5"

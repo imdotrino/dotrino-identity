@@ -75,8 +75,20 @@ async function verificarHola (p, sn) {
   return b
 }
 
+
+/**
+ * Canjea la CITA del QR: devuelve la dirección real de la conexión de la bóveda. El
+ * código se quema al usarse, así que esto va una sola vez por emparejamiento.
+ */
+async function canjearCita (client, code) {
+  const r = await client.redeemPairingCode(code)
+  if (!r?.ok || !r.instance) throw new Error(r?.error || 'ese código de emparejamiento ya no vale')
+  return r.instance
+}
+
 /** «¿Quién eres?» del QR corto: devuelve `{ iss, proxy, acct, m }` de la bóveda. */
 async function askVault (client, qr) {
+  const destino = await canjearCita(client, qr.conn)
   return new Promise((resolve, reject) => {
     const off = client.on('message', (_from, p) => {
       if (p?.type === MSG.HELLO_OK) { fin(); verificarHola(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
@@ -84,7 +96,7 @@ async function askVault (client, qr) {
     })
     const t = setTimeout(() => { fin(); reject(new Error('la bóveda no contestó: ese código pudo caducar')) }, 15000)
     const fin = () => { off(); clearTimeout(t) }
-    try { client.send(qr.conn, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { fin(); reject(e) }
+    try { client.send(destino, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { fin(); reject(e) }
   })
 }
 
