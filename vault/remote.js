@@ -72,9 +72,9 @@ async function identifyAsDevice (client, device, { cert = null, acta = null } = 
  */
 async function verificarHola (p, sn) {
   const b = p?.body
-  if (!b?.iss || b.sn !== sn) throw new Error('la bóveda contestó a otro emparejamiento')
+  if (!b?.iss || b.sn !== sn) throw new Error('the vault answered a different pairing')
   if (!(await verifyDeviceSig({ publickey: b.iss, data: b, signature: p.signature }))) {
-    throw new Error('la respuesta de la bóveda no está bien firmada')
+    throw new Error('the vault reply is not properly signed')
   }
   return b
 }
@@ -86,7 +86,7 @@ async function verificarHola (p, sn) {
  */
 async function canjearCita (client, code) {
   const r = await client.redeemPairingCode(code)
-  if (!r?.ok || !r.instance) throw new Error(r?.error || 'ese código de emparejamiento ya no vale')
+  if (!r?.ok || !r.instance) throw new Error(r?.error || 'that pairing code is no longer valid')
   return r.instance
 }
 
@@ -98,7 +98,7 @@ async function askVault (client, qr) {
       if (p?.type === MSG.HELLO_OK) { fin(); verificarHola(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
       else if (p?.type === MSG.ERROR) { fin(); reject(new Error(p.error)) }
     })
-    const t = setTimeout(() => { fin(); reject(new Error('la bóveda no contestó: ese código pudo caducar')) }, 15000)
+    const t = setTimeout(() => { fin(); reject(new Error('the vault did not answer: that code may have expired')) }, 15000)
     const fin = () => { off(); clearTimeout(t) }
     try { client.send(destino, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { fin(); reject(e) }
   })
@@ -113,7 +113,7 @@ async function askVault (client, qr) {
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
  */
 export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null } = {}) {
-  if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('qr inválido: falta la bóveda o el nonce')
+  if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('invalid qr: missing vault or nonce')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
   await client.connect()
@@ -176,7 +176,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
         else if (p.type === MSG.ACTA_ADOPTED && adoptar) { cleanup(); resolve(p) }
         else if (p.type === MSG.ERROR) { cleanup(); reject(new Error(p.error)) }
       })
-      const t = setTimeout(() => { cleanup(); reject(new Error('timeout esperando la aprobación en el vault')) }, approveTimeoutMs)
+      const t = setTimeout(() => { cleanup(); reject(new Error('timeout waiting for approval at the vault')) }, approveTimeoutMs)
       const cleanup = () => { off(); clearTimeout(t) }
     })
     client.sendByPubkey(qr.iss, { type: MSG.ENROLL, data, signature })
@@ -185,14 +185,14 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // Camino A: aquí no hay cert que validar — este aparato NO delega su identidad, sigue
     // siendo la cuenta. Lo que vuelve es el acta ya sellada por la bóveda.
     if (adoptar) {
-      if (!res.acta) throw new Error('la bóveda no devolvió el acta adoptada')
-      if (res.acta.sealer !== qr.iss) throw new Error('el acta la sella una bóveda distinta a la que viste')
+      if (!res.acta) throw new Error('the vault did not return the adopted record')
+      if (res.acta.sealer !== qr.iss) throw new Error('the record is sealed by a vault other than the one you saw')
       return { device: dev, cert: null, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta, adopted: true }
     }
 
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
     const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey })
-    if (!v.ok) throw new Error('cert inválido: ' + v.reason)
+    if (!v.ok) throw new Error('invalid cert: ' + v.reason)
     if (res.cert.iss !== qr.iss) throw new Error('cert firmado por una maestra distinta a la que viste')
     if (res.cert.sub !== dev.publickey) throw new Error('cert emitido para otro dispositivo')
     return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
@@ -241,7 +241,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
         if (p.type === okType) { cleanup(); resolve(p) }
         else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
       })
-      const t = setTimeout(() => { cleanup(); reject(new Error('el vault no respondió (¿está encendido?)')) }, timeoutMs)
+      const t = setTimeout(() => { cleanup(); reject(new Error('the vault did not reply (is it running?)')) }, timeoutMs)
       const cleanup = () => { off(); clearTimeout(t) }
     })
     client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })
@@ -271,7 +271,7 @@ export async function requestDevices ({ master, proxy, device, cert, sinceSeq, o
  */
 export async function requestRenew ({ master, proxy, device, cert, onRevoked } = {}) {
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
-  if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('cert renovado inválido')
+  if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('invalid renewed cert')
   return { cert: res.cert }
 }
 

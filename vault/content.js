@@ -70,7 +70,7 @@ export async function wrapForMember ({ cek, memberEncPub }) {
 
 /** Abre la envoltura con la llave de cifrado privada de ESTE miembro. */
 export async function openWrap ({ wrap, myEncPrivateKey }) {
-  if (!wrap?.epk || !wrap?.iv || !wrap?.ct) throw new Error('envoltura inválida')
+  if (!wrap?.epk || !wrap?.iv || !wrap?.ct) throw new Error('invalid wrap')
   const key = await sharedKey(myEncPrivateKey, wrap.epk)
   const pt = await subtle.decrypt({ name: 'AES-GCM', iv: fromB64(wrap.iv) }, key, fromB64(wrap.ct))
   return new TextDecoder().decode(pt)
@@ -119,7 +119,7 @@ export async function encryptWithCek ({ cek, gen, plaintext }) {
 export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPrivateKey }) {
   const g = (keyring || []).find((x) => x.gen === envelope?.gen)
   const w = g?.wraps?.[myPub]
-  if (!w) throw new Error('este dispositivo no tiene la llave de esa generación de contenido')
+  if (!w) throw new Error('this device does not hold the key for that content generation')
   const cek = await openWrap({ wrap: w, myEncPrivateKey })
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['decrypt'])
   const pt = await subtle.decrypt({ name: 'AES-GCM', iv: fromB64(envelope.iv) }, k, fromB64(envelope.ct))

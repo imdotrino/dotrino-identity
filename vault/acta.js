@@ -113,7 +113,7 @@ export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
  * estable para siempre y coincide con la identidad que el usuario ya tenía (cero migración).
  */
 export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() }) {
-  if (!isPub(pub)) throw new Error('genesisActa: falta la pubkey de la génesis')
+  if (!isPub(pub)) throw new Error('genesisActa: missing genesis pubkey')
   return {
     v: ACTA_V,
     profileId: pub,
@@ -161,7 +161,7 @@ export function checkShape (acta) {
 /** Sella (firma) un acta. `privateKey` puede ser una CryptoKey no extractable. */
 export async function sealActa ({ acta, privateKey, privateJwk }) {
   const shape = checkShape(acta)
-  if (shape) throw new Error('acta inválida: ' + shape)
+  if (shape) throw new Error('invalid record: ' + shape)
   const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: acta.sealedBy, data: actaBody(acta) })
   const sealed = { ...acta, sig: signature }
   // La TARJETA se firma en el mismo gesto y viaja con el acta: así cualquier miembro puede
@@ -195,9 +195,9 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  */
 export async function applyChanges (acta, changes, { by, now = Date.now() } = {}) {
   const shape = checkShape(acta)
-  if (shape) throw new Error('acta inválida: ' + shape)
-  if (!by) throw new Error('applyChanges: falta `by` (quién sella)')
-  if (by !== acta.sealer) throw new Error('solo el master puede cambiar el acta; este dispositivo no lo es')
+  if (shape) throw new Error('invalid record: ' + shape)
+  if (!by) throw new Error('applyChanges: missing `by` (who seals)')
+  if (by !== acta.sealer) throw new Error('only the master can change the record; this device is not the master')
 
   const list = Array.isArray(changes) ? changes : [changes]
   if (list.length === 0) throw new Error('applyChanges: no hay cambios')
@@ -222,9 +222,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
       case 'admit': {
         const m = ch.member
         if (!isPub(m?.pub)) throw new Error('admit: falta la pubkey del miembro')
-        if (find(m.pub)) throw new Error('admit: ese miembro ya está en el acta')
+        if (find(m.pub)) throw new Error('admit: that member is already in the record')
         const cn = m.cn != null ? String(m.cn) : null
-        if (cn !== null && !isValidCn(cn)) throw new Error('admit: CN inválido (minúsculas, números y guiones)')
+        if (cn !== null && !isValidCn(cn)) throw new Error('admit: invalid CN (lowercase, digits and hyphens)')
         next.members.push({
           pub: m.pub,
           encPub: m.encPub || null,
@@ -241,7 +241,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
       }
       case 'caps': {
         const m = find(ch.pub)
-        if (!m) throw new Error('caps: ese miembro no está en el acta')
+        if (!m) throw new Error('caps: that member is not in the record')
         // No se puede ascender un servicio a dispositivo cambiándole las capacidades: para
         // eso hay que sacarlo y volver a admitirlo, que es un gesto visible.
         m.caps = cleanCaps(ch.caps).filter((c) => (m.cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c))
@@ -249,8 +249,8 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
       }
       case 'remove': {
         const i = next.members.findIndex((m) => m.pub === ch.pub)
-        if (i < 0) throw new Error('remove: ese miembro no está en el acta')
-        if (next.members[i].pub === next.sealer) throw new Error('remove: no puedes expulsar al master; primero traspasa el sellado')
+        if (i < 0) throw new Error('remove: that member is not in the record')
+        if (next.members[i].pub === next.sealer) throw new Error('remove: cannot remove the master; hand the sealing over first')
         const fuera = next.members.splice(i, 1)[0]
         // Sus envolturas se van con él: sin ellas no puede abrir ninguna generación. (El
         // acceso al contenido FUTURO se corta rotando, ver content.js; lo ya leído no vuelve.)
@@ -261,21 +261,21 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
         break
       }
       case 'handover': {
-        if (!find(ch.to)) throw new Error('handover: el nuevo master tiene que ser miembro (admítelo en el mismo cambio)')
+        if (!find(ch.to)) throw new Error('handover: the new master must be a member (admit them in the same change)')
         next.sealer = ch.to
         break
       }
       case 'keyring': {
         // Generación NUEVA de la clave de contenido (al rotar: expulsar a alguien).
         const g = ch.generation
-        if (!g || !Number.isInteger(g.gen)) throw new Error('keyring: generación inválida')
+        if (!g || !Number.isInteger(g.gen)) throw new Error('keyring: invalid generation')
         next.keyring = [...next.keyring.filter((x) => x.gen !== g.gen), g].sort((a, b) => a.gen - b.gen)
         break
       }
       case 'wrap': {
         // Envolver la clave YA existente para un miembro nuevo (al admitir: no hace falta rotar).
         const g = next.keyring.find((x) => x.gen === ch.gen)
-        if (!g) throw new Error('wrap: esa generación no está en el llavero')
+        if (!g) throw new Error('wrap: that generation is not in the keyring')
         g.wraps = { ...g.wraps, [ch.pub]: ch.wrap }
         break
       }
@@ -304,10 +304,10 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
 
   // Reglas de cierre: sin firmante no se puede operar, y sin sellador no se puede cambiar.
   if (!next.members.some((m) => m.caps.includes('sign'))) {
-    throw new Error('el cambio dejaría el perfil sin ningún miembro que pueda firmar')
+    throw new Error('the change would leave the profile with no member able to sign')
   }
   if (!next.members.some((m) => m.pub === next.sealer)) {
-    throw new Error('el cambio dejaría el acta sin master')
+    throw new Error('the change would leave the record with no master')
   }
   return next
 }

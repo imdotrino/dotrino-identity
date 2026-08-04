@@ -96,7 +96,7 @@ export async function initPeerStorage () {
     const stored = await idbGet(_idb, peersKey()) // peer book DEL perfil activo (namespaceado)
     _peers = (stored && typeof stored === 'object') ? stored : {}
   } catch (e) {
-    console.warn('[cc-identity] IndexedDB no disponible, uso localStorage:', e?.message)
+    console.warn('[cc-identity] IndexedDB unavailable, falling back to localStorage:', e?.message)
     _fallback = true
     _idb = null
     try { const raw = localStorage.getItem(peersKey()); _peers = raw ? (JSON.parse(raw) || {}) : {} }
@@ -109,13 +109,13 @@ function persistPeers () {
   const key = peersKey()
   if (_fallback || !_idb) {
     try { localStorage.setItem(key, JSON.stringify(_peers)) }
-    catch (e) { console.warn('[cc-identity] persist (ls) falló:', e?.message) }
+    catch (e) { console.warn('[cc-identity] persist (ls) failed:', e?.message) }
     return _writeChain
   }
   const snapshot = _peers
   _writeChain = _writeChain
     .then(() => idbPut(_idb, key, snapshot))
-    .catch(e => console.warn('[cc-identity] persist (idb) falló:', e?.message))
+    .catch(e => console.warn('[cc-identity] persist (idb) failed:', e?.message))
   return _writeChain
 }
 

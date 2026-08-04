@@ -216,7 +216,7 @@ import { pubkeyId } from './capabilities.js'
       return { ok: true, enabled: !!enabled }
     },
     selfVaultPairing: async (opts) => {
-      if (!daemon) throw new Error('esta pestaña no es la bóveda activa; ábrela como pestaña visible')
+      if (!daemon) throw new Error('this tab is not the active vault; open it as a visible tab')
       return daemon.startPairing(opts)
     },
     selfVaultPending: async () => (daemon ? daemon.listPending() : []),
@@ -226,11 +226,11 @@ import { pubkeyId } from './capabilities.js'
       return issued || []
     },
     selfVaultApprove: async ({ deviceId, code }) => {
-      if (!daemon) throw new Error('esta pestaña no es la bóveda activa')
+      if (!daemon) throw new Error('this tab is not the active vault')
       return daemon.approve(deviceId, code)
     },
     selfVaultReject: async ({ deviceId }) => {
-      if (!daemon) throw new Error('esta pestaña no es la bóveda activa')
+      if (!daemon) throw new Error('this tab is not the active vault')
       daemon.reject(deviceId)
       return { ok: true }
     },

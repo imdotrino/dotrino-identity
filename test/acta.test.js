@@ -52,7 +52,7 @@ test('admitir: solo el master puede, y la cadena encadena', async () => {
   // …y quien no es master no puede cambiar nada.
   await assert.rejects(
     () => applyChanges(dos, [{ op: 'caps', pub: b.pub, caps: [...CAPS] }], { by: b.pub }),
-    /no lo es/
+    /not the master/
   )
 })
 
@@ -61,8 +61,8 @@ test('no se puede dejar el perfil sin nadie que firme, ni expulsar al master', a
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
   const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read'] } }], a)
 
-  await assert.rejects(() => applyChanges(dos, [{ op: 'caps', pub: a.pub, caps: ['read'] }], { by: a.pub }), /sin ningún miembro que pueda firmar/)
-  await assert.rejects(() => applyChanges(dos, [{ op: 'remove', pub: a.pub }], { by: a.pub }), /no puedes expulsar al master/)
+  await assert.rejects(() => applyChanges(dos, [{ op: 'caps', pub: a.pub, caps: ['read'] }], { by: a.pub }), /no member able to sign/)
+  await assert.rejects(() => applyChanges(dos, [{ op: 'remove', pub: a.pub }], { by: a.pub }), /cannot remove the master/)
 })
 
 test('traspaso: admitir y nombrar master van en el MISMO seq', async () => {
@@ -81,7 +81,7 @@ test('traspaso: admitir y nombrar master van en el MISMO seq', async () => {
   assert.equal(traspaso.profileId, disp.pub, 'el perfil sigue llamándose igual')
 
   // El saliente ya no puede sellar nada.
-  await assert.rejects(() => applyChanges(traspaso, [{ op: 'caps', pub: disp.pub, caps: ['read'] }], { by: disp.pub }), /no lo es/)
+  await assert.rejects(() => applyChanges(traspaso, [{ op: 'caps', pub: disp.pub, caps: ['read'] }], { by: disp.pub }), /not the master/)
   // El entrante sí.
   const cuatro = await step(traspaso, [{ op: 'caps', pub: disp.pub, caps: ['store', 'read'] }], vault)
   assert.deepEqual(effectiveCaps(cuatro, disp.pub), ['read', 'store'])
@@ -161,7 +161,7 @@ test('una renuncia no puede dejar al perfil sin firmante al absorberse', async (
   const a = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
   const r = await makeRenounce({ member: a.pub, caps: ['sign'], privateJwk: a.privateJwk })
-  await assert.rejects(() => applyChanges(g, [{ op: 'renounce', record: r }], { by: a.pub }), /sin ningún miembro que pueda firmar/)
+  await assert.rejects(() => applyChanges(g, [{ op: 'renounce', record: r }], { by: a.pub }), /no member able to sign/)
 })
 
 test('revocaciones: se apuntan y se podan solas al vencer', async () => {
@@ -208,7 +208,7 @@ test('CN inválido o mezclado: el acta no cuadra', async () => {
 
   await assert.rejects(
     () => applyChanges(g, [{ op: 'admit', member: { pub: x.pub, cn: 'Proxy Mayúsculas', caps: ['secrets'] } }], { by: a.pub }),
-    /CN inválido/
+    /invalid CN/
   )
   // Un acta escrita a mano que mezcle las dos cosas no pasa la comprobación de forma.
   const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['sign', 'secrets'], addedAt: Date.now() }] }

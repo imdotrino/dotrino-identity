@@ -61,7 +61,7 @@ test('expulsar y rotar: pierde el contenido nuevo, no el que ya había', async (
   // El expulsado NO puede leer lo nuevo…
   await assert.rejects(
     () => decryptWithKeyring({ envelope: nuevo, keyring: llavero, myPub: c.pub, myEncPrivateKey: c.priv }),
-    /no tiene la llave/
+    /does not hold the key/
   )
   // …y los que quedan siguen leyendo lo viejo (por eso se conservan las generaciones).
   const leido = await decryptWithKeyring({ envelope: viejo, keyring: llavero, myPub: b.pub, myEncPrivateKey: b.priv })

@@ -60,7 +60,7 @@ test('traspaso del master: quien lo cede deja de poder cambiar el acta', async (
   assert.equal(mine.inProfile, true, 'sigue siendo miembro, solo que ya no manda')
 
   const tercero = await makeDeviceKey({ label: 'Otro' })
-  await assert.rejects(() => id.admitMember({ pub: tercero.publickey }), /no lo es/)
+  await assert.rejects(() => id.admitMember({ pub: tercero.publickey }), /not the master/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -120,7 +120,7 @@ test('firma re-enrutada: sin `sign` y sin bóveda, error claro en vez de firmar 
   await id.renounceCaps(['sign'])
 
   // Sin `sign` y sin bóveda a la que pedirle: falla con un mensaje que se entiende.
-  await assert.rejects(() => id.signData({ hola: 'mundo' }), /perfil-sin-firmante/)
+  await assert.rejects(() => id.signData({ hola: 'mundo' }), /profile-without-signer/)
 
   // …pero el identify del transporte SIEMPRE se firma en local, o el dispositivo
   // no podría ni hablar con la bóveda para pedirle que firme.
@@ -197,7 +197,7 @@ test('tarjeta de perfil: un contacto puede cifrar a TODOS mis dispositivos', asy
 
   // Y alguien de fuera no.
   const dirX = tmp(); const x = await Identity.connect({ dir: dirX })
-  await assert.rejects(() => x.decrypt(aliceEnc, null, sobre), /no está entre los destinatarios/)
+  await assert.rejects(() => x.decrypt(aliceEnc, null, sobre), /not among the message recipients/)
 
   for (const d of [dirBob, dirBob2, dirAlice, dirX]) fs.rmSync(d, { recursive: true, force: true })
 })

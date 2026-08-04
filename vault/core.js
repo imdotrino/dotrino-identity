@@ -400,7 +400,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    */
   async function sealChanges (changes) {
     const acta = loadActa()
-    if (!acta) throw new Error('este perfil todavía no tiene acta')
+    if (!acta) throw new Error('this profile has no record yet')
     const next = await Acta.applyChanges(acta, changes, { by: publickeyJwkStr })
     const sealed = await seal(next)
     pushHistory(acta) // la que deja de ser vigente entra en la ventana de retención
@@ -815,7 +815,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const proof = await derivePwd(password, pwd.salt, pwd.iter)
       if (proof !== pwd.verifier) {
         kv.setItem('dotrino.identity.pwd.tries', JSON.stringify({ n: tries.n + 1, at: Date.now() }))
-        throw new Error('contraseña incorrecta')
+        throw new Error('wrong password')
       }
       kv.removeItem('dotrino.identity.pwd.tries')
       try { sessionKv?.setItem(_scoped(PWD_SESSION), proof) } catch (_) {}
@@ -825,7 +825,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
     async setProfilePassword ({ password }) {
       if (locked) throw new Error('perfil bloqueado')
-      if (!password || String(password).length < 4) throw new Error('la contraseña debe tener al menos 4 caracteres')
+      if (!password || String(password).length < 4) throw new Error('password must be at least 4 characters')
       const salt = b64(crypto.getRandomValues(new Uint8Array(16)))
       const verifier = await derivePwd(password, salt, PWD_ITER)
       kv.setItem(PWD_STORAGE, JSON.stringify({ v: 1, salt, iter: PWD_ITER, verifier }))
@@ -1004,7 +1004,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) {
-        throw new Error('perfil-sin-firmante: este dispositivo ya no firma por ti y no está conectado a ninguna bóveda que pueda hacerlo')
+        throw new Error('profile-without-signer: this device no longer signs for you and is not connected to any vault that can')
       }
       maybeRenewVaultCert()
       try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink }) }
@@ -1109,7 +1109,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
     async deleteProfile ({ id } = {}) {
       let list = loadProfiles()
-      if (list.length <= 1) throw new Error('no se puede borrar el único perfil')
+      if (list.length <= 1) throw new Error('cannot delete the only profile')
       if (!list.find((p) => p.id === id)) throw new Error('perfil no existe')
       list = list.filter((p) => p.id !== id); saveProfiles(list)
       // Borrado directo del namespace del perfil (incluye su store del vault si lo tuviera).
@@ -1220,7 +1220,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async renounceCaps ({ caps } = {}) {
       const acta = loadActa()
-      if (!acta) throw new Error('este perfil todavía no tiene acta')
+      if (!acta) throw new Error('this profile has no record yet')
       const record = await Acta.makeRenounce({ member: publickeyJwkStr, caps, privateKey: keypair.privateKey })
       const pend = loadRenounces().filter((r) => r.member !== publickeyJwkStr)
       pend.push(record)
@@ -1233,7 +1233,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     /** Absorbe en el acta una renuncia ajena ya verificada (solo el master). */
     async absorbRenounce ({ record } = {}) {
-      if (!(await Acta.verifyRenounce(record))) throw new Error('renuncia inválida: la firma no es del propio miembro')
+      if (!(await Acta.verifyRenounce(record))) throw new Error('invalid renounce: the signature is not the member own')
       const acta = await sealChanges([{ op: 'renounce', record }])
       return { ok: true, seq: acta.seq }
     },
@@ -1250,7 +1250,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async sealContent ({ plaintext } = {}) {
       const mine = await myCek()
-      if (!mine) throw new Error('este dispositivo todavía no tiene la clave de contenido del perfil')
+      if (!mine) throw new Error('this device does not hold the profile content key yet')
       return Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: String(plaintext) })
     },
 
@@ -1294,7 +1294,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * y la firmó el mismo master. Si el master cambió, se avisa en vez de aceptarlo callando.
      */
     async adoptPeerCard ({ card } = {}) {
-      if (!card?.profileId) throw new Error('tarjeta inválida')
+      if (!card?.profileId) throw new Error('invalid card')
       const peers = loadPeers()
       const prev = peers[card.profileId]?.card || null
       const r = await Acta.canAdoptCard({ card, current: prev })
@@ -1339,7 +1339,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       } else {
         const yaConEsta = loadVaultCert()?.master === qr?.iss
         if (loadActa() && !isPendingJoin() && !yaConEsta) {
-          throw new Error('este aparato ya está usando una cuenta: para usar también la de tu bóveda, crea una cuenta nueva aquí (la que tienes abierta no se toca)')
+          throw new Error('this device is already using an account: to also use your vault account, create a new account here (the open one is untouched)')
         }
       }
       // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
@@ -1381,8 +1381,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async vaultAdopt ({ qr, label = '' } = {}) {
       const mio = loadActa()
-      if (!mio) throw new Error('este aparato todavía no tiene ninguna cuenta que entregar')
-      if (!amMaster()) throw new Error('no-eres-el-master: esta cuenta ya la manda otro dispositivo o bóveda; el traspaso se hace desde ahí')
+      if (!mio) throw new Error('this device has no account to hand over yet')
+      if (!amMaster()) throw new Error('not-the-master: another device or vault is in charge of this account; the handover is done from there')
 
       const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
       const res = await remoteEnroll({
@@ -1417,7 +1417,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const r = await adoptActa(res.acta)
       const ok = r.adopted || r.reason === 'misma-acta'
       emitVault({ phase: 'adopted', master: res.master, seq: res.acta?.seq, ok })
-      if (!ok) throw new Error('la bóveda devolvió un acta que no encaja: ' + r.reason)
+      if (!ok) throw new Error('the vault returned a record that does not fit: ' + r.reason)
       return { ok: true, adopted: true, profileId: mio.profileId, seq: r.seq ?? res.acta?.seq, master: res.master, deviceId: res.deviceId }
     },
 
@@ -1454,7 +1454,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // así nada se rompe si no estás emparejado o si el vault está apagado.
     async vaultSign ({ payload }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
       try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
@@ -1470,7 +1470,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async vaultStore ({ method, args }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
       const mine = await myCek().catch(() => null)
       let payload = { method, args }
@@ -1492,7 +1492,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('este dispositivo no está emparejado con un vault')
+      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
       try {
         const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink })
@@ -1603,7 +1603,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!envelope || (envelope.v !== 1 && envelope.v !== 2)) throw new Error('Unsupported envelope')
       const myId = await encKeyId(encPublickeyJwkStr)
       const myEntry = envelope.wrap && (envelope.wrap[myId] || (myToken ? envelope.wrap[myToken] : null))
-      if (!myEntry) throw new Error('este dispositivo no está entre los destinatarios del mensaje')
+      if (!myEntry) throw new Error('this device is not among the message recipients')
       const senderPub = await importPeerEncPubkey(senderEncryptionPubkey)
       const sharedKey = await deriveSharedAesKey(encKeypair.privateKey, senderPub)
       const kRaw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBuf(myEntry.iv) }, sharedKey, base64ToBuf(myEntry.ct))
@@ -1615,7 +1615,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     async exportIdentity () {
       const raw = kv.getItem(KEY_STORAGE)
       if (!raw) {
-        throw new Error('Este perfil guarda su llave de forma NO exportable (protección contra robo). ' +
+        throw new Error('This profile stores its key as NON-exportable (theft protection). ' +
           'Para usar tu identidad en otro navegador, conecta ese navegador a tu bóveda (vault) desde profile.dotrino.com.')
       }
       const keys = JSON.parse(raw)
@@ -1758,7 +1758,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const fn = handlers[name]
     handlers[name] = async (params) => {
       if (locked) refreshLockState() // otra pestaña pudo desbloquear… no: session es por pestaña; re-chequea por si se quitó el pwd
-      if (locked) throw new Error('perfil bloqueado: desbloquéalo con tu contraseña (unlockProfile)')
+      if (locked) throw new Error('profile locked: unlock it with your password (unlockProfile)')
       return fn(params)
     }
   }
