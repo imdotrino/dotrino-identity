@@ -12,7 +12,7 @@
  * the "polite" one (rolls back on collision).
  */
 
-const DEFAULT_ICE_SERVERS = [
+export const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:global.stun.twilio.com:3478' }
@@ -91,6 +91,15 @@ export class WebRTCManager {
 
   closeAll () {
     for (const t of Array.from(this.peers.keys())) this.closePeer(t)
+  }
+
+  /**
+   * Reemplaza la lista de ICE servers para las PRÓXIMAS conexiones (los peers
+   * ya negociados conservan la suya). Lo usa `client.enableTurn()` para
+   * inyectar las credenciales TURN temporales del proxy.
+   */
+  setIceServers (list) {
+    if (Array.isArray(list) && list.length) this.iceServers = list
   }
 
   isOpen (to) {
