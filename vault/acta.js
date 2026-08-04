@@ -35,13 +35,26 @@ export const ACTA_V = 1
 /**
  * Lista CERRADA de capacidades. Sellar y admitir no están: eso es ser el master.
  *
- * `secrets` es distinta de las otras tres: solo la pueden tener los miembros con **CN**
+ * `secrets` es distinta de las otras: solo la pueden tener los miembros con **CN**
  * (los servicios), y lo que abre es únicamente el cajón de SU nombre. Ver `cn` abajo.
+ *
+ * `admin` es la rendija que se le abre a la consola remota (`dotrino-vault/docs/
+ * consola-remota.md`): deja **admitir y expulsar** miembros a distancia, y nada más.
+ * NO deja cambiar permisos, traspasar el mando ni conceder `admin` — eso sigue siendo
+ * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
+ * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin'])
+
+/**
+ * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
+ * empareja, se concede después y a mano (`dotrino-vault caps <ID> +admin`), para que
+ * ningún QR que circule pueda otorgar administración.
+ */
+export const PAIRED_CAPS = Object.freeze(['sign', 'store', 'read'])
 
 /** Capacidades de un SERVICIO (con CN): solo su propio cajón de secretos. */
 export const SERVICE_CAPS = Object.freeze(['secrets'])
@@ -58,12 +71,13 @@ export function capScope (cap, cn = null) {
   if (cap === 'sign') return 'vault:sign'
   if (cap === 'store') return 'vault:store'
   if (cap === 'read') return 'vault:read'
+  if (cap === 'admin') return 'vault:admin'
   if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
   return null
 }
 
-/** Compat: el mapa directo, para las tres capacidades de dispositivo. */
-export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read' })
+/** Compat: el mapa directo, para las capacidades de dispositivo. */
+export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin' })
 
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -107,7 +121,7 @@ export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() 
     sealedBy: pub,
     seq: 1,
     prev: null,
-    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...DEVICE_CAPS], addedAt: now, cert: null }],
+    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
     // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA

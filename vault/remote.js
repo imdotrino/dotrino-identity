@@ -28,6 +28,10 @@ const MSG = {
   ACTA_SEALED: 'vault.acta.sealed',
   ACTA_ADOPTED: 'vault.acta.adopted',
   REVOKED: 'vault.revoked',
+  // Consola remota: administrar el perfil desde un dispositivo (scope `vault:admin`).
+  ADMIN: 'vault.admin',
+  ADMIN_RESULT: 'vault.admin.result',
+  ADMIN_EVENT: 'vault.admin.event',
   ERROR: 'vault.error'
 }
 export { MSG as VAULT_MSG }
@@ -269,4 +273,37 @@ export async function requestRenew ({ master, proxy, device, cert, onRevoked } =
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
   if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('cert renovado inválido')
   return { cert: res.cert }
+}
+
+/**
+ * CONSOLA REMOTA (`dotrino-vault/docs/consola-remota.md`): administrar el perfil desde
+ * este dispositivo, sin ir al PC. Requiere un cert con scope `vault:admin`, que **no se
+ * recibe al emparejar** — se concede a mano en la bóveda.
+ *
+ * `op`: `pending` · `pair` · `approve` · `reject` · `revoke` · `audit`. Lo que NO existe
+ * aquí es tan importante como lo que sí: cambiar permisos, traspasar el mando y los
+ * secretos de servicios no se administran a distancia.
+ *
+ * El `nonce` de un solo uso va en cada petición porque `approve` y `revoke` cambian
+ * estado, y para eso la ventana de frescura de ±5 min no alcanza.
+ */
+export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked, ...rest } = {}) {
+  const nonce = [...crypto.getRandomValues(new Uint8Array(16))]
+    .map((b) => b.toString(16).padStart(2, '0')).join('')
+  const res = await vaultRpc({
+    master, proxy, device, cert, onRevoked,
+    sendType: MSG.ADMIN, okType: MSG.ADMIN_RESULT,
+    data: { op, ...rest, nonce }
+  })
+  return res.result
+}
+
+/**
+ * ¿Es AUTÉNTICO este `vault.admin.event` (entró o salió alguien del perfil)? Solo si va
+ * firmado por la maestra PINEADA. Un aviso sin firma no se muestra: si no, cualquiera
+ * podría llenar de alarmas falsas los dispositivos del usuario.
+ */
+export async function isAuthenticAdminEvent ({ body, signature, master }) {
+  if (!body || typeof body.ev !== 'string') return false
+  return verifyDeviceSig({ publickey: master, data: body, signature })
 }

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, isHandover,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
-  memberCanReadSecrets, memberScopes, isService
+  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope
 } from '../vault/acta.js'
 
 /** Una llave de miembro (extractable, para poder firmar en el test con privateJwk). */
@@ -33,7 +33,7 @@ test('génesis: un miembro, es el master, y verifica', async () => {
   assert.equal(acta.sealer, a.pub)
   assert.equal(acta.sealedBy, a.pub)
   assert.equal(acta.seq, 1)
-  assert.deepEqual(acta.members[0].caps, [...DEVICE_CAPS], 'el dueño nace como dispositivo: acceso a todo lo suyo')
+  assert.deepEqual(acta.members[0].caps, [...PAIRED_CAPS], 'el dueño nace como dispositivo: acceso a todo lo suyo')
   assert.equal(acta.members[0].cn, null, 'y sin CN, porque no es un servicio')
   assert.equal(isHandover(acta), false)
 })
@@ -145,7 +145,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   const r = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
   assert.equal(await verifyRenounce(r), true)
-  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['read', 'store'], 'se honra sin tocar el acta')
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'read', 'store'], 'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -153,7 +153,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['read', 'store'])
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'read', 'store'])
   assert.equal(tres.renounced.length, 1)
 })
 
@@ -216,4 +216,45 @@ test('CN inválido o mezclado: el acta no cuadra', async () => {
   // Y `secrets` sin CN tampoco.
   const sinCn = { ...g, members: [...g.members, { pub: x.pub, cn: null, caps: ['secrets'], addedAt: Date.now() }] }
   assert.equal((await verifyActa({ acta: sinCn })).reason, 'secretos-sin-cn')
+})
+
+// --- La capacidad `admin` (consola remota, dotrino-vault/docs/consola-remota.md) ---
+
+test('admin: es de dispositivo, tiene su scope y no se empareja sola', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+
+  assert.equal(capScope('admin'), 'vault:admin')
+  assert.ok(DEVICE_CAPS.includes('admin'), 'un dispositivo puede administrar')
+  assert.ok(!PAIRED_CAPS.includes('admin'), 'pero NO se recibe al emparejar: se concede después')
+  assert.deepEqual([...g.members[0].caps], [...PAIRED_CAPS], 'la génesis nace sin admin explícita')
+
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'admin'] } }], a)
+  assert.ok(memberCan(dos, b.pub, 'admin'))
+  assert.ok(memberScopes(dos, b.pub).includes('vault:admin'))
+})
+
+test('admin: un SERVICIO no puede administrar', async () => {
+  const a = await key(); const x = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+
+  // Por la puerta de adelante: al admitir, un miembro con CN solo conserva `secrets`.
+  const dos = await step(g, [{ op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: ['secrets', 'admin'] } }], a)
+  assert.deepEqual(dos.members.at(-1).caps, ['secrets'], 'la admin se cae al admitir un servicio')
+
+  // Y por la de atrás: un acta escrita a mano que se la dé no pasa la forma.
+  const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['admin'], addedAt: Date.now() }] }
+  assert.equal((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
+})
+
+test('admin: se puede renunciar (solo quita) y quitar desde el master', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'admin'] } }], a)
+
+  const r = await makeRenounce({ member: b.pub, caps: ['admin'], privateJwk: b.privateJwk })
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['read'], 'renunciar a administrar es unilateral')
+
+  const tres = await step(dos, [{ op: 'caps', pub: b.pub, caps: ['read'] }], a)
+  assert.ok(!memberCan(tres, b.pub, 'admin'), 'el master se la quita')
 })
