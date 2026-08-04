@@ -371,6 +371,24 @@ export class Identity {
     return this._call('vaultStore', { method, args }, 20000)
   }
 
+  /**
+   * CONSOLA REMOTA: administra el perfil desde este dispositivo, contra la bóveda
+   * (`dotrino-vault/docs/consola-remota.md`). `op`: `pending` · `pair` · `approve` ·
+   * `reject` · `revoke` · `audit`.
+   *
+   * Requiere que el cert de este aparato lleve `vault:admin`, que **no se recibe al
+   * emparejar**: se concede a mano en la bóveda. Cambiar permisos y traspasar el mando
+   * NO se administran a distancia — siguen siendo del master, en su máquina.
+   */
+  async vaultAdmin (op, args) {
+    return this._call('vaultAdmin', { op, ...(args || {}) }, 20000)
+  }
+
+  /** ¿El cert de este dispositivo le permite administrar el perfil a distancia? */
+  async canAdminVault () {
+    return this._call('canAdminVault', {}, 20000)
+  }
+
   /** Lista (solo lectura) los dispositivos enrolados en tu vault: { devices, revoked }. */
   async listVaultDevices () {
     return this._call('listVaultDevices', {}, 20000)

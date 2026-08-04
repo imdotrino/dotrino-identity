@@ -22,7 +22,7 @@ import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { pubkeyId as pubkeyIdOf } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -1487,6 +1487,34 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         }
         return res
       } catch (e) { return handleVaultError(e) }
+    },
+
+    /**
+     * CONSOLA REMOTA: administrar el perfil desde este dispositivo (ver
+     * `dotrino-vault/docs/consola-remota.md`). Requiere que el cert de este aparato
+     * lleve `vault:admin`, que **no se recibe al emparejar**: se concede a mano en la
+     * bóveda (`dotrino-vault caps <ID> +administra`).
+     *
+     * `op`: `pending` · `pair` · `approve` · `reject` · `revoke` · `audit`. Cambiar
+     * permisos y traspasar el mando NO están, y no es un olvido: eso sigue siendo del
+     * master, en su máquina.
+     */
+    async vaultAdmin ({ op, ...rest } = {}) {
+      const v = loadVaultCert(); const device = loadVaultDevice()
+      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
+      maybeRenewVaultCert()
+      try { return await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink }) }
+      catch (e) { return handleVaultError(e) }
+    },
+
+    /**
+     * ¿Puede ESTE dispositivo administrar el perfil a distancia? Sale del scope del
+     * cert que le dio la bóveda, no de una preferencia: la interfaz pregunta para
+     * saber qué pintar, pero quien decide es la bóveda al recibir la petición.
+     */
+    canAdminVault () {
+      const v = loadVaultCert()
+      return !!v?.cert && (v.cert.scope || []).includes('vault:admin')
     },
 
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
