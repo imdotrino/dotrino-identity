@@ -1,5 +1,5 @@
 import { buildSignedChannel, getPublicKeyJwk, signData } from './signature.js'
-import { WebRTCManager, RTC_TAG } from './webrtc.js'
+import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS } from './webrtc.js'
 
 /**
  * Dotrino WebSocket proxy client.
@@ -75,6 +75,10 @@ export class WebSocketProxyClient {
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
+    }
+    if (this._turnTimer) {
+      clearTimeout(this._turnTimer)
+      this._turnTimer = null
     }
     if (this._rtc) this._rtc.closeAll()
     if (this.ws) {
@@ -219,12 +223,57 @@ export class WebSocketProxyClient {
    * @param {string|string[]} toPubkeys publickey JWK string o array
    * @param {any} payload
    */
-  sendByPubkey (toPubkeys, payload) {
+  /**
+   * Enviar a una o varias pubkeys.
+   *
+   * `opts.ephemeral` marca el mensaje como de TIEMPO REAL: si el destinatario no
+   * está conectado en ese momento, se descarta en vez de guardarse en la cola
+   * offline de 24 h. Úsalo para lo que caduca —jugadas de una partida,
+   * señalización WebRTC, presencia—: entregar eso mañana no es tarde, es
+   * incorrecto (reinicia negociaciones imposibles y muestra movimientos fuera de
+   * contexto). NO lo uses para mensajes de chat, que sí quieren esperar.
+   */
+  sendByPubkey (toPubkeys, payload, opts = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
-    this._sendRaw({
+    const msg = {
       to_publickey: list,
       message: typeof payload === 'string' ? payload : JSON.stringify(payload)
-    })
+    }
+    if (opts.ephemeral) msg.ephemeral = true
+    this._sendRaw(msg)
+  }
+
+  /**
+   * Pedir una CITA: el código corto que una persona lee, dicta o escanea para
+   * emparejarse con esta conexión.
+   *
+   * Es un código de 6 caracteres (los 2 primeros dicen qué proxio lo emitió),
+   * que **caduca en minutos y se quema al usarse**. Esa es la diferencia con el
+   * token de 4 caracteres de antes: aquel era permanente mientras durara la
+   * conexión Y era la dirección de ruteo, así que tenía que ser adivinable-seguro
+   * y corto a la vez, dos cosas incompatibles.
+   *
+   * @param {{ttlMs?:number}} [opts] vida del código (30s–30min, por defecto 5min)
+   * @returns {Promise<{code:string, expiresAt:number, node:string}>}
+   */
+  requestPairingCode (opts = {}) {
+    const msg = { type: 'pair-code' }
+    if (opts.ttlMs) msg.ttlMs = opts.ttlMs
+    return this._request(msg, 'pair-code')
+  }
+
+  /**
+   * Canjear una cita ajena: devuelve a qué conexión (y a qué identidad) apunta.
+   * Acepta el código en minúsculas y con espacios o guiones.
+   *
+   * Si el código lo emitió otro proxio, este le pregunta a ESE proxio — no a
+   * toda la malla: un pregón se lo queda el primero que conteste, y así es como
+   * un nodo hostil se mete en emparejamientos ajenos.
+   *
+   * @returns {Promise<{ok:boolean, instance?:string, publickey?:string, error?:string}>}
+   */
+  redeemPairingCode (code) {
+    return this._request({ type: 'pair-redeem', code }, 'pair-redeem')
   }
 
   /**
@@ -233,11 +282,77 @@ export class WebSocketProxyClient {
    * (típicamente por el identity vault). Devuelve la respuesta del proxy con
    * `queued_delivered` (mensajes offline despachados al instante).
    */
-  identify ({ data, signature, cert }) {
+  identify ({ data, signature, cert, acta }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
     const msg = { type: 'identify', data, signature }
     if (cert) msg.cert = cert // "una identidad": el proxy bindea este token también bajo tu maestra M
+    // Acta de perfil: el proxy la verifica (va firmada) y bindea también el `profileId`, así
+    // escribirle a la PERSONA llega a cualquiera de sus dispositivos. Ver acta-de-perfil.md.
+    if (acta) msg.acta = acta
     return this._request(msg, 'identified')
+  }
+
+  /**
+   * Pedir al proxy credenciales TURN temporales (Cloudflare) para WebRTC.
+   * Requiere haber llamado antes a `identify` en ESTA conexión con la misma
+   * pubkey: el proxy solo emite a conexiones identificadas (así el TURN se
+   * usa solo desde apps Dotrino y no como relay abierto). Las credenciales
+   * expiran solas (TTL corto) y hay cuota por pubkey/hora.
+   *
+   * @param {Object} opts
+   * @param {string} opts.publicKey  Pubkey JWK string del vault (la de identify).
+   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign  Firma del vault (id.signData).
+   * @returns {Promise<{enabled:boolean, iceServers:any[]|null, expiresAt:number|null}>}
+   */
+  async getTurnCredentials ({ publicKey, sign } = {}) {
+    if (!publicKey || typeof sign !== 'function') {
+      throw new Error('getTurnCredentials requires { publicKey, sign }')
+    }
+    const data = { op: 'turn-credentials', publickey: publicKey, ts: Date.now() }
+    const signature = await normalizeSignature(sign, data)
+    const res = await this._request({ type: 'turn-credentials', data, signature }, 'turn-credentials')
+    return {
+      enabled: !!res.enabled,
+      iceServers: res.iceServers || null,
+      expiresAt: res.expiresAt || null
+    }
+  }
+
+  /**
+   * Activar TURN para WebRTC: obtiene credenciales temporales del proxy, las
+   * inyecta como ICE servers (junto a los STUN por defecto) y las renueva
+   * sola antes de expirar. Si el proxy no tiene TURN configurado, no cambia
+   * nada (los peers siguen STUN-only con fallback al proxy).
+   *
+   * Afecta a las conexiones P2P NUEVAS (los peers ya negociados conservan su
+   * configuración). Llamalo después de `identify`.
+   *
+   * @param {Object} opts  Igual que getTurnCredentials ({ publicKey, sign }).
+   * @returns {Promise<boolean>} true si TURN quedó activo.
+   */
+  async enableTurn ({ publicKey, sign } = {}) {
+    if (!this._rtc) throw new Error('WebRTC está deshabilitado en este cliente')
+    if (this._turnTimer) {
+      clearTimeout(this._turnTimer)
+      this._turnTimer = null
+    }
+    const res = await this.getTurnCredentials({ publicKey, sign })
+    if (!res.enabled || !res.iceServers) return false
+    this._rtc.setIceServers([...res.iceServers, ...DEFAULT_ICE_SERVERS])
+    // Renovar con margen antes de expirar (mínimo 30 s entre renovaciones)
+    const refreshIn = Math.max(30000, (res.expiresAt || 0) - Date.now() - 60000)
+    this._turnTimer = setTimeout(() => {
+      this._turnTimer = null
+      this.enableTurn({ publicKey, sign }).catch(() => {
+        // Sin conexión o cuota: reintento suave en 60 s; mientras tanto los
+        // peers nuevos usan los STUN por defecto.
+        this._turnTimer = setTimeout(() => {
+          this._turnTimer = null
+          this.enableTurn({ publicKey, sign }).catch(() => {})
+        }, 60000)
+      })
+    }, refreshIn)
+    return true
   }
 
   /**
@@ -451,7 +566,12 @@ export class WebSocketProxyClient {
       const wasConnected = this._connected
       this._connected = false
       this._emit('disconnect', { code: ev.code, reason: ev.reason })
-      if (wasConnected && this.autoReconnect && ev.code !== 1000) {
+      // Reconectar ante cualquier cierre del servidor (incluido code 1000 de un
+      // restart limpio del proxy): los cierres INTENCIONALES del cliente ya
+      // tienen autoReconnect=false (puesto por close()), así que este guard no
+      // filtra desconexiones pedidas por la app. Sin esto, un restart del proxy
+      // deja a clientes de larga duración (bots, apps abiertas) zombis para siempre.
+      if (wasConnected && this.autoReconnect) {
         this._scheduleReconnect()
       }
     })
@@ -516,7 +636,20 @@ export class WebSocketProxyClient {
     const { type } = data
     switch (type) {
       case 'connected':
-        this.token = data.token
+        // `instance` es el identificador de esta conexión, ya cualificado por
+        // nodo: se le puede escribir desde cualquier proxio de la malla. Es el
+        // mismo valor que `token` (el nombre histórico), pero ya NO es un código
+        // de 4 caracteres para dictar — para eso está `requestPairingCode()`.
+        this.instance = data.instance || data.token
+        this.node = data.node || null
+        // Los nodos que conoce este proxio. Sirve para los descubrimientos que
+        // son de TODO el ecosistema y no tienen dueño natural (la lista pública
+        // de salas): se pregunta en cada nodo y se mezcla, en vez de designar a
+        // uno como árbitro. Son públicos: van en cada instancia y en /peers.
+        this.peers = Array.isArray(data.peers) ? data.peers : []
+        /** Este nodo + los que conoce, sin repetidos. */
+        this.knownNodes = [this.node, ...this.peers].filter((n, i, a) => n && a.indexOf(n) === i)
+        this.token = this.instance
         this._emit('token', this.token)
         if (this._connectResolve) {
           this._connectResolve(this.token)
@@ -569,6 +702,9 @@ export class WebSocketProxyClient {
       case 'push-scheduled':
       case 'push-canceled':
       case 'push-list':
+      case 'turn-credentials':
+      case 'pair-code':
+      case 'pair-redeem':
         this._resolvePending(data, type)
         break
       case 'error':
