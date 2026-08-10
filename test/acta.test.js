@@ -258,3 +258,37 @@ test('admin: se puede renunciar (solo quita) y quitar desde el master', async ()
   const tres = await step(dos, [{ op: 'caps', pub: b.pub, caps: ['read'] }], a)
   assert.ok(!memberCan(tres, b.pub, 'admin'), 'el master se la quita')
 })
+
+test('renombrar un miembro: cambia el nombre y no toca nada más', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, label: 'Seyacat', caps: ['store', 'read'] } }], a)
+  const antes = dos.members.find((m) => m.pub === b.pub)
+  assert.equal(antes.label, 'Seyacat', 'entró con el apodo que tenía el usuario ese día')
+
+  const tres = await step(dos, [{ op: 'label', pub: b.pub, label: 'Teléfono de casa' }], a)
+  const m = tres.members.find((m) => m.pub === b.pub)
+  assert.equal(m.label, 'Teléfono de casa', 'el nombre cambió')
+  assert.deepEqual(m.caps, antes.caps, 'los permisos NO se tocan')
+  assert.equal(m.cn, antes.cn, 'ni si es un servicio')
+  assert.equal((await verifyActa({ acta: tres })).ok, true, 'y el acta sigue verificando')
+})
+
+test('renombrar: tope de 60, y a quien no está en el acta se le dice que no', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, label: 'x', caps: ['read'] } }], a)
+  const tres = await step(dos, [{ op: 'label', pub: b.pub, label: 'z'.repeat(200) }], a)
+  assert.equal(tres.members.find((m) => m.pub === b.pub).label.length, 60)
+  await assert.rejects(
+    () => applyChanges(tres, [{ op: 'label', pub: 'no-existe', label: 'x' }], { by: a.pub }),
+    /not in the record/
+  )
+})
+
+test('renombrar: solo el master', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, label: 'x', caps: ['read'] } }], a)
+  await assert.rejects(() => applyChanges(dos, [{ op: 'label', pub: a.pub, label: 'mio' }], { by: b.pub }), /not the master/)
+})

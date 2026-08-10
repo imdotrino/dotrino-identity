@@ -1191,6 +1191,22 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { ok: true, seq: acta.seq }
     },
 
+    /**
+     * RENOMBRA un miembro (el nombre con el que lo reconoces). Se escribe en el acta y
+     * TAMBIÉN en la delegación: son dos registros distintos —el acta dice quién es del
+     * perfil, las delegaciones qué certs se emitieron— y las listas de dispositivos leen
+     * la segunda, así que tocar solo una deja el nombre viejo a la vista.
+     */
+    async setLabel ({ pub, label } = {}) {
+      const limpio = String(label || '').slice(0, 60)
+      const acta = await sealChanges([{ op: 'label', pub, label: limpio }])
+      const store = loadDelegations()
+      let tocadas = 0
+      for (const d of Object.values(store)) { if (d.sub === pub) { d.label = limpio; tocadas++ } }
+      if (tocadas) saveDelegations(store)
+      return { ok: true, seq: acta.seq, label: limpio, delegations: tocadas }
+    },
+
     async removeMember ({ pub } = {}) {
       const acta = await sealChanges([{ op: 'remove', pub }])
       // Expulsar rota la clave: el que sale no podrá abrir el contenido NUEVO. Lo que ya

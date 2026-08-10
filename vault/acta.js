@@ -247,6 +247,17 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
         m.caps = cleanCaps(ch.caps).filter((c) => (m.cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c))
         break
       }
+      case 'label': {
+        // RENOMBRAR un miembro. La etiqueta se escribía solo al admitir, con lo que el
+        // aparato se quedaba para siempre con el nombre que tuviera el día que entró
+        // (normalmente el apodo del usuario en ese momento), y para cambiarlo había que
+        // revocarlo y volver a emparejarlo. Es un nombre para el humano: no toca permisos
+        // ni llaves, pero se sella y se firma como cualquier otro cambio del acta.
+        const m = find(ch.pub)
+        if (!m) throw new Error('label: that member is not in the record')
+        m.label = String(ch.label || '').slice(0, 60)
+        break
+      }
       case 'remove': {
         const i = next.members.findIndex((m) => m.pub === ch.pub)
         if (i < 0) throw new Error('remove: that member is not in the record')

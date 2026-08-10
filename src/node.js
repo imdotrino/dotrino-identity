@@ -168,6 +168,7 @@ export class Identity {
   isMaster () { return this._h('isMaster') }
   admitMember (member) { return this._h('admitMember', member) }
   setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }
+  setLabel (pub, label) { return this._h('setLabel', { pub, label }) }
   removeMember (pub) { return this._h('removeMember', { pub }) }
   handoverMaster (to, member = null) { return this._h('handoverMaster', { to, member }) }
   renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
