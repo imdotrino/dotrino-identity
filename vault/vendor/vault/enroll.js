@@ -39,14 +39,20 @@ export const FRESH_WINDOW_MS = 5 * 60 * 1000
 /** Vida por defecto del cert de un dispositivo (tope duro de `MAX_DELEGATION_MS`). */
 export const DEVICE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+export const MSG_HELLO = 'vault.hello'
+export const MSG_HELLO_OK = 'vault.hello.ok'
 export const MSG_ENROLL = 'vault.enroll'
 export const MSG_ENROLL_CHALLENGE = 'vault.enroll.challenge'
 export const MSG_ENROLLED = 'vault.enrolled'
+// --- camino A: la cuenta del aparato pasa a vivir en la bóveda ---
+export const MSG_ENROLL_ADOPT = 'vault.enroll.adopt'
+export const MSG_ACTA_SEALED = 'vault.acta.sealed'
+export const MSG_ACTA_ADOPTED = 'vault.acta.adopted'
 export const MSG_REVOKED = 'vault.revoked'
 export const MSG_ERROR = 'vault.error'
 
 /** Los scopes del cert se corresponden 1:1 con las capacidades del acta (§D7). */
-const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read' }
+const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read', 'vault:admin': 'admin' }
 export const scopeToCaps = (scope) =>
   (Array.isArray(scope) ? scope : [scope]).map((s) => SCOPE_TO_CAP[s]).filter(Boolean)
 
@@ -63,11 +69,21 @@ export function scopeToCn (scope) {
   return null
 }
 
-/** Token aleatorio de 128 bits en hex. */
-export function randToken () {
-  const b = crypto.getRandomValues(new Uint8Array(16))
+/**
+ * Token aleatorio en hex (16 bytes = 128 bits por defecto).
+ *
+ * El emparejamiento pide 12 (96 bits): son de un solo uso, valen 5 minutos y hay
+ * UNA sesión viva a la vez, así que adivinarlo es 2^95 intentos contra una bóveda
+ * que además exige el código de 6 dígitos. A cambio, cada byte de menos son ~1,4
+ * caracteres menos en el QR — y el QR se mide en filas de terminal.
+ */
+export function randToken (bytes = 16) {
+  const b = crypto.getRandomValues(new Uint8Array(bytes))
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
+
+/** Tamaño del token/nonce de una sesión de emparejamiento (ver `randToken`). */
+const PAIR_TOKEN_BYTES = 12
 
 /** deviceId legible (p. ej. `C440-AC0E`) a partir de una pubkey JWK. */
 export async function deviceIdOf (pub) {
@@ -94,27 +110,65 @@ export async function deviceIdOf (pub) {
 export function createEnrollDesk ({
   identity, iss, proxy, send, sendByPubkey,
   audit = () => {}, log = () => {},
-  onChallenge = () => {}, onPendingChange = () => {},
-  defaultScope = ['vault:sign'], defaultTtlMs = DEVICE_TTL_MS
+  onChallenge = () => {}, onPendingChange = () => {}, onAdopted = () => {},
+  defaultScope = ['vault:sign'], defaultTtlMs = DEVICE_TTL_MS,
+  // Camino A: lo que ESTA bóveda le manda al aparato para que la meta en su acta. `encPub`
+  // es su llave de CIFRADO — sin ella entra mandando pero sin poder leer el contenido.
+  encPub = null, vaultLabel = '',
+  // Token de CONEXIÓN de esta bóveda en el proxy (4 chars): su dirección. Es lo
+  // único que necesita el QR corto para que el aparato le hable punto a punto.
+  connToken = null
 } = {}) {
-  if (!identity) throw new Error('createEnrollDesk: falta identity')
-  if (!iss) throw new Error('createEnrollDesk: falta iss (pubkey de la maestra)')
+  if (!identity) throw new Error('createEnrollDesk: missing identity')
+  if (!iss) throw new Error('createEnrollDesk: missing iss (master pubkey)')
 
   // token -> { token, exp, scope, ttlMs, label, sn, state, dpub?, deviceId?, commit?, from? }
   // state: 'AWAITING_ENROLL' -> 'PENDING_CONFIRM'
   const pending = new Map()
 
   const fire = (fn, arg) => { try { fn(arg) } catch (_) {} }
-  const reply = (to, obj) => { try { send(to, obj) } catch (e) { log('[vault] no se pudo responder:', e.message) } }
+  const reply = (to, obj) => { try { send(to, obj) } catch (e) { log('[vault] could not reply:', e.message) } }
   const isFresh = (d) => typeof d?.ts === 'number' && Math.abs(Date.now() - d.ts) <= FRESH_WINDOW_MS
 
-  /** Inicia un emparejamiento: token + nonce de sesión. NO firma nada todavía. */
-  function startPairing ({ scope = defaultScope, ttlMs = defaultTtlMs, label = '' } = {}) {
+  /**
+   * Inicia un emparejamiento: token + nonce de sesión. NO firma nada todavía.
+   *
+   * `mode` y `account` son LO QUE LA BÓVEDA DECLARA que va a pasar, y viajan en el QR
+   * para que el aparato pueda **decirlo antes de hacerlo** en vez de emparejar a
+   * ciegas (decisión V9 de `docs/vinculacion-de-cuentas.md`: pregunta el vault, el
+   * dispositivo muestra el proceso y sus consecuencias):
+   *
+   *   · `mode: 'join'`  → el dispositivo estrena una cuenta suya y entra a la de la
+   *                       bóveda. Es lo único que existe hoy.
+   *   · `mode: 'adopt'` → la bóveda se quedaría con la cuenta que trae el aparato
+   *                       (camino A). Reservado: todavía no hay protocolo.
+   *   · `account`       → cómo se llama la cuenta de la bóveda, para nombrarla en el
+   *                       aviso. Es ORIENTATIVO (un nombre que puso su dueño); la
+   *                       identidad de verdad de la cuenta es `iss`.
+   */
+  async function startPairing ({ scope = defaultScope, ttlMs = defaultTtlMs, label = '', mode = 'join', account = '' } = {}) {
     pending.clear() // uno a la vez: una sesión nueva supersede a la anterior
-    const token = randToken()
-    const sn = randToken()
-    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, ttlMs, label, sn, state: 'AWAITING_ENROLL' })
-    return { token, qr: { v: 2, iss, proxy, token, sn }, expiresInMs: PAIRING_TTL_MS }
+    const acct = String(account || '').slice(0, 40)
+    // INVITACIÓN CORTA: si sabemos cómo alcanzarnos, el QR lleva solo eso y el
+    // nonce de la sesión. La llave, el proxy y el nombre de la cuenta los pide el
+    // aparato por la red presentando el `sn`. El nonce hace de identificador de
+    // sesión: no hace falta un token de emparejamiento aparte.
+    //
+    // `conn` es una CITA del proxio (6 caracteres, un solo uso, caduca en
+    // minutos), no la dirección de la conexión: esa pasó a ser una instancia de
+    // 24 caracteres, que ni entra cómoda en un QR ni tiene por qué quedar impresa
+    // en algo que circula. Por eso se pide una nueva por emparejamiento, y por
+    // eso esto es asíncrono.
+    const conn = typeof connToken === 'function' ? await connToken() : connToken
+    if (conn) {
+      const sn = randToken(8)
+      pending.set(sn, { token: sn, exp: Date.now() + PAIRING_TTL_MS, scope, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
+      return { token: sn, qr: { v: 2, conn, sn, m: mode, proxy }, expiresInMs: PAIRING_TTL_MS }
+    }
+    const token = randToken(PAIR_TOKEN_BYTES)
+    const sn = randToken(PAIR_TOKEN_BYTES)
+    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
+    return { token, qr: { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }, expiresInMs: PAIRING_TTL_MS }
   }
 
   function stopPairing (token) { pending.delete(token) }
@@ -133,37 +187,70 @@ export function createEnrollDesk ({
   }
 
   /**
+   * «¿Quién eres?» — la respuesta al QR corto. Solo se contesta a quien presente el
+   * `sn` de una sesión VIVA: el token de conexión son 4 caracteres y se puede acertar
+   * a ciegas, el `sn` no. Fuera de un emparejamiento no hay ninguna sesión y por lo
+   * tanto no hay respuesta: la puerta solo está abierta mientras dura el `pair`.
+   */
+  async function handleHello (from, p) {
+    const pend = pending.get(String(p?.sn || ''))
+    if (!pend || Date.now() > pend.exp) {
+      audit('rejected', { what: 'hello', reason: 'sin-sesion' })
+      return reply(from, { type: MSG_ERROR, error: 'no pairing session open for that code' })
+    }
+    // La respuesta va FIRMADA por la maestra y el `sn` va dentro de lo firmado. Eso ata
+    // la respuesta a ESTA sesión: no se puede reutilizar la de otro emparejamiento ni la
+    // de otra bóveda. Lo que NO hace es demostrar que sea TU bóveda —cualquiera puede
+    // firmar con una llave suya—; eso solo lo demuestra el código de 6 dígitos.
+    const body = { op: 'hello', sn: pend.sn, iss, proxy, acct: pend.account || '', m: pend.mode || 'join', ts: Date.now() }
+    const { signature } = await identity.signData(body)
+    reply(from, { type: MSG_HELLO_OK, body, signature })
+    return { ok: true }
+  }
+
+  /**
    * ENROLL: el dispositivo prueba posesión de `D` firmando el sobre y deja el
    * COMPROMISO de su código. Todavía NO se firma ningún cert.
    */
   async function handleEnroll (from, p) {
     const d = p?.data
     if (!d || typeof d.dpub !== 'string' || typeof p.signature !== 'string') {
-      return reply(from, { type: MSG_ERROR, error: 'enroll inválido' })
+      return reply(from, { type: MSG_ERROR, error: 'invalid enroll' })
     }
     const pend = pending.get(d.token)
     if (!pend || pend.state === 'DONE' || Date.now() > pend.exp) {
-      return reply(from, { type: MSG_ERROR, error: 'token de emparejamiento inválido o expirado' })
+      return reply(from, { type: MSG_ERROR, error: 'invalid or expired pairing token' })
     }
-    if (d.sn !== pend.sn) return reply(from, { type: MSG_ERROR, error: 'sesión inválida' })
+    if (d.sn !== pend.sn) return reply(from, { type: MSG_ERROR, error: 'invalid session' })
+    // V7 · la INTENCIÓN viaja firmada y tiene que coincidir con el modo con el que ESTA
+    // bóveda abrió el emparejamiento. Es lo que garantiza que lo que pasa es lo que el
+    // humano vio anunciado en las dos pantallas, y no algo que se decidió a mitad de camino.
+    const intent = d.intent || 'join'
+    if (intent !== 'join' && intent !== 'adopt') {
+      return reply(from, { type: MSG_ERROR, error: 'unknown intent: ' + intent })
+    }
+    if (intent !== (pend.mode || 'join')) {
+      audit('rejected', { what: 'enroll', reason: 'intent-mismatch' })
+      return reply(from, { type: MSG_ERROR, error: `este emparejamiento se abrió para «${pend.mode || 'join'}» y el dispositivo pidió «${intent}»` })
+    }
     if (!isFresh(d)) {
       audit('rejected', { what: 'enroll', reason: 'stale' })
-      return reply(from, { type: MSG_ERROR, error: 'petición vencida: ts fuera de la ventana ±5 min (posible replay, o el reloj del dispositivo está desfasado)' })
+      return reply(from, { type: MSG_ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
     }
     // PRUEBA DE POSESIÓN: la firma de `data` debe verificar contra `dpub`.
     if (!(await verifyDeviceSig({ publickey: d.dpub, data: d, signature: p.signature }))) {
       audit('rejected', { what: 'enroll', reason: 'bad-device-signature' })
-      return reply(from, { type: MSG_ERROR, error: 'firma de dispositivo inválida' })
+      return reply(from, { type: MSG_ERROR, error: 'invalid device signature' })
     }
     // El COMPROMISO del código es obligatorio: sin él no se puede comprobar al aprobar
     // y volveríamos a emitir certs a ciegas. Un cliente viejo cae acá con un mensaje claro.
     if (typeof d.commit !== 'string' || !/^[0-9a-f]{64}$/.test(d.commit)) {
       audit('rejected', { what: 'enroll', reason: 'no-commit' })
-      return reply(from, { type: MSG_ERROR, error: 'este dispositivo usa una versión antigua del emparejamiento (no envía el compromiso del código). Actualízalo y vuelve a intentarlo.' })
+      return reply(from, { type: MSG_ERROR, error: 'this device speaks an old pairing version (no code commitment). Update it and try again.' })
     }
     // Un solo dispositivo a la vez esperando su código (así aprobar no es ambiguo).
     if (pend.state === 'PENDING_CONFIRM' && pend.dpub && pend.dpub !== d.dpub) {
-      return reply(from, { type: MSG_ERROR, error: 'ya hay un dispositivo usando este emparejamiento' })
+      return reply(from, { type: MSG_ERROR, error: 'another device is already using this pairing session' })
     }
 
     const deviceId = await deviceIdOf(d.dpub)
@@ -182,9 +269,12 @@ export function createEnrollDesk ({
     }
     pend.from = from // la bóveda NO conoce el código: lo aprende cuando lo tipeas
     if (d.label) pend.label = String(d.label).slice(0, 60)
+    // Camino A: de qué cuenta estamos hablando. Se guarda para poder comprobar, cuando
+    // llegue el acta sellada, que es la que este dispositivo dijo que iba a entregar.
+    if (intent === 'adopt' && typeof d.profileId === 'string') pend.profileId = d.profileId
 
     reply(from, { type: MSG_ENROLL_CHALLENGE, deviceId })
-    fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '' })
+    fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', mode: pend.mode || 'join' })
     fire(onPendingChange)
     return { deviceId }
   }
@@ -199,16 +289,16 @@ export function createEnrollDesk ({
    */
   async function approve (code, { deviceId } = {}) {
     code = String(code || '').trim()
-    if (!code) throw new Error('falta el código (los dígitos que muestra el dispositivo)')
+    if (!code) throw new Error('missing code (the digits shown by the device)')
 
     let pend
     if (deviceId) {
       pend = findPending(deviceId)
-      if (!pend) throw new Error('no hay ninguna máquina esperando aprobación con ese identificador')
+      if (!pend) throw new Error('no device awaiting approval with that id')
     } else {
       const waiting = [...pending.values()].filter((p) => p.state === 'PENDING_CONFIRM' && p.dpub)
-      if (waiting.length === 0) throw new Error('no hay ningún dispositivo esperando aprobación')
-      if (waiting.length > 1) throw new Error('hay más de un emparejamiento en curso; reinícialo con dotrino-vault pair')
+      if (waiting.length === 0) throw new Error('no device awaiting approval')
+      if (waiting.length > 1) throw new Error('more than one pairing in flight; restart it with dotrino-vault pair')
       pend = waiting[0]
     }
 
@@ -216,8 +306,22 @@ export function createEnrollDesk ({
     const expected = await commitCode({ code, dpub: pend.dpub, sn: pend.sn })
     if (expected !== pend.commit) {
       audit('rejected', { what: 'approve', device: pend.deviceId, reason: 'bad-code' })
-      log('[vault] código incorrecto para %s: no se emitió ningún certificado', pend.deviceId)
-      throw new Error('el código no coincide con el que muestra el dispositivo: no se emitió ningún certificado. Vuelve a mirarlo y prueba otra vez.')
+      log('[vault] wrong code for %s: no certificate was issued', pend.deviceId)
+      throw new Error('code does not match the one shown by the device: no certificate was issued. Check it and try again.')
+    }
+
+    // CAMINO A · aquí la bóveda no entrega un cert: entrega SU IDENTIDAD para que el
+    // aparato la meta en el acta de la cuenta que le está pasando. El código de vuelta es
+    // la misma defensa de siempre, en el otro sentido: el aparato solo hace caso a una
+    // bóveda que demuestre que un humano la aprobó.
+    if ((pend.mode || 'join') === 'adopt') {
+      audit('adopt-approve', { device: pend.deviceId, profile: pend.profileId || null })
+      pend.state = 'AWAITING_ACTA'
+      pend.approvedAt = Date.now()
+      reply(pend.from, { type: MSG_ENROLL_ADOPT, code, pub: iss, encPub: encPub || null, label: vaultLabel || '' })
+      log('[vault] adoption approved for %s: waiting for the sealed record', pend.deviceId)
+      fire(onPendingChange)
+      return { ok: true, deviceId: pend.deviceId, adopting: true }
     }
 
     const { cert } = await identity.signDelegation(pend.dpub, pend.scope, { ttlMs: pend.ttlMs, label: pend.label })
@@ -247,13 +351,67 @@ export function createEnrollDesk ({
     return { ok: true, deviceId: pend.deviceId, cert }
   }
 
+  /**
+   * CAMINO A · paso 6: llega el acta que el aparato acaba de sellar, con la bóveda dentro
+   * como miembro, la clave de contenido envuelta para ella y el mando ya traspasado.
+   *
+   * Lo que se comprueba antes de guardar nada (y por qué):
+   *   · que el sellador sea ESTA bóveda — si no, no es un traspaso, es un acta ajena;
+   *   · que la selle el aparato que estaba en este emparejamiento — cierra que un tercero
+   *     que vea pasar el mensaje cuele la suya;
+   *   · que sea la cuenta que ese aparato declaró al enrolarse (`profileId`) — cierra el
+   *     cambiazo de cuenta entre el anuncio que leyó el humano y lo que llega después.
+   *
+   * Adoptar la cuenta de otro solo procede sobre un perfil que **nació para eso** (la marca
+   * de `prepareForAdoption`). Es la misma regla del navegador: sin la marca, adoptar sería
+   * pisar una cuenta con datos, y eso no puede pasar por accidente.
+   */
+  async function handleActaSealed (from, p) {
+    const acta = p?.acta
+    const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && (x.from === from || x.dpub))
+    if (!pend) return reply(from, { type: MSG_ERROR, error: 'no adoption awaiting a record' })
+    if (!acta || typeof acta !== 'object') return reply(from, { type: MSG_ERROR, error: 'record missing or unreadable' })
+    if (acta.sealer !== iss) {
+      audit('rejected', { what: 'adopt', reason: 'not-sealer' })
+      return reply(from, { type: MSG_ERROR, error: 'that record does not name this vault as the sealer' })
+    }
+    if (acta.sealedBy !== pend.dpub) {
+      audit('rejected', { what: 'adopt', reason: 'sealed-by-other' })
+      return reply(from, { type: MSG_ERROR, error: 'that record was not sealed by the device of this pairing' })
+    }
+    if (pend.profileId && acta.profileId !== pend.profileId) {
+      audit('rejected', { what: 'adopt', reason: 'other-profile' })
+      return reply(from, { type: MSG_ERROR, error: 'that record belongs to an account other than the one the device announced' })
+    }
+
+    try {
+      const r = await identity.joinProfile(acta)
+      if (!r?.joined) throw new Error(r?.reason || 'could not adopt')
+      audit('adopt', { device: pend.deviceId, profile: acta.profileId, seq: acta.seq })
+      // El acta que vuelve es la que la bóveda tiene guardada: el aparato la adopta y los
+      // dos quedan en la misma versión.
+      const mia = (await identity.profileActa?.())?.acta || acta
+      reply(pend.from, { type: MSG_ACTA_ADOPTED, code: p.code, acta: mia })
+      pend.state = 'DONE'
+      pending.delete(pend.token)
+      fire(onPendingChange)
+      fire(onAdopted, { deviceId: pend.deviceId, profileId: acta.profileId, seq: mia.seq })
+      log('[vault] cuenta adoptada del dispositivo %s (perfil %s)', pend.deviceId, acta.profileId?.slice(0, 12))
+      return { ok: true, adopted: true, profileId: acta.profileId, seq: mia.seq }
+    } catch (e) {
+      log('[vault] no se pudo adoptar la cuenta: %s', e.message)
+      reply(pend.from, { type: MSG_ERROR, error: 'the vault could not adopt the account: ' + e.message })
+      return { ok: false, error: e.message }
+    }
+  }
+
   /** Rechaza un enrolamiento pendiente. */
   function reject (deviceId) {
     const pend = deviceId
       ? findPending(deviceId)
       : [...pending.values()].find((p) => p.state === 'PENDING_CONFIRM')
     if (!pend) return { ok: false }
-    reply(pend.from, { type: MSG_ERROR, error: 'emparejamiento rechazado' })
+    reply(pend.from, { type: MSG_ERROR, error: 'pairing rejected' })
     pending.delete(pend.token)
     audit('reject', { device: pend.deviceId })
     fire(onPendingChange)
@@ -270,7 +428,7 @@ export function createEnrollDesk ({
     const body = { op: 'revoke', sub: dpub, nonce, iat: Date.now(), exp: Date.now() + DEVICE_TTL_MS }
     const { signature } = await identity.signData(body)
     try { sendByPubkey(dpub, { type: MSG_REVOKED, body, signature }) }
-    catch (e) { log('[vault] no se pudo emitir revoke:', e.message) }
+    catch (e) { log('[vault] could not emit revoke:', e.message) }
   }
 
   /** Revoca una delegación por `nonce` y avisa al dispositivo para que se autoborre. */
@@ -284,7 +442,7 @@ export function createEnrollDesk ({
   }
 
   return {
-    startPairing, stopPairing, handleEnroll, approve, reject,
+    startPairing, stopPairing, handleEnroll, handleActaSealed, handleHello, approve, reject,
     listPending, findPending, emitRevoke, revoke,
     get pendingCount () { return pending.size }
   }

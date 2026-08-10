@@ -119,7 +119,11 @@ import { pubkeyId } from './capabilities.js'
     listDelegations: () => handlers.listDelegations({}),
     revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce }),
     admitMember: (m) => handlers.admitMember(m),
-    profileActa: () => handlers.profileActa({})
+    profileActa: () => handlers.profileActa({}),
+    // Camino A (`mode: 'adopt'`): la bóveda se queda con la cuenta que trae el aparato,
+    // y para eso tiene que poder ENTRAR en su acta. Sin esto, adoptar fallaba con un
+    // «no es una función» en vez de con un error del protocolo.
+    joinProfile: (acta) => handlers.joinProfile({ acta })
   }
 
   async function startSelfDaemon () {

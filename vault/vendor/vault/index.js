@@ -27,16 +27,13 @@
  */
 import { verifyChain } from '@dotrino/identity/capabilities'
 import { createEnrollDesk, deviceIdOf, DEVICE_TTL_MS, FRESH_WINDOW_MS } from './enroll.js'
+// Las constantes del protocolo salen del MISMO módulo que usa el daemon: si la lista
+// local se queda corta, el dispositivo deja de atender mensajes sin que nadie lo note.
+import { MSG, SCOPE } from './protocol.js'
 
-const SIGN_SCOPE = 'vault:sign'
+const SIGN_SCOPE = SCOPE.SIGN
 const SELFCERT_TTL_MS = 24 * 60 * 60 * 1000    // el self-cert P←P se regenera cada 24 h
-
-const MSG = {
-  ENROLL: 'vault.enroll',
-  DEVICES: 'vault.devices',
-  DEVICES_RESULT: 'vault.devices.result',
-  ERROR: 'vault.error'
-}
+const RENEW_TTL_MS = DEVICE_TTL_MS             // la renovación extiende la misma ventana (30 días)
 
 /** deviceId legible (p. ej. `C440-AC0E`) desde una pubkey JWK. */
 export { deviceIdOf }
@@ -49,10 +46,11 @@ export { deviceIdOf }
  *   `me.publickey`, `signData`, `signDelegation`, `listDelegations`, `revokeDelegation`.
  * @param {object} [opts]
  * @param {string} [opts.proxyUrl='wss://proxy.dotrino.com']
- * @returns {Promise<object>} handle: { iss, proxy, client, startPairing, approve, reject,
- *   listPending, listMachines, revoke, getSelfCert, onPendingChange, close }
+ * @returns {Promise<object>} handle: { iss, proxy, client, startPairing, stopPairing,
+ *   approve, reject, listPending, listMachines, revoke, getSelfCert, onPendingChange,
+ *   onAdopted, close }
  */
-export async function startDeviceVault (identity, { proxyUrl } = {}) {
+export async function startDeviceVault (identity, { proxyUrl, client: injectedClient } = {}) {
   const iss = identity.me?.publickey
   if (!iss) throw new Error('sin identidad: crea/desbloquea tu identidad antes de usar el dispositivo como bóveda')
   const proxy = proxyUrl || 'wss://proxy.dotrino.com'
@@ -67,12 +65,17 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
     return cert
   }
 
-  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-  const client = new WebSocketProxyClient({
-    url: proxy, enableWebRTC: false, autoReconnect: true,
-    maxReconnectAttempts: 100000, reconnectDelay: 4000
-  })
-  await client.connect()
+  // `client` inyectado: solo para las pruebas (transporte de mentira). En producción se
+  // levanta el del ecosistema — no hay otro transporte.
+  const client = injectedClient || await (async () => {
+    const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+    const c = new WebSocketProxyClient({
+      url: proxy, enableWebRTC: false, autoReconnect: true,
+      maxReconnectAttempts: 100000, reconnectDelay: 4000
+    })
+    await c.connect()
+    return c
+  })()
 
   const selfCert = await getSelfCert()
   const identify = async () => {
@@ -87,6 +90,7 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
   const send = (to, obj) => { try { client.send(to, obj) } catch (_) {} }
 
   let _onPendingChange = () => {}
+  let _onAdopted = () => {}
 
   // ENROLL / aprobación / revocación: núcleo COMPARTIDO con el daemon del PC y con la
   // copia vendorizada del iframe (`lib/src/enroll.js`). Un solo sitio donde vive el
@@ -99,8 +103,48 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
     sendByPubkey: (pub, obj) => { try { client.sendByPubkey(pub, obj) } catch (_) {} },
     defaultScope: [SIGN_SCOPE],
     defaultTtlMs: DEVICE_TTL_MS,
+    // Camino A (la cuenta del aparato pasa a vivir aquí): sin la llave de cifrado, esta
+    // bóveda entraría mandando una cuenta cuyo contenido no puede abrir.
+    encPub: identity.me?.encryptionPubkey || null,
+    vaultLabel: 'bóveda',
+    // Cita del proxio para la invitación corta (QR). Si el proxio es viejo y no las
+    // conoce, el desk se cae solo a la invitación larga.
+    connToken: async () => {
+      try { return (await client.requestPairingCode())?.code || null }
+      catch (_) { return null }
+    },
+    onAdopted: (info) => { try { _onAdopted(info) } catch (_) {} },
     onPendingChange: () => _onPendingChange()
   })
+
+  /** Nonces revocados, para que un cert revocado no pase ningún `verifyChain`. */
+  async function revocationSet () {
+    const { revoked } = await identity.listDelegations()
+    return new Set((revoked || []).map((r) => r.nonce || r))
+  }
+
+  /**
+   * RENOVACIÓN automática (igual que `dotrino-vault#handleRenew`): un dispositivo con
+   * cert VIGENTE y no revocado pide uno fresco —misma sub-clave y scope— sin QR ni
+   * aprobación: sigue siendo el mismo dispositivo, solo extiende la ventana. Un cert
+   * vencido o revocado NO se renueva (ahí toca re-emparejar con aprobación).
+   *
+   * Sin esto, toda máquina enrolada contra un dispositivo-bóveda caduca a los 30 días.
+   */
+  async function handleRenew (from, p) {
+    const d = p?.data
+    if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'petición inválida' })
+    if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
+      return send(from, { type: MSG.ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
+    }
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, trustedIssuer: iss, revoked: await revocationSet() })
+    if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
+    // Reusar el label del cert original (si sigue registrado en delegations).
+    const { issued } = await identity.listDelegations()
+    const prev = (issued || []).find((x) => x.nonce === p.cert.nonce)
+    const { cert } = await identity.signDelegation(p.cert.sub, p.cert.scope, { ttlMs: RENEW_TTL_MS, label: prev?.label || '' })
+    send(from, { type: MSG.RENEWED, cert })
+  }
 
   // Consulta de revocaciones (igual que `vault.devices` del daemon): responde la lista
   // de dispositivos enrolados + revocados para que el dispositivo refresque su set. Y si
@@ -124,7 +168,12 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
 
   client.on('message', (_from, p) => {
     if (!p || typeof p !== 'object') return
-    if (p.type === MSG.ENROLL) desk.handleEnroll(_from, p).catch(() => {})
+    // El QR corto no lleva la llave: el aparato la pide con un HELLO presentando el `sn`.
+    if (p.type === MSG.HELLO) Promise.resolve(desk.handleHello(_from, p)).catch(() => {})
+    else if (p.type === MSG.ENROLL) desk.handleEnroll(_from, p).catch(() => {})
+    // Camino A: el aparato devuelve su acta sellada admitiendo a esta bóveda.
+    else if (p.type === MSG.ACTA_SEALED) Promise.resolve(desk.handleActaSealed(_from, p)).catch(() => {})
+    else if (p.type === MSG.RENEW) handleRenew(_from, p).catch(() => {})
     else if (p.type === MSG.DEVICES) handleDevices(_from, p).catch(() => {})
   })
 
@@ -148,6 +197,7 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
   return {
     iss, proxy, client,
     startPairing: desk.startPairing,
+    stopPairing: desk.stopPairing,
     // Aprueba TIPEANDO el código que muestra la máquina: el núcleo compartido recompone
     // el compromiso `SHA-256(code‖dpub‖sn)` y solo firma el cert si coincide.
     approve: (deviceId, code) => desk.approve(code, { deviceId }),
@@ -159,6 +209,8 @@ export async function startDeviceVault (identity, { proxyUrl } = {}) {
     revoke: (nonce) => desk.revoke(nonce),
     getSelfCert,
     onPendingChange (fn) { _onPendingChange = fn || (() => {}) },
+    /** Camino A: la cuenta del aparato quedó adoptada por esta bóveda. */
+    onAdopted (fn) { _onAdopted = fn || (() => {}) },
     close () { try { client.close() } catch (_) {} }
   }
 }
