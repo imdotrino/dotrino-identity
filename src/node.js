@@ -165,6 +165,17 @@ export class Identity {
   profileActa () { return this._h('profileActa') }
   profileMembers () { return this._h('profileMembers') }
   myMembership () { return this._h('myMembership') }
+  /**
+   * La CADENA de actas desde `sinceSeq` (para que un dispositivo que estuvo apagado
+   * compruebe el encadenamiento en vez de tragarse un salto a ciegas).
+   *
+   * Vivía en el núcleo pero NO estaba aquí, así que `identity.actaHistory` era
+   * `undefined` en el daemon: al pedir la lista de dispositivos con un `sinceSeq`
+   * —que es lo que manda SIEMPRE un navegador ya emparejado— reventaba con
+   * «is not a function», la bóveda respondía error, y el aparato NUNCA volvía a
+   * sincronizar su acta. Se quedaba con la copia del día que emparejó.
+   */
+  actaHistory (opts) { return this._h('actaHistory', opts || {}) }
   isMaster () { return this._h('isMaster') }
   admitMember (member) { return this._h('admitMember', member) }
   setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }

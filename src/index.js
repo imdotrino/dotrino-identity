@@ -269,6 +269,8 @@ export class Identity {
 
   /** Dónde estoy yo: { inProfile, profileId, seq, isMaster, caps, id }. */
   async myMembership () { return this._call('myMembership') }
+  /** La cadena de actas desde `sinceSeq` (ver la nota en `node.js`). */
+  async actaHistory (opts) { return this._call('actaHistory', opts || {}) }
 
   /** ¿Es ESTE dispositivo el master (el único que puede cambiar el acta)? */
   async isMaster () { return this._call('isMaster') }
