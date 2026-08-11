@@ -45,10 +45,17 @@ export { MSG as VAULT_MSG }
  * un `vault.error` con la palabra «revocado» no borra nada (cierra el wipe-DoS, ver
  * `dotrino-vault/docs/pairing-protocol.md §2.3`).
  */
-export async function isAuthenticRevoke ({ body, signature, master, devicePubkey }) {
+export async function isAuthenticRevoke ({ body, signature, master, devicePubkey, currentNonce = null }) {
   if (!body || body.op !== 'revoke' || typeof signature !== 'string') return false
   if (body.sub !== devicePubkey) return false
   if (typeof body.exp === 'number' && Date.now() > body.exp) return false
+  // Y tiene que hablar del certificado que este aparato usa AHORA. Un certificado se
+  // retira también cuando NO pasa nada malo: renovar retira el anterior, y cambiar
+  // permisos obliga a renovar. Sin esta comprobación, el aviso de «tu papel viejo ya no
+  // vale» borraba el enlace con la bóveda entero: dabas «administra» a un aparato y el
+  // aparato desaparecía solo, como si lo hubieran echado. El proxy encola 24 h, así que
+  // el aviso puede llegar mucho después de haber renovado.
+  if (currentNonce && typeof body.nonce === 'string' && body.nonce !== currentNonce) return false
   return verifyDeviceSig({ publickey: master, data: body, signature })
 }
 
@@ -236,7 +243,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.REVOKED) {
-          isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey })
+          isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey, currentNonce: cert?.nonce || null })
             .then((ok) => { if (ok) { try { onRevoked?.() } catch (_) {} } })
             .catch(() => {})
           return
