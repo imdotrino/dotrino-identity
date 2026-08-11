@@ -118,6 +118,7 @@ import { pubkeyId } from './capabilities.js'
     signDelegation: (sub, scope, opts) => handlers.signDelegation({ sub, scope, ...(opts || {}) }),
     listDelegations: () => handlers.listDelegations({}),
     revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce }),
+    revokeDevice: (sub) => handlers.revokeDevice({ sub }),
     admitMember: (m) => handlers.admitMember(m),
     profileActa: () => handlers.profileActa({}),
     // Camino A (`mode: 'adopt'`): la bóveda se queda con la cuenta que trae el aparato,

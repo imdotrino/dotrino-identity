@@ -150,3 +150,45 @@ test('listDelegations muestra las caps emitidas (para el gestor de dispositivos)
   assert.equal(row.sub, D.publickey)
   assert.equal(row.label, 'Pixel de mamá')
 })
+
+// --- un aparato = un certificado vigente (bug: salía dos veces y no se le podía echar) ---
+
+test('renovar RETIRA el cert anterior: el aparato no sale dos veces', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const a = await P.signDelegation(D.publickey, ['vault:sign', 'vault:read'], { label: 'pc-local' })
+  const b = await P.signDelegation(D.publickey, ['vault:admin', 'vault:sign'], { label: 'pc-local' })
+  const { issued } = await P.listDelegations()
+  const mine = issued.filter(x => x.sub === D.publickey)
+  assert.equal(mine.length, 1, 'una fila por aparato, no una por certificado')
+  assert.equal(mine[0].nonce, b.cert.nonce, 'queda el recién emitido')
+  const { revoked } = await P.listDelegations()
+  assert.ok(revoked.some(r => r.nonce === a.cert.nonce), 'el anterior queda revocado')
+})
+
+test('un cert revocado ya NO aparece como emitido (la fila desaparece al quitarlo)', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const { cert } = await P.signDelegation(D.publickey, 'vault:sign')
+  await P.revokeDelegation(cert.nonce)
+  const { issued, revokedCerts } = await P.listDelegations()
+  assert.equal(issued.find(x => x.nonce === cert.nonce), undefined, 'fuera de los vigentes')
+  assert.ok(revokedCerts.some(x => x.nonce === cert.nonce), 'pero consta en el histórico retirado')
+})
+
+test('quitar el DISPOSITIVO retira todos sus certificados, no solo uno', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const otro = await makeDeviceKey()
+  // Dos certs vivos de la misma llave (como los deja una bóveda vieja): se fuerza con
+  // `supersede: false`, que es justo el comportamiento que causaba el bug.
+  const a = await P.signDelegation(D.publickey, 'vault:sign', { supersede: false })
+  const b = await P.signDelegation(D.publickey, 'vault:admin', { supersede: false })
+  const c = await P.signDelegation(otro.publickey, 'vault:sign', { supersede: false })
+  const r = await P.revokeDevice(D.publickey)
+  assert.equal(r.nonces.length, 2, 'se retiran los dos, incluido el que llevaba admin')
+  const { issued } = await P.listDelegations()
+  assert.equal(issued.filter(x => x.sub === D.publickey).length, 0, 'el aparato queda fuera')
+  assert.ok(issued.some(x => x.nonce === c.cert.nonce), 'no se toca a los demás aparatos')
+  assert.ok([a, b].every(x => x.cert.nonce), 'los dos certs existieron')
+})

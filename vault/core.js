@@ -314,6 +314,27 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   }
   const saveRevocations = (o) => kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
 
+  /**
+   * Retira todos los certificados vigentes de la llave `sub`, menos `keepNonce` (el recién
+   * emitido, cuando esto se llama desde `signDelegation`). Devuelve los nonces retirados.
+   * Solo toca las listas locales: avisar al aparato es cosa del mostrador de enrolamiento,
+   * que es quien puede firmar la orden de autoborrado.
+   */
+  function revokePriorCertsFor (sub, keepNonce) {
+    const store = loadDelegations()
+    const rev = loadRevocations()
+    const now = Date.now()
+    const hit = []
+    for (const [nonce, d] of Object.entries(store)) {
+      if (nonce === keepNonce || d?.sub !== sub || d?.revokedAt) continue
+      rev[nonce] = now
+      d.revokedAt = now
+      hit.push(nonce)
+    }
+    if (hit.length) { saveRevocations(rev); saveDelegations(store) }
+    return hit
+  }
+
   // ----- emparejamiento con el vault del usuario (este dispositivo enrolado) -----
   // Canal de eventos 'vault' (p.ej. el código a tipear durante el emparejamiento).
   const vaultListeners = new Set()
@@ -1043,7 +1064,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // de dispositivo `sub`, acotado por `scope` y `exp`, revocable por `nonce`.
     // Es la ÚNICA forma en que la autoridad sale de la clave maestra, y va limitada.
 
-    async signDelegation ({ sub, scope, ttlMs, exp, nonce, label }) {
+    async signDelegation ({ sub, scope, ttlMs, exp, nonce, label, supersede }) {
       if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
       if (!scope || (typeof scope !== 'string' && !Array.isArray(scope))) throw new Error('scope required')
       const iat = Date.now()
@@ -1054,7 +1075,25 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const store = loadDelegations()
       store[cert.nonce] = { nonce: cert.nonce, sub, scope, iat, exp: cappedExp, label: typeof label === 'string' ? label.slice(0, 60) : '' }
       saveDelegations(store)
+      // UNA LLAVE, UN CERTIFICADO VIGENTE. Renovar emitía uno nuevo y dejaba vivo el
+      // anterior: el mismo aparato salía dos veces en la lista (parecían dos máquinas) y,
+      // peor, «quitar el dispositivo» revocaba UN cert y el aparato seguía entrando con el
+      // otro — a veces justo con el que llevaba `vault:admin`. Al firmar, los certs previos
+      // de esa misma `sub` se retiran. Silencioso a propósito: NO se emite el aviso de
+      // autoborrado (eso solo lo dispara una revocación de verdad, desde el mostrador).
+      if (supersede !== false) revokePriorCertsFor(sub, cert.nonce)
       return { cert }
+    },
+
+    /**
+     * Retira TODOS los certificados vigentes de un dispositivo (por su llave `sub`).
+     * Es lo que significa «quitar el dispositivo»: revocar por `nonce` retira un papel,
+     * no al aparato, que puede tener otros.
+     */
+    async revokeDevice ({ sub }) {
+      if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
+      const nonces = revokePriorCertsFor(sub, null)
+      return { ok: true, nonces, revokedAt: Date.now() }
     },
 
     async revokeDelegation ({ nonce }) {
@@ -1067,10 +1106,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { ok: true, revokedAt: rev[nonce] }
     },
 
+    // `issued` = lo que HOY sirve para entrar. Antes devolvía el almacén entero, revocados
+    // incluidos (revocar solo estampa `revokedAt`), así que la consola seguía pintando como
+    // activo un cert ya retirado: pulsabas «quitar» y la fila no se movía. Los caducados ya
+    // los poda `loadDelegations`. El histórico retirado va aparte, en `revokedCerts`.
     async listDelegations () {
       const store = loadDelegations(); const rev = loadRevocations()
+      const all = Object.values(store).sort((a, b) => (b.iat || 0) - (a.iat || 0))
       return {
-        issued: Object.values(store).sort((a, b) => (b.iat || 0) - (a.iat || 0)),
+        issued: all.filter((d) => !d.revokedAt && !rev[d.nonce]),
+        revokedCerts: all.filter((d) => d.revokedAt || rev[d.nonce]),
         revoked: Object.keys(rev).map(nonce => ({ nonce, revokedAt: rev[nonce] }))
       }
     },

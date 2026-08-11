@@ -251,6 +251,14 @@ export class Identity {
     return this._call('revokeDelegation', { nonce })
   }
 
+  /**
+   * QUITA EL DISPOSITIVO: retira **todos** los certificados vigentes de esa llave.
+   * Revocar por `nonce` retira un papel; un aparato puede tener otros y seguir entrando.
+   */
+  async revokeDevice (sub) {
+    return this._call('revokeDevice', { sub })
+  }
+
   /** Lista las delegaciones emitidas + la lista de revocación (para el gestor de dispositivos). */
   async listDelegations () {
     return this._call('listDelegations')

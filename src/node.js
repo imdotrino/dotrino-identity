@@ -160,6 +160,8 @@ export class Identity {
   // Delegación de capacidad (sub-clave de dispositivo con scope/exp/revocación)
   signDelegation (sub, scope, opts = {}) { return this._h('signDelegation', { sub, scope, ...opts }) }
   revokeDelegation (nonce) { return this._h('revokeDelegation', { nonce }) }
+  /** Quitar el DISPOSITIVO: retira todos sus certificados vigentes, no solo uno. */
+  revokeDevice (sub) { return this._h('revokeDevice', { sub }) }
   listDelegations () { return this._h('listDelegations') }
   // Acta de perfil (qué llaves son del perfil y qué puede cada una; ver acta-de-perfil.md)
   profileActa () { return this._h('profileActa') }
