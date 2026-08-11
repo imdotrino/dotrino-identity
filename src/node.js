@@ -122,7 +122,11 @@ export class Identity {
     this._core = await createIdentityCore({
       kv: fileKv(path.join(this._dir, 'identity.json'), this._atRest),
       peers: filePeers(path.join(this._dir, 'peers.json')),
-      makeSync: null
+      makeSync: null,
+      // Aquí las cuentas las lleva quien hospeda (el daemon del vault tiene su propio
+      // registro de perfiles): que una expulsión borre una por debajo le dejaría el suyo
+      // apuntando a algo que ya no existe. Se borra el enlace y el acta, nada más.
+      removeAccountOnExpulsion: false
     })
     this._core.onSyncStatus((payload) => this._emit('sync', payload))
     this._core.onVaultEvent((payload) => this._emit('vault', payload))

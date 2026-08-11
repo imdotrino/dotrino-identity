@@ -158,7 +158,7 @@ function sanitizeProfilePatch (patch = {}) {
   return out
 }
 
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null }) {
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
@@ -362,6 +362,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    *      tenía fijado, así que da igual lo que hagamos después con el perfil activo);
    *   3. se borra la cuenta y se deja otra puesta;
    *   4. 'account-removed' → la app RECARGA (multi-perfil no es reactivo, por diseño).
+   *
+   * El paso 3 es SOLO del navegador (`removeAccountOnExpulsion`). En Node las cuentas las
+   * lleva quien hospeda —el daemon del vault tiene su propio registro de perfiles, en
+   * `profiles.js`— y borrar una por debajo le dejaría el suyo apuntando a algo que ya no
+   * existe. Ahí se borra el enlace y el acta, y de la cuenta decide su dueño.
    */
   const wipeVaultLink = () => {
     try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
@@ -369,7 +374,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     emitVault({ phase: 'revoked' })
     // Sin `await`: quien llama es un manejador de mensajes que no espera nada (y si algo
     // aquí revienta, el enlace y el acta ya se fueron, que es lo que no puede quedar).
-    removeThisAccount().catch(() => {})
+    if (removeAccountOnExpulsion) removeThisAccount().catch(() => {})
   }
 
   /**
