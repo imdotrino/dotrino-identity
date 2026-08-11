@@ -239,7 +239,20 @@ import { pubkeyId } from './capabilities.js'
       daemon.reject(deviceId)
       return { ok: true }
     },
-    selfVaultRevoke: async ({ nonce }) => {
+    /**
+     * QUITAR UN APARATO cuando la bóveda es ESTE navegador. Por `sub` (su llave): sale del
+     * acta y se le retiran todos los certificados, que son las dos caras del mismo acto.
+     *
+     * Con `nonce` a secas solo cae UN papel y el aparato sigue siendo miembro — un
+     * fantasma en la lista al que además ya nunca le llega el aviso de expulsión, porque
+     * mientras siga en el acta un papel retirado significa «renueva», no «estás fuera».
+     * Se conserva para quien de verdad quiera retirar un certificado suelto.
+     */
+    selfVaultRevoke: async ({ sub, nonce }) => {
+      if (sub) {
+        if (daemon?.revokeDevice) return daemon.revokeDevice(sub)
+        return handlers.revokeDevice({ sub })
+      }
       if (daemon) return daemon.revoke(nonce)
       return handlers.revokeDelegation({ nonce })
     },

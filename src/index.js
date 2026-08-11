@@ -439,8 +439,18 @@ export class Identity {
   async selfVaultApprove (deviceId, code) { return this._call('selfVaultApprove', { deviceId, code }) }
   /** Rechaza una solicitud de emparejamiento pendiente. */
   async selfVaultReject (deviceId) { return this._call('selfVaultReject', { deviceId }) }
-  /** Revoca una máquina/agente enrolado por nonce de delegación. */
-  async selfVaultRevoke (nonce) { return this._call('selfVaultRevoke', { nonce }) }
+  /**
+   * QUITA una máquina/agente enrolado en esta bóveda. Se le pasa **el aparato**
+   * (`{ sub }`, su llave): sale del acta y se le retiran todos sus certificados.
+   *
+   * Un `nonce` suelto (string, o `{ nonce }`) retira UN certificado y deja al aparato
+   * dentro del acta: eso no es quitarlo, y quien queda así ya no recibe nunca el aviso
+   * de expulsión. Se acepta por compatibilidad, no como la forma normal.
+   */
+  async selfVaultRevoke (target) {
+    const p = typeof target === 'string' ? { nonce: target } : { sub: target?.sub, nonce: target?.nonce }
+    return this._call('selfVaultRevoke', p)
+  }
   /** Presencia online (ping/pong) de las máquinas enroladas. Devuelve { online: [pubkeys] }. */
   async selfVaultProbe (pubkeys) { return this._call('selfVaultProbe', { pubkeys }, 10000) }
   /** Suscribe a eventos del self-vault ('selfVault'): { running?, pending?, error? }. */

@@ -224,6 +224,13 @@ export async function requestSign ({ master, proxy, device, cert, payload, onRev
 }
 
 /**
+ * Cuánto se espera el aviso FIRMADO de expulsión después de que la bóveda conteste
+ * «revoked». Corto a propósito: es el tiempo de un mensaje que ya viene en camino, no una
+ * espera de verdad.
+ */
+const REVOKE_GRACE_MS = 1500
+
+/**
  * Helper genérico: una RPC al vault firmada por D + cert, esperando `okType`.
  *
  * Se identifica al conectar para que el proxy entregue lo ENCOLADO: si mientras el
@@ -240,6 +247,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
     const signed = { ...data, publickey: device.publickey, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data: signed })
     const pending = new Promise((resolve, reject) => {
+      let graceTimer = null
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.REVOKED) {
@@ -249,10 +257,21 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
           return
         }
         if (p.type === okType) { cleanup(); resolve(p) }
-        else if (p.type === 'vault.error') { cleanup(); reject(new Error(p.error)) }
+        else if (p.type === 'vault.error') {
+          // «Te echaron» llega en DOS mensajes: este error (que no va firmado, así que no
+          // puede borrar nada — wipe-DoS) y el `vault.revoked` FIRMADO, que es el único que
+          // sí. Cerrar el socket al recibir el primero era llegar a cerrar la puerta justo
+          // antes que el segundo, y entonces el aparato se quedaba con la cuenta puesta
+          // hasta vaya a saber cuándo. Se le da un respiro corto para recogerlo.
+          if (/\brevoked\b/.test(p.error || '') && !graceTimer) {
+            graceTimer = setTimeout(() => { cleanup(); reject(new Error(p.error)) }, REVOKE_GRACE_MS)
+            return
+          }
+          cleanup(); reject(new Error(p.error))
+        }
       })
       const t = setTimeout(() => { cleanup(); reject(new Error('the vault did not reply (is it running?)')) }, timeoutMs)
-      const cleanup = () => { off(); clearTimeout(t) }
+      const cleanup = () => { off(); clearTimeout(t); clearTimeout(graceTimer) }
     })
     client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })
     return await pending
