@@ -479,6 +479,33 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     return true
   }
 
+  /**
+   * QUITAR UN APARATO, entero y de una vez.
+   *
+   * Esto era media operación repetida en dos sitios, y cada mitad fallaba a su manera:
+   * la consola web sacaba al miembro del acta pero le dejaba los certificados vivos
+   * (seguía pudiendo entrar y firmar), y la pantalla del PC le retiraba los
+   * certificados pero lo dejaba dentro del acta (seguía apareciendo en la lista de la
+   * web, «un dispositivo que en la bóveda ya no existe»). Las dos caras del mismo acto
+   * van juntas o no van:
+   *
+   *   1. fuera del acta   → deja de ser miembro y deja de figurar en ninguna lista;
+   *   2. fuera los papeles → ningún certificado suyo sirve ya para entrar;
+   *   3. clave nueva      → no podrá abrir el contenido NUEVO. Lo que ya leyó no
+   *      vuelve: eso no se puede deshacer y no se promete.
+   */
+  async function removeDevice (pub) {
+    if (!pub || typeof pub !== 'string') throw new Error('pub (device pubkey) required')
+    // Si no es miembro (papeles de antes de que existiera el acta), no es un error: se
+    // le quitan igual los certificados, que es lo que de verdad le abría la puerta.
+    const isMember = (loadActa().members || []).some((m) => m.pub === pub)
+    const acta = isMember ? await sealChanges([{ op: 'remove', pub }]) : loadActa()
+    const nonces = revokePriorCertsFor(pub, null)
+    let rotated = null
+    try { rotated = await rotateCek() } catch (_) {}
+    return { ok: true, seq: acta.seq, nonces, rotated, revokedAt: Date.now() }
+  }
+
   /** Rota la clave: generación nueva envuelta SOLO a los miembros actuales. */
   async function rotateCek () {
     const acta = loadActa()
@@ -1099,8 +1126,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async revokeDevice ({ sub }) {
       if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
-      const nonces = revokePriorCertsFor(sub, null)
-      return { ok: true, nonces, revokedAt: Date.now() }
+      return removeDevice(sub)
     },
 
     async revokeDelegation ({ nonce }) {
@@ -1288,12 +1314,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
 
     async removeMember ({ pub } = {}) {
-      const acta = await sealChanges([{ op: 'remove', pub }])
-      // Expulsar rota la clave: el que sale no podrá abrir el contenido NUEVO. Lo que ya
-      // leyó no vuelve — eso no se puede deshacer y no se promete.
-      let rotated = null
-      try { rotated = await rotateCek() } catch (_) {}
-      return { ok: true, seq: acta.seq, rotated }
+      return removeDevice(pub)
     },
 
     /**
