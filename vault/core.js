@@ -347,6 +347,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    */
   const wipeVaultLink = () => {
     try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
+    // Y el ACTA. Sin esto el aparato borraba su enlace con la bóveda pero seguía
+    // enseñando el perfil del que acababan de echarlo —con sus miembros y sus permisos—,
+    // porque la copia local se quedaba ahí y ya no podía refrescarla (está revocado). El
+    // dueño lo describió exacto: «el device ni por enterado de que está fuera».
+    // Queda como lo que es: un dispositivo sin cuenta, que puede crear la suya o
+    // emparejarse otra vez.
+    try { kv.removeItem(ACTA_STORAGE) } catch (_) {}
     emitVault({ phase: 'revoked' })
   }
 
