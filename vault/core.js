@@ -350,18 +350,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * de perfiles, con su nombre y su foto, sin poder hacer nada y sin que nadie supiera qué
    * era ni cómo quitarlo.
    *
-   * El aparato NUNCA se queda sin cuenta utilizable, que es la otra mitad: si había otras,
-   * se pasa a una de ellas; si esa era la única, se estrena una vacía. Así al terminar hay
-   * exactamente lo que tiene que haber: un dispositivo con su cuenta, listo para usarse o
-   * para volver a conectarse a una bóveda.
+   * El aparato no se queda sin cuenta utilizable: al recargar, el arranque estrena una si
+   * no quedó ninguna, o entra en la primera que haya. Así al terminar hay exactamente lo
+   * que tiene que haber: un dispositivo con su cuenta, listo para usarse o para volver a
+   * conectarse a una bóveda.
    *
    * Los pasos van EN ESTE ORDEN a propósito:
    *   1. fuera el enlace y el acta (deja de poder hablar con la bóveda y de enseñar el
    *      perfil del que lo echaron);
    *   2. 'revoked' → `@dotrino/store` borra el store de ESE perfil (apunta al id que ya
    *      tenía fijado, así que da igual lo que hagamos después con el perfil activo);
-   *   3. se borra la cuenta y se deja otra puesta;
-   *   4. 'account-removed' → la app RECARGA (multi-perfil no es reactivo, por diseño).
+   *   3. se borra la cuenta;
+   *   4. 'account-removed' → la app RECARGA (multi-perfil no es reactivo, por diseño), y
+   *      es el ARRANQUE quien deja puesta la que toque: si no queda ninguna estrena la
+   *      primera, y si quedan cae a la primera de la lista. Esa decisión ya vivía ahí.
    *
    * El paso 3 es SOLO del navegador (`removeAccountOnExpulsion`). En Node las cuentas las
    * lleva quien hospeda —el daemon del vault tiene su propio registro de perfiles, en
@@ -377,30 +379,51 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     if (removeAccountOnExpulsion) removeThisAccount().catch(() => {})
   }
 
-  /**
-   * Borra la cuenta de ESTE dispositivo y deja otra activa (existente o recién creada).
-   * Se usa al ser expulsado; ver `wipeVaultLink`.
-   */
+  /** Borra la cuenta de ESTE dispositivo al ser expulsado; ver `wipeVaultLink`. */
   let removingAccount = false
   async function removeThisAccount () {
-    // UNA VEZ. Puede haber varias peticiones en vuelo y a todas les llega el mismo aviso;
-    // sin este cerrojo, la segunda borraría la cuenta RECIÉN CREADA (para entonces
-    // `currentPid` ya es la nueva) en vez de la que echaron.
+    // UNA VEZ: puede haber varias peticiones en vuelo y a todas les llega el mismo aviso.
     if (removingAccount) return
     removingAccount = true
     const gone = currentPid
-    // Si esa era la única cuenta hay que estrenar otra ANTES de borrarla: `deleteProfile`
-    // se niega a dejar el dispositivo sin ninguna, y con razón. Crear ya deja la nueva
-    // activa; si había otras, es el propio `deleteProfile` quien pasa a la primera.
-    const created = loadProfiles().filter((p) => p.id !== gone).length === 0
-    try {
-      if (created) await handlers.createProfile({ name: '' })
-      await handlers.deleteProfile({ id: gone })
-    } catch (e) {
-      emitVault({ phase: 'account-removed', removed: gone, current: currentPid, error: e?.message || String(e) })
+    try { await purgeProfile(gone) } catch (e) {
+      emitVault({ phase: 'account-removed', removed: gone, error: e?.message || String(e) })
       return
     }
-    emitVault({ phase: 'account-removed', removed: gone, current: currentPid, created })
+    // Y ya está: qué cuenta queda puesta lo resuelve el ARRANQUE al recargar, que es donde
+    // esa decisión ya vivía —si no queda ninguna estrena la primera, y si quedan cae a la
+    // primera de la lista—. No hace falta decidirlo aquí también.
+    emitVault({ phase: 'account-removed', removed: gone, current: currentPid })
+  }
+
+  /**
+   * Borra un perfil y todo lo suyo. Sin preguntas: el freno de «no te quedes sin ninguna»
+   * es de la interfaz y vive en `deleteProfile`.
+   */
+  async function purgeProfile (id) {
+    const list = loadProfiles().filter((p) => p.id !== id)
+    saveProfiles(list)
+    for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert', 'acta', 'renounced']) {
+      rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
+    }
+    // …y sus CryptoKeys no extractables del keyStore (IndexedDB).
+    if (keyStore) {
+      for (const s of ['keypair', 'enc-keypair']) {
+        try { await keyStore.remove(`dotrino.identity.p.${id}.${s}`) } catch (_) {}
+      }
+    }
+    if (currentPid === id) {
+      if (list.length) { currentPid = list[0].id; rawKv.setItem(CURRENT_STORAGE, currentPid) }
+      else {
+        // No queda ninguna: el arranque estrenará la primera. Se borra el puntero, pero
+        // `currentPid` se deja como está a propósito — sin él, el kv deja de estar
+        // scopeado y cualquier escritura de aquí a la recarga caería en las claves SIN
+        // namespace, que son justo las que el arranque adopta como «Perfil 1». Apuntando
+        // a un perfil que ya no existe, lo que se escriba es inerte.
+        rawKv.removeItem(CURRENT_STORAGE)
+      }
+    }
+    return { ok: true, current: currentPid }
   }
 
   /**
@@ -1260,22 +1283,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { id: e.id, name: e.name }
     },
     async deleteProfile ({ id } = {}) {
-      let list = loadProfiles()
+      const list = loadProfiles()
+      // El freno es de la INTERFAZ: el botón «Borrar» de la página de perfiles no puede
+      // dejarte sin ninguna de un clic. La expulsión no pasa por aquí (ver `purgeProfile`):
+      // ahí sí se va la última, porque no es un descuido sino que te echaron.
       if (list.length <= 1) throw new Error('cannot delete the only profile')
       if (!list.find((p) => p.id === id)) throw new Error('perfil no existe')
-      list = list.filter((p) => p.id !== id); saveProfiles(list)
-      // Borrado directo del namespace del perfil (incluye su store del vault si lo tuviera).
-      for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert', 'acta', 'renounced']) {
-        rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
-      }
-      // …y sus CryptoKeys no extractables del keyStore (IndexedDB).
-      if (keyStore) {
-        for (const s of ['keypair', 'enc-keypair']) {
-          try { await keyStore.remove(`dotrino.identity.p.${id}.${s}`) } catch (_) {}
-        }
-      }
-      if (currentPid === id) { currentPid = list[0].id; rawKv.setItem(CURRENT_STORAGE, currentPid) }
-      return { ok: true, current: currentPid }
+      return purgeProfile(id)
     },
 
     // ----- ACTA DE PERFIL -----
