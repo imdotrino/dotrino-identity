@@ -342,19 +342,60 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
   /**
    * BORRADO por revocación. Solo lo dispara un `vault.revoked` FIRMADO por la maestra
-   * pineada (lo verifica `remote.js` antes de llamar aquí). Emite 'revoked' →
-   * `@dotrino/store` borra el store de ESTE perfil (los demás quedan intactos).
+   * pineada (lo verifica `remote.js` antes de llamar aquí).
+   *
+   * Se va la CUENTA ENTERA, no solo el enlace. Una cuenta que vivía en una bóveda y de la
+   * que te echaron no es «una cuenta sin bóveda»: no es nada. Dejarla ahí —sin acta, sin
+   * certificado, con su llave— era dejar un cascarón que seguía saliendo en el conmutador
+   * de perfiles, con su nombre y su foto, sin poder hacer nada y sin que nadie supiera qué
+   * era ni cómo quitarlo.
+   *
+   * El aparato NUNCA se queda sin cuenta utilizable, que es la otra mitad: si había otras,
+   * se pasa a una de ellas; si esa era la única, se estrena una vacía. Así al terminar hay
+   * exactamente lo que tiene que haber: un dispositivo con su cuenta, listo para usarse o
+   * para volver a conectarse a una bóveda.
+   *
+   * Los pasos van EN ESTE ORDEN a propósito:
+   *   1. fuera el enlace y el acta (deja de poder hablar con la bóveda y de enseñar el
+   *      perfil del que lo echaron);
+   *   2. 'revoked' → `@dotrino/store` borra el store de ESE perfil (apunta al id que ya
+   *      tenía fijado, así que da igual lo que hagamos después con el perfil activo);
+   *   3. se borra la cuenta y se deja otra puesta;
+   *   4. 'account-removed' → la app RECARGA (multi-perfil no es reactivo, por diseño).
    */
   const wipeVaultLink = () => {
     try { kv.removeItem(VAULT_CERT_STORAGE); kv.removeItem(VAULT_DEVICE_STORAGE) } catch (_) {}
-    // Y el ACTA. Sin esto el aparato borraba su enlace con la bóveda pero seguía
-    // enseñando el perfil del que acababan de echarlo —con sus miembros y sus permisos—,
-    // porque la copia local se quedaba ahí y ya no podía refrescarla (está revocado). El
-    // dueño lo describió exacto: «el device ni por enterado de que está fuera».
-    // Queda como lo que es: un dispositivo sin cuenta, que puede crear la suya o
-    // emparejarse otra vez.
     try { kv.removeItem(ACTA_STORAGE) } catch (_) {}
     emitVault({ phase: 'revoked' })
+    // Sin `await`: quien llama es un manejador de mensajes que no espera nada (y si algo
+    // aquí revienta, el enlace y el acta ya se fueron, que es lo que no puede quedar).
+    removeThisAccount().catch(() => {})
+  }
+
+  /**
+   * Borra la cuenta de ESTE dispositivo y deja otra activa (existente o recién creada).
+   * Se usa al ser expulsado; ver `wipeVaultLink`.
+   */
+  let removingAccount = false
+  async function removeThisAccount () {
+    // UNA VEZ. Puede haber varias peticiones en vuelo y a todas les llega el mismo aviso;
+    // sin este cerrojo, la segunda borraría la cuenta RECIÉN CREADA (para entonces
+    // `currentPid` ya es la nueva) en vez de la que echaron.
+    if (removingAccount) return
+    removingAccount = true
+    const gone = currentPid
+    // Si esa era la única cuenta hay que estrenar otra ANTES de borrarla: `deleteProfile`
+    // se niega a dejar el dispositivo sin ninguna, y con razón. Crear ya deja la nueva
+    // activa; si había otras, es el propio `deleteProfile` quien pasa a la primera.
+    const created = loadProfiles().filter((p) => p.id !== gone).length === 0
+    try {
+      if (created) await handlers.createProfile({ name: '' })
+      await handlers.deleteProfile({ id: gone })
+    } catch (e) {
+      emitVault({ phase: 'account-removed', removed: gone, current: currentPid, error: e?.message || String(e) })
+      return
+    }
+    emitVault({ phase: 'account-removed', removed: gone, current: currentPid, created })
   }
 
   /**
