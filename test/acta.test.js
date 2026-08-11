@@ -292,3 +292,33 @@ test('renombrar: solo el master', async () => {
   const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, label: 'x', caps: ['read'] } }], a)
   await assert.rejects(() => applyChanges(dos, [{ op: 'label', pub: a.pub, label: 'mio' }], { by: b.pub }), /not the master/)
 })
+
+test('conceder de nuevo LIMPIA la renuncia (o sería irreversible)', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, label: 'móvil', caps: ['sign', 'store', 'read'] } }], a)
+
+  // El miembro renuncia a firmar (no pasa por el master: funciona con la bóveda apagada).
+  const rec = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
+  const tres = await step(dos, [{ op: 'renounce', record: rec }], a)
+  assert.ok(!effectiveCaps(tres, b.pub).includes('sign'), 'ya no firma')
+
+  // Y el master se lo devuelve. Antes esto NO servía de nada: effectiveCaps seguía
+  // restando la renuncia y el permiso no volvía nunca.
+  const cuatro = await step(tres, [{ op: 'caps', pub: b.pub, caps: ['sign', 'store', 'read'] }], a)
+  assert.ok(effectiveCaps(cuatro, b.pub).includes('sign'), 'el master puede devolvérselo')
+  assert.equal(cuatro.renounced.filter((r) => r.member === b.pub).length, 0, 'y la renuncia se limpia')
+  assert.equal((await verifyActa({ acta: cuatro })).ok, true)
+})
+
+test('conceder OTRA cosa no borra una renuncia que sigue en pie', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['sign', 'read'] } }], a)
+  const rec = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
+  const tres = await step(dos, [{ op: 'renounce', record: rec }], a)
+  // Le dan `store`, que no es lo que renunció: la renuncia a firmar sigue.
+  const cuatro = await step(tres, [{ op: 'caps', pub: b.pub, caps: ['read', 'store'] }], a)
+  assert.ok(!effectiveCaps(cuatro, b.pub).includes('sign'), 'sigue sin firmar')
+  assert.equal(cuatro.renounced.filter((r) => r.member === b.pub).length, 1, 'la renuncia sigue escrita')
+})

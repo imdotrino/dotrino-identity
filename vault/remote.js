@@ -32,6 +32,9 @@ const MSG = {
   ADMIN: 'vault.admin',
   ADMIN_RESULT: 'vault.admin.result',
   ADMIN_EVENT: 'vault.admin.event',
+  // Renuncia: el miembro se quita capacidades a sí mismo y la bóveda la sella en el acta.
+  RENOUNCE: 'vault.renounce',
+  RENOUNCE_RESULT: 'vault.renounce.result',
   ERROR: 'vault.error'
 }
 export { MSG as VAULT_MSG }
@@ -273,6 +276,26 @@ export async function requestRenew ({ master, proxy, device, cert, onRevoked } =
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
   if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('invalid renewed cert')
   return { cert: res.cert }
+}
+
+/**
+ * Manda a la bóveda la RENUNCIA de este dispositivo para que la selle en el acta.
+ *
+ * Sin esto, renunciar solo valía en el propio aparato: la bóveda seguía teniendo escrito
+ * que podía firmar, le seguía aceptando peticiones, y cualquiera que mirara el acta lo
+ * seguía viendo como firmante. Una renuncia que no llega al acta no es oponible a nadie —
+ * y en el caso que la justifica (te robaron el aparato) su registro local no vale nada,
+ * porque lo borra quien lo tenga en la mano.
+ *
+ * El `record` va FIRMADO por el propio miembro y solo puede QUITAR, así que la bóveda no
+ * necesita comprobar ningún certificado para honrarlo: le basta la firma.
+ */
+export async function requestRenounce ({ master, proxy, device, cert, record, onRevoked } = {}) {
+  const res = await vaultRpc({
+    master, proxy, device, cert, onRevoked,
+    sendType: MSG.RENOUNCE, okType: MSG.RENOUNCE_RESULT, data: { op: 'renounce', record }
+  })
+  return { ok: !!res.ok, seq: res.seq ?? null }
 }
 
 /**

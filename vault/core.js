@@ -22,7 +22,7 @@ import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { pubkeyId as pubkeyIdOf } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestRenounce as remoteRenounce } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -1270,6 +1270,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       pend.push(record)
       saveRenounces(pend)
       emitVault({ phase: 'renounced', caps: record.caps })
+      // Y se le MANDA a la bóveda para que la selle en el acta. Sin esto la renuncia solo
+      // valía aquí dentro: la bóveda seguía teniendo escrito que este aparato puede firmar
+      // y le seguía aceptando peticiones. Best-effort: si la bóveda está apagada, la
+      // renuncia ya está en pie localmente (para eso no necesita a nadie) y se reintenta
+      // la próxima vez que se renuncie.
+      const v = loadVaultCert(); const dev = loadVaultDevice()
+      if (v?.cert && dev) {
+        remoteRenounce({ master: v.master, proxy: v.proxy, device: dev, cert: v.cert, record })
+          .catch(() => {})
+      }
       // Si además soy el master, la absorbo ya en el acta.
       if (amMaster()) { try { await sealChanges([{ op: 'renounce', record }]) } catch (_) {} }
       return { ok: true, record, caps: Acta.effectiveCaps(loadActa(), publickeyJwkStr, loadRenounces()) }

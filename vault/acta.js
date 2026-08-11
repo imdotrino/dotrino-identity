@@ -245,6 +245,15 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
         // No se puede ascender un servicio a dispositivo cambiándole las capacidades: para
         // eso hay que sacarlo y volver a admitirlo, que es un gesto visible.
         m.caps = cleanCaps(ch.caps).filter((c) => (m.cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c))
+        // CONCEDER LIMPIA LA RENUNCIA. `effectiveCaps` resta lo renunciado, así que sin
+        // esto una renuncia sellada era IRREVERSIBLE: el master le devolvía el permiso en
+        // `caps` y la resta seguía dejándolo fuera, para siempre. La interfaz promete
+        // «puedes devolvérselo desde el Master», así que tiene que ser verdad.
+        // Se tira el registro entero y no se le recortan capacidades: va FIRMADO por el
+        // miembro, y editarlo lo dejaría sin firma válida.
+        const renunciadas = new Set()
+        for (const r of next.renounced) if (r.member === m.pub) for (const c of (r.caps || [])) renunciadas.add(c)
+        if (m.caps.some((c) => renunciadas.has(c))) next.renounced = next.renounced.filter((r) => r.member !== m.pub)
         break
       }
       case 'label': {
