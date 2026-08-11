@@ -543,19 +543,47 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   const RENEW_WINDOW_MS = 15 * 24 * 60 * 60 * 1000
   const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
   let renewLastTry = 0
+  /**
+   * ¿El cert se quedó atrás respecto del ACTA? El acta es la política (lo que el dueño
+   * decidió); el cert es su reflejo, y solo se refresca al renovar. Sin esta comprobación,
+   * un permiso concedido después de emparejar tardaba en llegar lo que tardara el cert en
+   * acercarse a su caducidad: hasta 30 días. En la práctica, dar «administra» y no ver
+   * NUNCA aparecer la consola remota.
+   */
+  function certDesfasadoDelActa () {
+    try {
+      const v = loadVaultCert(); const acta = loadActa()
+      if (!v?.cert || !acta) return false
+      const debeTener = Acta.memberScopes(acta, publickeyJwkStr)
+      if (!debeTener.length) return false           // ya no soy miembro: renovar no toca
+      const tiene = new Set(v.cert.scope || [])
+      return debeTener.length !== tiene.size || debeTener.some((s) => !tiene.has(s))
+    } catch (_) { return false }
+  }
+
   function maybeRenewVaultCert () {
     try {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) return
       const now = Date.now()
-      if (v.cert.exp <= now || v.cert.exp - now > RENEW_WINDOW_MS) return
+      // Se renueva por dos motivos: porque el cert se acerca a su fin, o porque el acta
+      // dice que este aparato puede algo distinto de lo que lleva escrito el cert.
+      const porCaducar = v.cert.exp > now && v.cert.exp - now <= RENEW_WINDOW_MS
+      if (v.cert.exp <= now || (!porCaducar && !certDesfasadoDelActa())) return
       if (now - renewLastTry < RENEW_RETRY_MS) return
-      renewLastTry = now
-      remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink }).then(({ cert }) => {
-        kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
-        emitVault({ phase: 'renewed', exp: cert.exp })
-      }).catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
+      renovarCert().catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
     } catch (_) {}
+  }
+
+  /** Pide un cert fresco y lo guarda. Devuelve promesa para poder ESPERARLO cuando hace falta. */
+  async function renovarCert () {
+    const v = loadVaultCert(); const device = loadVaultDevice()
+    if (!v?.cert || !device) return null
+    renewLastTry = Date.now()
+    const { cert } = await remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
+    kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
+    emitVault({ phase: 'renewed', exp: cert.exp })
+    return cert
   }
 
   // ----- me (kv-backed) -----
@@ -1528,7 +1556,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * cert que le dio la bóveda, no de una preferencia: la interfaz pregunta para
      * saber qué pintar, pero quien decide es la bóveda al recibir la petición.
      */
-    canAdminVault () {
+    async canAdminVault () {
+      // Si el acta ya dice que este aparato administra pero el cert todavía no, se ESPERA a
+      // renovarlo aquí mismo. Disparar la renovación y contestar «no» dejaba la consola
+      // escondida hasta la siguiente visita, y el dueño —que acababa de dar el permiso— no
+      // tenía forma de saber que solo faltaba recargar.
+      if (certDesfasadoDelActa()) { try { await renovarCert() } catch (_) {} }
       const v = loadVaultCert()
       return !!v?.cert && (v.cert.scope || []).includes('vault:admin')
     },
@@ -1546,6 +1579,10 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
           if (res.chain?.length && res.chain[0].profileId === loadActa()?.profileId) await adoptChain(res.chain)
           else if (res.acta) await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta))
         } catch (_) {}
+        // El acta acaba de llegar: si trae permisos que el cert no lleva, se renueva YA. La
+        // comprobación de arriba corrió ANTES de tenerla, así que sin esto haría falta una
+        // segunda visita para estrenar un permiso recién concedido.
+        maybeRenewVaultCert()
         return res
       } catch (e) { return handleVaultError(e) }
     },
