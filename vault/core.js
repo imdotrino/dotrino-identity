@@ -650,12 +650,28 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     return last || { adopted: false, reason: 'nada-que-adoptar', seq: loadActa()?.seq ?? null }
   }
 
+  /**
+   * SI EL ACTA NUEVA YA NO ME NOMBRA, ME BORRO. Sin botón y sin preguntar.
+   *
+   * El acta manda —es quien dice de quién es el perfil— y viene FIRMADA por el master, así
+   * que enterarse por ella es tan bueno como el aviso de expulsión: no hay wipe-DoS que
+   * valga, porque un tercero no puede fabricar un acta sellada. Antes solo se hacía caso al
+   * aviso, que es un mensaje suelto: si se perdía —el aparato apagado, la cola del proxy
+   * dura 24 h— el aparato se quedaba enseñando para siempre una cuenta de la que ya lo
+   * habían echado, aunque la propia acta que acababa de recibir dijera lo contrario.
+   */
   async function adoptActa (candidate) {
     const current = loadActa()
     const r = await Acta.canAdopt({ candidate, current })
     if (!r.adopt) return { adopted: false, reason: r.reason, seq: current?.seq ?? null }
     saveActa(candidate)
     emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, adopted: r.reason })
+    const sigoDentro = (candidate.members || []).some((m) => m?.pub === publickeyJwkStr)
+    if (!sigoDentro) {
+      console.warn('[identity] the new record no longer lists this device: removing the account')
+      wipeVaultLink()
+      return { adopted: true, expelled: true, reason: r.reason, seq: candidate.seq }
+    }
     return { adopted: true, reason: r.reason, seq: candidate.seq }
   }
 
@@ -892,15 +908,28 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     clearTimeout(profilePushTimer)
     profilePushTimer = setTimeout(() => {
       const { publickey, encryptionPubkey, ...content } = me || {}
-      remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileSet', args: { me: content } })
+      remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileSet', args: { me: content }, onRevoked: wipeVaultLink })
         .catch(() => {}) // el vault puede estar apagado; se reintenta en la próxima edición
     }, 800) // debounce: ediciones seguidas = un solo push
   }
+  /**
+   * EL TOQUE AL ARRANCAR. Corre en cada apertura de la identidad, así que es también el
+   * momento en el que este aparato se entera de que lo echaron: la bóveda contesta al
+   * revocado —tiene que hacerlo— con el aviso FIRMADO, que es lo único que le borra la
+   * cuenta. Sin `onRevoked` ese aviso llegaba y se tiraba a la basura, y el aparato se
+   * quedaba enseñando un perfil del que ya no era, para siempre, sin que nadie pulsara
+   * nada porque no había nada que pulsar.
+   */
   async function pullProfileFromVault () {
     try {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device || v.cert.exp <= Date.now()) return
-      const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileGet', args: {} })
+      // SE TOCA AUNQUE EL PAPEL ESTÉ VENCIDO. Antes se salía sin llamar, y ese es justo el
+      // aparato que más falta le hace: no puede firmar, ni leer, ni renovar —o sea que ya
+      // está roto para todo— y encima era el único que no tenía forma de enterarse de que
+      // lo habían echado. La bóveda contesta «vencido» y no pasa nada; y si además ya no
+      // está en el acta, contesta con el aviso firmado y aquí se le borra la cuenta.
+      if (!v?.cert || !device) return
+      const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileGet', args: {}, onRevoked: wipeVaultLink })
       const remoteMe = res?.me
       if (!remoteMe) {
         // el vault aún no tiene perfil: sembrar con el local (si tiene contenido)
@@ -1712,7 +1741,17 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
+      if (!v?.cert || !device) {
+        // POR QUÉ no puede hablar, dicho en el sitio donde se mira. «No emparejado» tapaba
+        // tres estados distintos —nunca emparejado, sin certificado guardado, sin registro
+        // del aparato— y desde fuera eran indistinguibles.
+        const acta = loadActa()
+        console.warn('[identity] cannot reach the vault:', JSON.stringify({
+          cert: !!v?.cert, device: !!device, acta: acta ? acta.seq : null,
+          mine: acta ? acta.sealer === publickeyJwkStr : null
+        }))
+        throw new Error('this device is not paired with a vault')
+      }
       maybeRenewVaultCert()
       try {
         const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink })
