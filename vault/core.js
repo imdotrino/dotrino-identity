@@ -1776,14 +1776,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) {
-        // POR QUÉ no puede hablar, dicho en el sitio donde se mira. «No emparejado» tapaba
-        // tres estados distintos —nunca emparejado, sin certificado guardado, sin registro
-        // del aparato— y desde fuera eran indistinguibles.
+        // SOLO SE AVISA SI ES RARO. Un aparato que manda en su propia cuenta —o que aún no
+        // entró en ninguna bóveda— no está paired y no pasa absolutamente nada: avisar ahí
+        // es ensuciar la consola de todo el mundo con el estado normal. Lo que sí es raro,
+        // y hasta ahora era mudo, es guardar el acta de OTRO y no tener con qué llamarle.
         const acta = loadActa()
-        console.warn('[identity] cannot reach the vault:', JSON.stringify({
-          cert: !!v?.cert, device: !!device, acta: acta ? acta.seq : null,
-          mine: acta ? acta.sealer === publickeyJwkStr : null
-        }))
+        if (acta && acta.sealer !== publickeyJwkStr) {
+          console.warn('[identity] cannot reach the vault that seals this account:', JSON.stringify({
+            cert: !!v?.cert, device: !!device, acta: acta.seq
+          }))
+        }
         throw new Error('this device is not paired with a vault')
       }
       maybeRenewVaultCert()
