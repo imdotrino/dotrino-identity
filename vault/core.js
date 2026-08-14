@@ -22,7 +22,7 @@ import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { pubkeyId as pubkeyIdOf } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestRenounce as remoteRenounce } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestRenounce as remoteRenounce, checkMembership as remoteCheck } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -912,6 +912,40 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         .catch(() => {}) // el vault puede estar apagado; se reintenta en la próxima edición
     }, 800) // debounce: ediciones seguidas = un solo push
   }
+  /**
+   * SIN PAPEL, SE PREGUNTA. Y AL ARRANCAR, SOLO.
+   *
+   * Un aparato que perdió su certificado no puede firmar, ni leer, ni renovar: TODO lo que
+   * habla con la bóveda lo exige. Así que tampoco tenía forma de enterarse de que lo habían
+   * echado —el aviso firmado se emite al quitarlo, y si estaba apagado la cola del proxy
+   * dura 24 h— y se quedaba enseñando para siempre una cuenta que ya no era suya.
+   *
+   * Se pregunta con la llave del propio aparato, que es la que el acta nombra, y a la
+   * maestra que dice la propia acta (`sealer`). Si sigue dentro, no pasa nada. Si no, la
+   * bóveda contesta con el aviso FIRMADO y aquí se ejecuta el borrado.
+   */
+  async function preguntarSiSigoDentro () {
+    try {
+      const acta = loadActa()
+      if (!acta || acta.sealer === publickeyJwkStr) return          // no hay cuenta ajena que confirmar: mando yo
+      // El acta que ya tengo no me nombra: no hace falta preguntar nada, el acta manda y va
+      // firmada. (Normalmente esto lo resuelve `adoptActa` al recibirla.)
+      if (!(acta.members || []).some((m) => m?.pub === publickeyJwkStr)) {
+        console.warn('[identity] the stored record does not list this device: removing the account')
+        return wipeVaultLink()
+      }
+      const v = loadVaultCert()
+      if (v?.cert && loadVaultDevice()) return                      // con papel, ya lo comprueba el camino normal
+      const r = await remoteCheck({
+        master: acta.sealer,
+        proxy: v?.proxy || 'wss://proxy.dotrino.com',
+        device: { publickey: publickeyJwkStr, privateKey: keypair.privateKey },
+        onRevoked: wipeVaultLink
+      })
+      if (r?.error) console.warn('[identity] could not confirm membership with the vault:', r.error)
+    } catch (e) { console.warn('[identity] could not confirm membership with the vault:', e?.message || e) }
+  }
+
   /**
    * EL TOQUE AL ARRANCAR. Corre en cada apertura de la identidad, así que es también el
    * momento en el que este aparato se entera de que lo echaron: la bóveda contesta al
@@ -1994,6 +2028,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
   // Perfil compartido: jalar del vault en background (gana el más nuevo).
   pullProfileFromVault()
+  // Y, si a este aparato no le queda papel con el que llamar, preguntar si sigue siendo de
+  // la casa. Es lo único que le queda por hacer, y hasta ahora no lo hacía nadie.
+  preguntarSiSigoDentro()
 
   // Registrar el pubkey (y nombre) del perfil activo en su meta → para avatar/listado sin abrir cada perfil.
   {

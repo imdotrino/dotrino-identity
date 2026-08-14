@@ -28,6 +28,9 @@ const MSG = {
   ACTA_SEALED: 'vault.acta.sealed',
   ACTA_ADOPTED: 'vault.acta.adopted',
   REVOKED: 'vault.revoked',
+  // «¿sigo siendo de esta casa?»: la única pregunta que la bóveda atiende SIN certificado.
+  CHECK: 'vault.check',
+  CHECKED: 'vault.checked',
   // Consola remota: administrar el perfil desde un dispositivo (scope `vault:admin`).
   ADMIN: 'vault.admin',
   ADMIN_RESULT: 'vault.admin.result',
@@ -275,6 +278,51 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
     })
     client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })
     return await pending
+  } finally { try { client.close() } catch (_) {} }
+}
+
+/**
+ * PREGUNTA SIN CERTIFICADO: «¿sigo estando en el acta?».
+ *
+ * Es el único camino que le queda al aparato que perdió su papel — sin cert no puede
+ * firmar, ni leer, ni renovar, así que tampoco podía enterarse de que lo habían echado y se
+ * quedaba enseñando una cuenta que ya no era suya. Va firmada con SU llave, que es lo que
+ * el acta nombra.
+ *
+ * La bóveda contesta sí o no, y nada más. Si el no viene acompañado del aviso FIRMADO de
+ * expulsión, ESE es el que borra la cuenta aquí (`onRevoked`); el «no» pelado no borra
+ * nada, como cualquier otro mensaje sin firma.
+ */
+export async function checkMembership ({ master, proxy, device, onRevoked, timeoutMs = 12000 } = {}) {
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey)) throw new Error('faltan datos del dispositivo')
+  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
+  await client.connect()
+  try {
+    // Identificarse hace además que el proxy entregue lo ENCOLADO (un aviso de cuando
+    // estaba apagado, si todavía está dentro de las 24 h).
+    try { await identifyAsDevice(client, device) } catch (_) {}
+    const data = { op: 'check', publickey: device.publickey, ts: Date.now() }
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
+    const res = await new Promise((resolve) => {
+      let hecho = false
+      const fin = (v) => { if (!hecho) { hecho = true; cleanup(); resolve(v) } }
+      const off = client.on('message', (_f, p) => {
+        if (!p || typeof p !== 'object') return
+        if (p.type === MSG.REVOKED) {
+          isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey, currentNonce: null })
+            .then((ok) => { if (ok) { try { onRevoked?.() } catch (_) {} ; fin({ in: false, wiped: true }) } })
+            .catch(() => {})
+          return
+        }
+        if (p.type === MSG.CHECKED) fin({ in: !!p.in })
+        else if (p.type === MSG.ERROR) fin({ error: p.error })
+      })
+      const t = setTimeout(() => fin({ error: 'the vault did not reply' }), timeoutMs)
+      const cleanup = () => { off(); clearTimeout(t) }
+      client.sendByPubkey(master, { type: MSG.CHECK, data, signature })
+    })
+    return res
   } finally { try { client.close() } catch (_) {} }
 }
 
