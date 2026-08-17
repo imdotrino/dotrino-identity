@@ -52,7 +52,7 @@ export { deviceIdOf }
  */
 export async function startDeviceVault (identity, { proxyUrl, client: injectedClient } = {}) {
   const iss = identity.me?.publickey
-  if (!iss) throw new Error('sin identidad: crea/desbloquea tu identidad antes de usar el dispositivo como bóveda')
+  if (!iss) throw new Error('no identity: create/unlock your identity before using this device as a vault')
   const proxy = proxyUrl || 'wss://proxy.dotrino.com'
 
   // ----- self-cert P ← P (para que este dispositivo pueda además actuar de cliente
@@ -133,7 +133,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
    */
   async function handleRenew (from, p) {
     const d = p?.data
-    if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'petición inválida' })
+    if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'invalid request' })
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
       return send(from, { type: MSG.ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
     }
@@ -151,18 +151,20 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   // QUIEN consulta es una máquina ya revocada (reapareció), le re-emite el REVOKED firmado.
   async function handleDevices (from, p) {
     const d = p?.data
-    if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'petición inválida' })
+    if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'invalid request' })
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) return
     const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, trustedIssuer: iss })
-    if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'no autorizado: ' + chk.reason })
-    const { issued, revoked } = await identity.listDelegations()
+    if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
+    const { issued, revoked, revokedCerts } = await identity.listDelegations()
     const devices = await Promise.all((issued || []).map(async (x) => ({
       deviceId: x.sub ? await deviceIdOf(x.sub) : null, sub: x.sub || null,
       label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce
     })))
     send(from, { type: MSG.DEVICES_RESULT, devices, revoked: (revoked || []).map((r) => r.nonce || r) })
     // ¿el que consulta es una máquina revocada que reapareció? → re-emite el REVOKED firmado.
-    const mine = (issued || []).find((x) => x.sub === chk.device && x.revokedAt)
+    // Se busca en `revokedCerts`: desde que `issued` solo trae lo vigente, los retirados
+    // ya no están ahí y este aviso dejaba de dispararse (se caía en silencio).
+    const mine = (revokedCerts || issued || []).find((x) => x.sub === chk.device && x.revokedAt)
     if (mine) desk.emitRevoke(chk.device, mine.nonce)
   }
 
@@ -204,8 +206,14 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     reject: (deviceId) => desk.reject(deviceId),
     listPending: desk.listPending,
     listMachines,
-    // Revoca y AVISA a la máquina con un REVOKED firmado para que se auto-borre (ahora si
-    // está online, o al reaparecer vía handleDevices).
+    // QUITA LA MÁQUINA entera (por su llave): fuera del acta y sin ningún certificado
+    // vigente, que son las dos caras del mismo acto. Y AVISA con un REVOKED firmado para
+    // que se auto-borre (ahora si está online, o al reaparecer vía handleDevices).
+    revokeDevice: (sub) => desk.revokeDevice(sub),
+    // Retira UN certificado. No es quitar la máquina: sigue siendo miembro del acta, y
+    // quien queda así ya no recibe el aviso de expulsión (mientras siga en el acta, un
+    // papel retirado significa «renueva»). Usar `revokeDevice` salvo que quieras
+    // exactamente esto.
     revoke: (nonce) => desk.revoke(nonce),
     getSelfCert,
     onPendingChange (fn) { _onPendingChange = fn || (() => {}) },

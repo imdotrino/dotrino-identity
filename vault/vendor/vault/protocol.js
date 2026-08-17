@@ -33,6 +33,11 @@ export const MSG = Object.freeze({
   ACTA_SEALED: 'vault.acta.sealed',           // dispositivo → vault: { acta, code }
   ACTA_ADOPTED: 'vault.acta.adopted',         // vault → dispositivo: { acta }
   REVOKED: 'vault.revoked',                   // vault → dispositivo: { body:{op,sub,nonce,iat,exp}, signature }
+  // «¿sigo siendo de esta casa?» — la ÚNICA pregunta que se puede hacer SIN certificado:
+  // va firmada con la llave del propio aparato, que es lo que el acta nombra. Existe para
+  // el aparato que perdió su papel: sin ella no tiene forma de enterarse de que lo echaron.
+  CHECK: 'vault.check',                       // dispositivo → vault: { data:{op:'check',publickey,ts}, signature }
+  CHECKED: 'vault.checked',                   // vault → dispositivo: { in:boolean } — y si no, el REVOKED firmado
   SIGN: 'vault.sign',                         // dispositivo → vault: { data, signature, cert }
   SIGNED: 'vault.signed',                     // vault → dispositivo: { signature, publickey, device }
   GET: 'vault.get',                           // dispositivo → vault: { data, signature, cert }
@@ -42,6 +47,8 @@ export const MSG = Object.freeze({
   DEVICES: 'vault.devices',                   // dispositivo → vault: { data:{publickey,ts}, signature, cert }
   DEVICES_RESULT: 'vault.devices.result',     // vault → dispositivo: { devices, revoked }
   RENEW: 'vault.renew',                       // dispositivo → vault: { data:{op,publickey,ts}, signature, cert }
+  RENOUNCE: 'vault.renounce',                 // dispositivo → vault: { record }  (RENUNCIA firmada por el propio miembro)
+  RENOUNCE_RESULT: 'vault.renounce.result',   // vault → dispositivo: { ok, seq }
   RENEWED: 'vault.renewed',                   // vault → dispositivo: { cert }  (cert fresco, misma sub-clave/scope)
   SECRETS: 'vault.secrets',                   // servicio → vault: { data:{op,ns,ek,publickey,ts}, signature, cert }
   SECRETS_RESULT: 'vault.secrets.result',     // vault → servicio: { body:{op,ns,enc,ts}, signature } (enc SELLADO a ek; body firmado por la maestra)
@@ -91,3 +98,10 @@ export const SCOPE = Object.freeze({
 export const SECRETS_SCOPE_PREFIX = 'vault:secrets:'
 export const secretsScope = (ns) => SECRETS_SCOPE_PREFIX + ns
 export const isValidSecretsNs = (ns) => typeof ns === 'string' && /^[a-z0-9-]{1,32}$/.test(ns)
+
+/**
+ * Nombre de una variable de entorno: `MAYUSCULAS_CON_GUION_BAJO`, hasta 64. Vive aquí
+ * —y no en el cajón que la guarda— porque la comprueban también la TUI, la consola
+ * remota y el lector de `.env`, y tres copias de una regla son tres reglas.
+ */
+export const isValidVarKey = (key) => typeof key === 'string' && /^[A-Z0-9_]{1,64}$/.test(key)

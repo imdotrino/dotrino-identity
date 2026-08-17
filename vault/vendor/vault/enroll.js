@@ -104,13 +104,16 @@ export async function deviceIdOf (pub) {
  * @param {(...a:any[])=>void} [opts.log]
  * @param {(c:{deviceId:string, scope:any, label:string})=>void} [opts.onChallenge]  un dispositivo espera aprobación.
  * @param {()=>void} [opts.onPendingChange]
+ * @param {(sub:string)=>void} [opts.onDeviceRemoved]  se quitó un aparato (fuera del acta y sin papeles):
+ *   para que quien guarde algo indexado por esa llave lo suelte. Se avisa desde AQUÍ y no desde
+ *   quien llama porque a `revokeDevice` se entra por dos puertas (el PC y la consola remota).
  * @param {string[]} [opts.defaultScope]
  * @param {number} [opts.defaultTtlMs]
  */
 export function createEnrollDesk ({
   identity, iss, proxy, send, sendByPubkey,
   audit = () => {}, log = () => {},
-  onChallenge = () => {}, onPendingChange = () => {}, onAdopted = () => {},
+  onChallenge = () => {}, onPendingChange = () => {}, onAdopted = () => {}, onDeviceRemoved = () => {},
   defaultScope = ['vault:sign'], defaultTtlMs = DEVICE_TTL_MS,
   // Camino A: lo que ESTA bóveda le manda al aparato para que la meta en su acta. `encPub`
   // es su llave de CIFRADO — sin ella entra mandando pero sin poder leer el contenido.
@@ -231,7 +234,7 @@ export function createEnrollDesk ({
     }
     if (intent !== (pend.mode || 'join')) {
       audit('rejected', { what: 'enroll', reason: 'intent-mismatch' })
-      return reply(from, { type: MSG_ERROR, error: `este emparejamiento se abrió para «${pend.mode || 'join'}» y el dispositivo pidió «${intent}»` })
+      return reply(from, { type: MSG_ERROR, error: `this pairing was opened for "${pend.mode || 'join'}" and the device asked for "${intent}"` })
     }
     if (!isFresh(d)) {
       audit('rejected', { what: 'enroll', reason: 'stale' })
@@ -329,25 +332,25 @@ export function createEnrollDesk ({
     // Aprobar un emparejamiento ES admitir al dispositivo en el perfil: el cert es la
     // credencial y el acta es la política, y no tiene sentido emitir una sin la otra.
     // Las capacidades salen del scope que se pidió al emparejar (cert ∩ acta, §2.3).
-    let acta = null
+    let record = null
     try {
       if (typeof identity.admitMember === 'function') {
         const cn = scopeToCn(pend.scope)
         const caps = cn ? ['secrets'] : scopeToCaps(pend.scope)
         if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
       }
-      acta = (await identity.profileActa?.())?.acta || null
-    } catch (e) { log('[vault] no se pudo admitir en el acta:', e.message) }
+      record = (await identity.profileActa?.())?.acta || null
+    } catch (e) { log('[vault] could not admit into the record:', e.message) }
 
     audit('enroll', { device: pend.deviceId, label: pend.label || '', scope: pend.scope })
     // Echamos el código tipeado junto al cert: el DISPOSITIVO acepta solo si coincide
     // con el que generó → una bóveda falsa (que no lo conoce) no puede enrolarlo.
     // El acta viaja con el cert: el dispositivo ya sabe de quién es el perfil al que entra.
-    reply(pend.from, { type: MSG_ENROLLED, code, cert, iss, acta })
+    reply(pend.from, { type: MSG_ENROLLED, code, cert, iss, acta: record })
     pend.state = 'DONE'
     pending.delete(pend.token)
     fire(onPendingChange)
-    log('[vault] dispositivo aprobado: %s', pend.deviceId)
+    log('[vault] device approved: %s', pend.deviceId)
     return { ok: true, deviceId: pend.deviceId, cert }
   }
 
@@ -367,39 +370,39 @@ export function createEnrollDesk ({
    * pisar una cuenta con datos, y eso no puede pasar por accidente.
    */
   async function handleActaSealed (from, p) {
-    const acta = p?.acta
+    const record = p?.acta
     const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && (x.from === from || x.dpub))
     if (!pend) return reply(from, { type: MSG_ERROR, error: 'no adoption awaiting a record' })
-    if (!acta || typeof acta !== 'object') return reply(from, { type: MSG_ERROR, error: 'record missing or unreadable' })
-    if (acta.sealer !== iss) {
+    if (!record || typeof record !== 'object') return reply(from, { type: MSG_ERROR, error: 'record missing or unreadable' })
+    if (record.sealer !== iss) {
       audit('rejected', { what: 'adopt', reason: 'not-sealer' })
       return reply(from, { type: MSG_ERROR, error: 'that record does not name this vault as the sealer' })
     }
-    if (acta.sealedBy !== pend.dpub) {
+    if (record.sealedBy !== pend.dpub) {
       audit('rejected', { what: 'adopt', reason: 'sealed-by-other' })
       return reply(from, { type: MSG_ERROR, error: 'that record was not sealed by the device of this pairing' })
     }
-    if (pend.profileId && acta.profileId !== pend.profileId) {
+    if (pend.profileId && record.profileId !== pend.profileId) {
       audit('rejected', { what: 'adopt', reason: 'other-profile' })
       return reply(from, { type: MSG_ERROR, error: 'that record belongs to an account other than the one the device announced' })
     }
 
     try {
-      const r = await identity.joinProfile(acta)
+      const r = await identity.joinProfile(record)
       if (!r?.joined) throw new Error(r?.reason || 'could not adopt')
-      audit('adopt', { device: pend.deviceId, profile: acta.profileId, seq: acta.seq })
+      audit('adopt', { device: pend.deviceId, profile: record.profileId, seq: record.seq })
       // El acta que vuelve es la que la bóveda tiene guardada: el aparato la adopta y los
       // dos quedan en la misma versión.
-      const mia = (await identity.profileActa?.())?.acta || acta
-      reply(pend.from, { type: MSG_ACTA_ADOPTED, code: p.code, acta: mia })
+      const mine = (await identity.profileActa?.())?.acta || record
+      reply(pend.from, { type: MSG_ACTA_ADOPTED, code: p.code, acta: mine })
       pend.state = 'DONE'
       pending.delete(pend.token)
       fire(onPendingChange)
-      fire(onAdopted, { deviceId: pend.deviceId, profileId: acta.profileId, seq: mia.seq })
-      log('[vault] cuenta adoptada del dispositivo %s (perfil %s)', pend.deviceId, acta.profileId?.slice(0, 12))
-      return { ok: true, adopted: true, profileId: acta.profileId, seq: mia.seq }
+      fire(onAdopted, { deviceId: pend.deviceId, profileId: record.profileId, seq: mine.seq })
+      log('[vault] account adopted from device %s (profile %s)', pend.deviceId, record.profileId?.slice(0, 12))
+      return { ok: true, adopted: true, profileId: record.profileId, seq: mine.seq }
     } catch (e) {
-      log('[vault] no se pudo adoptar la cuenta: %s', e.message)
+      log('[vault] could not adopt the account: %s', e.message)
       reply(pend.from, { type: MSG_ERROR, error: 'the vault could not adopt the account: ' + e.message })
       return { ok: false, error: e.message }
     }
@@ -435,15 +438,39 @@ export function createEnrollDesk ({
   async function revoke (nonce) {
     audit('revoke', { nonce })
     const { issued } = await identity.listDelegations()
-    const dele = (issued || []).find((d) => d.nonce === nonce)
+    const delegation = (issued || []).find((d) => d.nonce === nonce)
     const res = await identity.revokeDelegation(nonce)
-    if (dele?.sub) await emitRevoke(dele.sub, nonce)
+    if (delegation?.sub) await emitRevoke(delegation.sub, nonce)
+    return res
+  }
+
+  /**
+   * QUITA EL DISPOSITIVO entero: retira TODOS sus certificados vigentes y le manda una
+   * sola orden de autoborrado. `revoke(nonce)` retira un papel, y un aparato puede tener
+   * varios (una renovación dejaba vivo el anterior): quitarle uno no lo echaba, y podía
+   * quedarse dentro justo con el que llevaba `vault:admin`.
+   */
+  async function revokeDevice (sub) {
+    if (!sub) throw new Error('sub (device pubkey) required')
+    const { issued } = await identity.listDelegations()
+    const mine = (issued || []).filter((d) => d.sub === sub)
+    audit('revoke-device', { certs: mine.length })
+    // Si el núcleo no trae `revokeDevice` (bóveda vieja), se cae a retirarlos uno a uno.
+    const res = identity.revokeDevice
+      ? await identity.revokeDevice(sub)
+      : { ok: true, nonces: await (async () => {
+          const done = []
+          for (const d of mine) { await identity.revokeDelegation(d.nonce); done.push(d.nonce) }
+          return done
+        })() }
+    await emitRevoke(sub, mine[0]?.nonce || null)
+    fire(onDeviceRemoved, sub)
     return res
   }
 
   return {
     startPairing, stopPairing, handleEnroll, handleActaSealed, handleHello, approve, reject,
-    listPending, findPending, emitRevoke, revoke,
+    listPending, findPending, emitRevoke, revoke, revokeDevice,
     get pendingCount () { return pending.size }
   }
 }
