@@ -277,7 +277,15 @@ import { pubkeyId } from './capabilities.js'
       const result = await handler(params || {})
       reply({ result })
     } catch (e) {
-      reply({ error: e?.message || String(e) })
+      // `code` (y su `detail`) CRUZAN. Sin ellos, al otro lado solo llegaba la frase, y una
+      // app que quiere reaccionar a un rechazo concreto —«esa bóveda ya está en otra cuenta
+      // de este aparato»— no tenía más remedio que emparejarla por su texto: se traduce o se
+      // reescribe y deja de funcionar sin que nadie se entere.
+      reply({
+        error: e?.message || String(e),
+        ...(e?.code ? { code: e.code } : {}),
+        ...(e?.detail ? { detail: e.detail } : {})
+      })
     }
   })
 

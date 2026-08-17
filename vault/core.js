@@ -397,6 +397,60 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   }
 
   /**
+   * Deja ABIERTA otra cuenta de este dispositivo: puntero, peers, llaves y `me`. Es lo que
+   * el arranque hace con la cuenta activa, en una función, para que crear una cuenta y
+   * volver atrás cuando algo falla sean el mismo camino recorrido en los dos sentidos.
+   *
+   * Ojo: no es «cambiar de cuenta» de cara a las apps (eso exige recargar, multi-perfil no
+   * es reactivo). Es dejar esta identidad coherente consigo misma antes de contestar.
+   */
+  async function openProfileInMemory (pid) {
+    currentPid = pid
+    rawKv.setItem(CURRENT_STORAGE, pid)
+    await peers.setProfile?.(pid)
+    await initPeerStorage()
+    keypair = await loadOrCreateKeypair(); publickeyJwkStr = JSON.stringify(keypair.publicJwk)
+    encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
+    const saved = loadMe()
+    me = (saved && saved.publickey === publickeyJwkStr)
+      ? { ...saved, encryptionPubkey: encPublickeyJwkStr }
+      : { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
+    return { id: pid, name: me.nickname || '', pubkey: publickeyJwkStr }
+  }
+
+  /**
+   * Tira la cuenta que NACIÓ para un emparejamiento que no llegó a término, y vuelve a la
+   * que estabas usando.
+   *
+   * Sin esto, cada intento fallido dejaba una cuenta fantasma —vacía, sin bóveda y encima
+   * puesta como activa—: probar tres veces con el código vencido te dejaba tres cuentas
+   * que no eran de nadie y la tuya sin abrir. La cuenta que se descarta es siempre una
+   * recién creada por `vaultPair`, así que no hay nada dentro que perder.
+   */
+  async function discardBornProfile (pid, backTo) {
+    try {
+      await purgeProfile(pid)
+      if (backTo && loadProfiles().some((p) => p.id === backTo)) await openProfileInMemory(backTo)
+    } catch (e) {
+      console.warn('[identity] could not discard the account born for the pairing:', e?.message || e)
+    }
+  }
+
+  /** El certificado de bóveda guardado en OTRA cuenta de este dispositivo (sin abrirla). */
+  const vaultCertOf = (pid) => {
+    try {
+      const raw = rawKv.getItem(VAULT_CERT_STORAGE.replace(/^dotrino\.identity\./, `dotrino.identity.p.${pid}.`))
+      return raw ? JSON.parse(raw) : null
+    } catch (_) { return null }
+  }
+
+  /** La cuenta de este dispositivo que YA está emparejada con la bóveda `master`, si la hay. */
+  const profilePairedWith = (master) => {
+    if (!master) return null
+    return loadProfiles().find((p) => vaultCertOf(p.id)?.master === master) || null
+  }
+
+  /**
    * Borra un perfil y todo lo suyo. Sin preguntas: el freno de «no te quedes sin ninguna»
    * es de la interfaz y vive en `deleteProfile`.
    */
@@ -630,6 +684,35 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     clearPendingJoin()
     emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, joined: true })
     return { joined: true, profileId: candidate.profileId, seq: candidate.seq }
+  }
+
+  /**
+   * El emparejamiento propiamente dicho: con la cuenta ya decidida (`vaultPair`), genera el
+   * cert contra la bóveda y entra a su cuenta. Aparte para que la decisión de CUÁL cuenta y
+   * el deshacerla si esto falla vivan juntos arriba, y aquí solo quede el trámite.
+   */
+  async function pairWithVault ({ qr, label = '' }) {
+    // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
+    // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
+    // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
+    // y NO se persiste ningún JWK del dispositivo (marcador useIdentityKey).
+    const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+    // Si esta identidad ya existía por su cuenta, se lleva un certificado de continuidad
+    // firmado por ella misma: es el puente para que su reputación previa siga contando.
+    // Solo si esta llave tenía vida propia. Una recién creada para adoptar (camino B) no
+    // tiene pasado que salvar: mandarle un puente de continuidad sería puro ruido.
+    const mio = loadActa()
+    const continuity = (mio && mio.members.length === 1 && !isPendingJoin())
+      ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
+      : null
+    const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
+    kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
+    kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
+    // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
+    const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
+    emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
+    pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
+    return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join: unido }
   }
 
   /**
@@ -1319,16 +1402,15 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async createProfile ({ name, forVault = false } = {}) {
       const pid = 'p' + crypto.randomUUID().slice(0, 8)
-      currentPid = pid
-      rawKv.setItem(CURRENT_STORAGE, pid)
-      await peers.setProfile?.(pid)
-      await initPeerStorage()
-      keypair = await loadOrCreateKeypair(); publickeyJwkStr = JSON.stringify(keypair.publicJwk)
-      encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
+      // `from`: de qué cuenta se venía. Solo se anota en la que nace para una bóveda, y es
+      // lo que deja volver a casa si el emparejamiento no llega a término —también cuando
+      // se cortó por lo bruto (cerrar la pestaña) y quien limpia es el arranque siguiente.
+      const from = currentPid
+      await openProfileInMemory(pid)
       me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: String(name || '').slice(0, 40) }
       saveMe(me)
       const list = loadProfiles()
-      list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr, ...(forVault ? { pendingJoin: true } : {}) })
+      list.push({ id: pid, name: me.nickname, pubkey: publickeyJwkStr, ...(forVault ? { pendingJoin: true, ...(from ? { from } : {}) } : {}) })
       saveProfiles(list)
       await ensureActa(me.nickname) // el perfil nuevo nace con su acta (él mismo es el master)
       return { id: pid, name: me.nickname, pubkey: publickeyJwkStr, pendingJoin: !!forVault }
@@ -1572,6 +1654,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * se adivina):
      *   · `'new'`     → camino B: crea aquí una cuenta más, con llave nueva, y ES ESA la que
      *                   entra al acta de la bóveda. La que estabas usando **no se toca**.
+     *                   Con dos frenos, porque una cuenta más solo vale si de verdad es
+     *                   otra: si ESTE dispositivo ya tiene la cuenta de esa bóveda, no nace
+     *                   ninguna (se re-empareja la que hay, o se avisa con `ALREADY_PAIRED`
+     *                   de que vive en otra cuenta de aquí); y si el intento falla, la que
+     *                   nació para él se descarta en vez de quedarse de fantasma.
      *   · `'current'` → sigue con la cuenta abierta. Solo vale si nació para adoptar
      *                   (`forVault`) o si ya está emparejada con ESA misma bóveda
      *                   (re-emparejar). En cualquier otro caso falla **antes de tocar la
@@ -1584,35 +1671,43 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async vaultPair ({ qr, label = '', join = 'current' }) {
       if (join === 'adopt') return handlers.vaultAdopt({ qr, label })
+      // La cuenta abierta AQUÍ y la que se cree para este intento. `born` es la que hay que
+      // tirar si el emparejamiento no llega a término: nació para él y no tiene nada dentro.
+      const from = currentPid
+      let born = null
       if (join === 'new') {
-        await handlers.createProfile({ name: label || me?.nickname || '', forVault: true })
-      } else {
+        // RE-EMPAREJAR NO ES UNA CUENTA MÁS. Volver a esta pantalla con la bóveda que ya te
+        // tiene —porque el papel venció, porque lo retiraron, porque se rehízo el
+        // emparejamiento— pedía otra cuenta nueva y te dejaba la MISMA cuenta dos veces en
+        // el conmutador, con dos llaves distintas metidas en el acta de la bóveda.
+        if (qr?.iss && loadVaultCert()?.master === qr.iss) join = 'current'
+        else {
+          const otra = qr?.iss ? profilePairedWith(qr.iss) : null
+          // Y si la que tiene esa bóveda es OTRA cuenta de este mismo dispositivo, tampoco se
+          // duplica: cambiar de cuenta exige recargar (multi-perfil no es reactivo), así que
+          // esto se dice con código para que la consola ofrezca ir a ella.
+          if (otra) {
+            throw Object.assign(new Error(`this device already has the account of that vault (profile ${otra.id})`),
+              { code: 'ALREADY_PAIRED', detail: { profile: otra.id, name: otra.name || '' } })
+          }
+          born = await handlers.createProfile({ name: label || me?.nickname || '', forVault: true })
+        }
+      }
+      if (join !== 'new') {
         const yaConEsta = loadVaultCert()?.master === qr?.iss
         if (loadActa() && !isPendingJoin() && !yaConEsta) {
           throw new Error('this device is already using an account: to also use your vault account, create a new account here (the open one is untouched)')
         }
       }
-      // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
-      // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
-      // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
-      // y NO se persiste ningún JWK del dispositivo (marcador useIdentityKey).
-      const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
-      // Si esta identidad ya existía por su cuenta, se lleva un certificado de continuidad
-      // firmado por ella misma: es el puente para que su reputación previa siga contando.
-      // Solo si esta llave tenía vida propia. Una recién creada para adoptar (camino B) no
-      // tiene pasado que salvar: mandarle un puente de continuidad sería puro ruido.
-      const mio = loadActa()
-      const continuity = (mio && mio.members.length === 1 && !isPendingJoin())
-        ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
-        : null
-      const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
-      kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
-      kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
-      // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
-      const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
-      emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
-      pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
-      return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join: unido }
+      try {
+        return await pairWithVault({ qr, label })
+      } catch (e) {
+        // El intento falló (código vencido, la bóveda dijo que no, se agotó la espera): la
+        // cuenta que nació para él se va con él. Si no, cada reintento dejaba una cuenta
+        // fantasma —y encima puesta como activa—.
+        if (born) await discardBornProfile(born.id, from)
+        throw e
+      }
     },
 
     /**
@@ -1964,6 +2059,30 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   }
 
   // ----- bootstrap -----
+
+  // Cuentas que NACIERON para un emparejamiento que nunca llegó a término y se quedaron ahí:
+  // se cerró la pestaña con el código en pantalla, o se recargó a mitad. No tienen bóveda y
+  // no pueden llegar a tenerla —el intento vivía en la llamada que se cortó—, así que son
+  // cuentas fantasma: vacías, sin dueño y ensuciando el conmutador. Aquí se recogen, y si la
+  // activa era una de ellas se vuelve a la que estabas usando antes (`from`).
+  //
+  // Nunca se borra la última: quedarse sin ninguna es peor que quedarse con una vacía. Y solo
+  // se van las marcadas `pendingJoin` SIN certificado: en cuanto una se une a la bóveda la
+  // marca se consume, así que ninguna cuenta de verdad entra en este barrido.
+  {
+    const list = loadProfiles()
+    const orphan = (p) => p.pendingJoin && !vaultCertOf(p.id)
+    const dead = list.filter(orphan)
+    const alive = list.filter((p) => !orphan(p))
+    if (dead.length && alive.length) {
+      const stored = rawKv.getItem(CURRENT_STORAGE)
+      const back = dead.find((p) => p.id === stored)?.from
+      for (const p of dead) {
+        try { await purgeProfile(p.id) } catch (e) { console.warn('[identity] could not discard a ghost account:', e?.message || e) }
+      }
+      if (back && alive.some((p) => p.id === back)) rawKv.setItem(CURRENT_STORAGE, back)
+    }
+  }
 
   // Perfil activo (multi-perfil por dispositivo). Si no hay perfiles, se crea el primero; si
   // existe una identidad ÚNICA vieja (pre-multi-perfil, claves sin namespace), se ADOPTA como

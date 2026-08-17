@@ -133,7 +133,14 @@ export class Identity {
           if (!pending) return
           this._pending.delete(msg.id)
           clearTimeout(pending.timer)
-          if (msg.error) pending.reject(new Error(msg.error))
+          // El rechazo llega con su `code` (y `detail`) puestos, como si el error se hubiera
+          // lanzado aquí: quien lo atrapa comprueba `e.code`, nunca la frase.
+          if (msg.error) {
+            const err = new Error(msg.error)
+            if (msg.code) err.code = msg.code
+            if (msg.detail) err.detail = msg.detail
+            pending.reject(err)
+          }
           else pending.resolve(msg.result)
           return
         }
