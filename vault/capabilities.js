@@ -24,6 +24,7 @@ import { canonicalStringify, bufToBase64, base64ToBuf } from './core.js'
 import { pubkeyId, keyLabel } from './keyid.js'
 
 const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' }
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
 
 /** Tope DURO de vida de una delegación (aunque pidan más). */
@@ -118,6 +119,44 @@ export async function makeDeviceKey ({ label = '' } = {}) {
   const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
   const publickey = JSON.stringify(publicJwk)
   return { publickey, privateJwk, publicJwk, label: String(label || ''), createdAt: Date.now(), deviceId: await pubkeyId(publickey) }
+}
+
+/**
+ * Genera la llave de CIFRADO del dispositivo (ECDH P-256): la hermana de
+ * `makeDeviceKey`, que es de FIRMA. Hacen falta las dos y no son intercambiables —
+ * con ECDSA no se puede cifrar.
+ *
+ * Es lo que permite escribirle a un aparato **por adelantado**, sin que esté
+ * conectado: su pública va al acta como `encPub` y cualquiera puede envolverle un
+ * secreto con `wrapForMember` (ver `./content.js`). La privada no sale de aquí.
+ *
+ * Sale EXTRAÍBLE porque un servicio headless la persiste en su archivo de identidad
+ * (cifrado en reposo). En el navegador la pareja del perfil vive como CryptoKey no
+ * extraíble en IndexedDB — eso lo hace `core.js`, no esto.
+ */
+export async function makeDeviceEncKey () {
+  const pair = await crypto.subtle.generateKey(ECDH, true, ['deriveBits'])
+  const encPrivateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
+  const encPublicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  return {
+    encPublickey: JSON.stringify({ kty: encPublicJwk.kty, crv: encPublicJwk.crv, x: encPublicJwk.x, y: encPublicJwk.y }),
+    encPrivateJwk,
+    encPublicJwk,
+    createdAt: Date.now()
+  }
+}
+
+/**
+ * Reconstruye la llave privada de cifrado desde su JWK. Es lo que hay que pasarle a
+ * `openWrap({ myEncPrivateKey })` para abrir un sobre dirigido a este aparato.
+ *
+ * Existe para que nadie la importe a mano: `deriveBits` es el ÚNICO uso correcto, y
+ * pedir otro (`deriveKey`) hace fallar la importación en Node con un error que no
+ * dice nada útil.
+ */
+export async function importDeviceEncKey (encPrivateJwk) {
+  if (!encPrivateJwk || typeof encPrivateJwk !== 'object') throw new Error('importDeviceEncKey: falta el JWK de la privada')
+  return crypto.subtle.importKey('jwk', encPrivateJwk, ECDH, false, ['deriveBits'])
 }
 
 /**

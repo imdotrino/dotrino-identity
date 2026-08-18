@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, isHandover,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
-  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope
+  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape
 } from '../vault/acta.js'
 
 /** Una llave de miembro (extractable, para poder firmar en el test con privateJwk). */
@@ -321,4 +321,68 @@ test('conceder OTRA cosa no borra una renuncia que sigue en pie', async () => {
   const cuatro = await step(tres, [{ op: 'caps', pub: b.pub, caps: ['read', 'store'] }], a)
   assert.ok(!effectiveCaps(cuatro, b.pub).includes('sign'), 'sigue sin firmar')
   assert.equal(cuatro.renounced.filter((r) => r.member === b.pub).length, 1, 'la renuncia sigue escrita')
+})
+
+// --- Llave de CIFRADO del miembro (`encPub`) ---------------------------------
+
+/** Una llave de cifrado (ECDH P-256) como la que registra un servicio. */
+async function encKey () {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const j = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  return JSON.stringify({ kty: j.kty, crv: j.crv, x: j.x, y: j.y })
+}
+
+test('encPub: se valida la FORMA, y se acepta que falte', async () => {
+  const a = await key(); const s = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
+
+  // Sin llave: se admite igual. Es lo que permite que un acta anterior a esto siga
+  // verificando en vez de dejar el vault sin arrancar.
+  const sinLlave = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', caps: ['secrets'] } }], a)
+  assert.equal((await verifyActa({ acta: sinLlave })).ok, true)
+  assert.equal(sinLlave.members.find((m) => m.pub === s.pub).encPub, null)
+
+  // Con llave válida: entra tal cual.
+  const enc = await encKey()
+  const b = await key()
+  const conLlave = await step(g, [{ op: 'admit', member: { pub: b.pub, cn: 'geo', caps: ['secrets'], encPub: enc } }], a)
+  assert.equal(conLlave.members.find((m) => m.pub === b.pub).encPub, enc)
+
+  // Basura: NO pasa. Una encPub mal formada es un miembro al que nadie puede
+  // sellarle nada, y el fallo saldría mucho después, al intentarlo.
+  for (const malo of ['no-es-json', JSON.stringify({ kty: 'RSA' }), JSON.stringify({ kty: 'EC', crv: 'P-384', x: 'a', y: 'b' })]) {
+    const roto = { ...conLlave, members: conLlave.members.map((m) => (m.pub === b.pub ? { ...m, encPub: malo } : m)) }
+    assert.equal(checkShape(roto), 'encpub-invalido', `deberia rechazar: ${malo}`)
+  }
+})
+
+test('encpub: registra la llave de un miembro YA admitido, sin tocarle nada mas', async () => {
+  const a = await key(); const s = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', label: 'proxy1', caps: ['secrets'] } }], a)
+
+  const enc = await encKey()
+  const tres = await step(dos, [{ op: 'encpub', pub: s.pub, encPub: enc }], a)
+  const antes = dos.members.find((m) => m.pub === s.pub)
+  const ahora = tres.members.find((m) => m.pub === s.pub)
+
+  assert.equal((await verifyActa({ acta: tres })).ok, true)
+  assert.equal(ahora.encPub, enc)
+  // Lo que NO debe moverse: es todo el sentido de que exista esta operación en vez
+  // de re-enrolar (re-enrolar cambia la pub y con ella se pierde el cajón de variables).
+  assert.equal(ahora.pub, antes.pub, 'la pubkey no se toca')
+  assert.equal(ahora.cn, antes.cn)
+  assert.equal(ahora.label, antes.label)
+  assert.deepEqual(ahora.caps, antes.caps)
+  assert.equal(ahora.addedAt, antes.addedAt)
+
+  // Reemplazar la llave (rotarla) también vale.
+  const otra = await encKey()
+  const cuatro = await step(tres, [{ op: 'encpub', pub: s.pub, encPub: otra }], a)
+  assert.equal(cuatro.members.find((m) => m.pub === s.pub).encPub, otra)
+
+  // Y no se le puede poner llave a un desconocido, ni meter basura.
+  const x = await key()
+  await assert.rejects(() => step(cuatro, [{ op: 'encpub', pub: x.pub, encPub: otra }], a), /not in the record/)
+  await assert.rejects(() => step(cuatro, [{ op: 'encpub', pub: s.pub, encPub: 'basura' }], a), /invalid encryption key/)
 })

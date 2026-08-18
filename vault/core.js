@@ -1460,7 +1460,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         caps: Acta.effectiveCaps(acta, m.pub, pend),
         addedAt: m.addedAt || null,
         isMe: m.pub === publickeyJwkStr,
-        isMaster: m.pub === acta.sealer
+        isMaster: m.pub === acta.sealer,
+        // La llave de CIFRADO del miembro y, derivado, si se le puede envolver algo.
+        // Sale en la proyección porque sin ella ninguna interfaz (CLI, TUI, consola)
+        // puede decir «a este aparato no se le puede escribir», y ese silencio es
+        // justo el que hace que un secreto no llegue y nadie sepa por qué.
+        encPub: m.encPub || null,
+        canSeal: !!m.encPub
       })))
       return { members, profileId: acta.profileId, seq: acta.seq, sealer: acta.sealer, updatedAt: acta.updatedAt }
     },
@@ -1480,6 +1486,19 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
 
     async isMaster () { return amMaster() },
+
+    /**
+     * Registra la llave de CIFRADO de un miembro ya admitido (solo el master).
+     *
+     * Es la alternativa a expulsarlo y volver a admitirlo: un servicio re-enrolado
+     * estrena pubkey, y su cajón de variables va indexado por la vieja, así que
+     * arrancaría sin configuración y sin decirlo. Esto le pone la llave sin moverle
+     * nada más.
+     */
+    async setMemberEncPub ({ pub, encPub } = {}) {
+      const acta = await sealChanges([{ op: 'encpub', pub, encPub }])
+      return { ok: true, seq: acta.seq }
+    },
 
     /**
      * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.

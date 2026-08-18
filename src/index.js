@@ -292,6 +292,8 @@ export class Identity {
 
   /** Admite un miembro nuevo (solo el master). */
   async admitMember (member) { return this._call('admitMember', member) }
+  /** Registra la llave de cifrado de un miembro ya admitido (evita re-enrolarlo). */
+  async setMemberEncPub (args) { return this._call('setMemberEncPub', args) }
 
   /** Cambia las capacidades de un miembro (solo el master). */
   async setCaps (pub, caps) { return this._call('setCaps', { pub, caps }) }
@@ -671,4 +673,4 @@ export class Identity {
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), reutilizables
 // por apps/bridges sin cargar el iframe del vault.
-export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'

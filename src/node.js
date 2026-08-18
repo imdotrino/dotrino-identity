@@ -184,6 +184,8 @@ export class Identity {
   actaHistory (opts) { return this._h('actaHistory', opts || {}) }
   isMaster () { return this._h('isMaster') }
   admitMember (member) { return this._h('admitMember', member) }
+  /** Registra la llave de cifrado de un miembro ya admitido (evita re-enrolarlo). */
+  setMemberEncPub (args) { return this._h('setMemberEncPub', args) }
   setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }
   setLabel (pub, label) { return this._h('setLabel', { pub, label }) }
   removeMember (pub) { return this._h('removeMember', { pub }) }
@@ -269,4 +271,4 @@ export default Identity
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), para que
 // un bridge/bot Node pueda crear su clave, firmar acciones y verificar cadenas D←P.
-export { makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'

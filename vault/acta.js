@@ -82,6 +82,20 @@ export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 const isPub = (v) => typeof v === 'string' && v.length > 0
+
+/**
+ * La llave de CIFRADO de un miembro (`encPub`): JWK público de una ECDH P-256.
+ * Se valida de verdad —no basta con «es un string»— porque es lo que decide si a
+ * ese aparato se le puede envolver un secreto: una `encPub` mal formada no falla al
+ * escribir el acta, falla mucho después al intentar sellarle algo.
+ */
+const isEncPub = (v) => {
+  if (typeof v !== 'string' || !v) return false
+  try {
+    const j = JSON.parse(v)
+    return j?.kty === 'EC' && j?.crv === 'P-256' && typeof j?.x === 'string' && typeof j?.y === 'string'
+  } catch (_) { return false }
+}
 const cleanCaps = (caps) => [...new Set((Array.isArray(caps) ? caps : []).filter((c) => CAPS.includes(c)))].sort()
 
 /**
@@ -151,6 +165,15 @@ export function checkShape (acta) {
     } else if (m.caps.includes('secrets')) {
       return 'secretos-sin-cn'
     }
+    // La llave de cifrado: por ahora se valida la FORMA y solo si viene. NO se exige
+    // todavía, aunque el destino sea exigírsela a quien recibe secretos.
+    //
+    // El motivo es que `checkShape` corre en CADA `verifyActa`, también sobre actas ya
+    // selladas: exigirla hoy invalidaría de golpe las actas en las que un servicio
+    // entró sin ella —que son todas las anteriores a esto— y el vault dejaría de
+    // arrancar en vez de avisar. Primero los servicios registran su llave (op
+    // `encpub`), y cuando no quede ninguno sin ella se aprieta aquí.
+    if (m.encPub != null && !isEncPub(m.encPub)) return 'encpub-invalido'
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
   if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
@@ -237,6 +260,19 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
           ...(m.continuity ? { continuity: m.continuity } : {})
         })
+        break
+      }
+      // Registra (o reemplaza) la llave de CIFRADO de un miembro que YA está admitido.
+      //
+      // Existe para no tener que expulsar y volver a admitir a un servicio solo porque
+      // le falta la llave: re-enrolar le cambia la pubkey, y con ella pierde su cajón de
+      // variables —que va indexado por esa llave— y se queda sin configuración en
+      // silencio. Registrar la llave en el sitio no toca ni `pub`, ni `cn`, ni `caps`.
+      case 'encpub': {
+        const m = find(ch.pub)
+        if (!m) throw new Error('encpub: that member is not in the record')
+        if (!isEncPub(ch.encPub)) throw new Error('encpub: invalid encryption key (expected a P-256 public JWK)')
+        m.encPub = ch.encPub
         break
       }
       case 'caps': {
