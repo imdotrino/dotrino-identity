@@ -112,6 +112,19 @@ export async function encryptWithCek ({ cek, gen, plaintext }) {
 }
 
 /**
+ * Descifra un sobre teniendo YA la CEK. Es el inverso exacto de `encryptWithCek`.
+ *
+ * Existe para quien administra: tiene la clave a mano (la sacó de donde la guarde) y no
+ * necesita el llavero ni ser miembro. El camino normal —el del aparato que solo tiene su
+ * propia llave— es `decryptWithKeyring`.
+ */
+export async function decryptWithCek ({ cek, envelope }) {
+  const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['decrypt'])
+  const pt = await subtle.decrypt({ name: 'AES-GCM', iv: fromB64(envelope.iv) }, k, fromB64(envelope.ct))
+  return new TextDecoder().decode(pt)
+}
+
+/**
  * Descifra un sobre. Hay que darle el llavero porque el contenido viejo está cifrado con
  * generaciones anteriores: por eso las CEK antiguas se conservan (32 bytes cada una) en vez
  * de re-cifrarlo todo de golpe al rotar.
@@ -128,5 +141,5 @@ export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPriva
 
 export default {
   makeContentKey, wrapForMember, openWrap, makeGeneration, myContentKey,
-  encryptWithCek, decryptWithKeyring
+  encryptWithCek, decryptWithCek, decryptWithKeyring
 }
