@@ -39,7 +39,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "type-check": "tsc --noEmit"
   },
   "keywords": [
     "identity",
@@ -58,6 +59,8 @@
     "@dotrino/proxy-client": "0.10.0"
   },
   "devDependencies": {
-    "fake-indexeddb": "^6.2.5"
+    "fake-indexeddb": "^6.2.5",
+    "typescript": "5.9.3",
+    "@types/node": "^22.0.0"
   }
 }
