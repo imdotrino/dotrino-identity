@@ -177,6 +177,8 @@ export class Identity {
    * este puente es en-proceso: al navegador no se le puede pasar una función, y tampoco
    * la necesita — no sella secretos de nadie.
    */
+  /** Abre un sobre sellado A ESTE aparato (envoltura + sobre). Ver `core.js`. */
+  openSealedValue (wrap, envelope) { return this._h('openSealedValue', { wrap, envelope }) }
   setSealKeyProvider (provider) { return this._h('setSealKeyProvider', { provider }) }
   /** Estrena la llave de sellado en un acta nueva, sin tocar a ningún miembro. */
   rotateSealKey () { return this._h('rotateSealKey') }

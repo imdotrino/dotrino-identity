@@ -1649,6 +1649,24 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: String(plaintext) })
     },
 
+    /**
+     * Abre un sobre SELLADO A ESTE APARATO: primero la envoltura de la llave —con la
+     * privada de cifrado de este dispositivo, que nunca sale de aquí— y con ella el sobre.
+     *
+     * Es lo que deja a un aparato de administración VER un secreto de la bóveda **sin
+     * teclear ninguna contraseña** (§8.2 de `dotrino-vault/docs/secretos-sellados.md`):
+     * la capacidad de leer deja de ser una frase que se escribe en cualquier parte y pasa
+     * a ser una llave que no se mueve del aparato.
+     *
+     * Distinto de `openContent`, que usa el llavero del PERFIL (el contenido del usuario);
+     * aquí la envoltura viene suelta, del llavero de un cajón de secretos.
+     */
+    async openSealedValue ({ wrap, envelope } = {}) {
+      if (!wrap || !envelope) throw new Error('openSealedValue: missing the wrap or the envelope')
+      const cek = await Content.openWrap({ wrap, myEncPrivateKey: encKeypair.privateKey })
+      return Content.decryptWithCek({ cek, envelope })
+    },
+
     /** Abre un sobre de contenido con el llavero del perfil (todas las generaciones). */
     async openContent ({ envelope } = {}) {
       return Content.decryptWithKeyring({
