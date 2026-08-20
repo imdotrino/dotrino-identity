@@ -542,6 +542,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   /** ¿Es ESTE dispositivo el master (el único que puede sellar)? */
   const amMaster = () => loadActa()?.sealer === publickeyJwkStr
 
+  /**
+   * Quien sella SOBRES (la bóveda) pone aquí una función que estrena una llave de sellado
+   * y devuelve su pública. Se llama en cada acta, porque esa llave rota con el acta.
+   * Un navegador no sella secretos: se queda en `null` y el acta no lleva llave.
+   */
+  let sealKeyProvider = null
+
   /** Sella con la llave del perfil (CryptoKey, puede ser no extractable). */
   const seal = (acta) => Acta.sealActa({ acta, privateKey: keypair.privateKey })
 
@@ -552,7 +559,15 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   async function sealChanges (changes) {
     const acta = loadActa()
     if (!acta) throw new Error('this profile has no record yet')
-    const next = await Acta.applyChanges(acta, changes, { by: publickeyJwkStr })
+    // LA LLAVE DE SELLADO ROTA CON EL ACTA (§8.9 de `secretos-sellados.md`): si quien usa
+    // esta identidad sella secretos —la bóveda—, le pedimos una llave nueva para nombrarla
+    // aquí. Si no hay proveedor, o falla, el acta sale igual con la llave de antes: no
+    // admitir un aparato porque no se pudo estrenar una llave sería el peor de los canjes.
+    let sealPub = null
+    if (sealKeyProvider) {
+      try { sealPub = await sealKeyProvider() } catch (_) { sealPub = null }
+    }
+    const next = await Acta.applyChanges(acta, changes, { by: publickeyJwkStr, sealPub })
     const sealed = await seal(next)
     pushHistory(acta) // la que deja de ser vigente entra en la ventana de retención
     saveActa(sealed)
@@ -1445,6 +1460,23 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const acta = loadActa()
       if (!acta) return null
       return { acta, isMaster: amMaster(), myCaps: Acta.effectiveCaps(acta, publickeyJwkStr, loadRenounces()) }
+    },
+
+    /**
+     * Quien sella sobres de secretos (la bóveda) registra aquí cómo estrenar su LLAVE DE
+     * SELLADO: una función que crea el par, se guarda la privada y devuelve la pública. Se
+     * llama al sellar cada acta, que es cuando esa llave rota (§8.9).
+     *
+     * Es opt-in a propósito: una identidad de navegador no sella nada, y un acta sin llave
+     * de sellado es perfectamente válida.
+     */
+    setSealKeyProvider (fn) {
+      sealKeyProvider = typeof fn === 'function' ? fn : null
+    },
+
+    /** La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS. */
+    sealKeyAt (seq) {
+      return Acta.sealKeyAt(loadActa(), seq)
     },
 
     async profileMembers () {

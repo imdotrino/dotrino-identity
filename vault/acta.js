@@ -30,7 +30,16 @@
 import { canonicalStringify } from './core.js'
 import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
 
-export const ACTA_V = 1
+export const ACTA_V = 2
+
+/**
+ * Versiones de acta que se ACEPTAN al leer. La 1 sigue entrando porque una v1 en el disco
+ * es un perfil con sus aparatos dentro: rechazarla dejaría al vault sin poder verificar a
+ * nadie —y a los servicios sin configuración— por un campo que ni siquiera existía. Se
+ * asciende sola: el acta siguiente que selle la maestra ya sale v2 (ver `applyChanges`).
+ * La única diferencia es la llave de sellado (§8.9), que en una v1 simplemente no hay.
+ */
+const ACTA_LEIBLES = Object.freeze([1, 2])
 
 /**
  * Lista CERRADA de capacidades. Sellar y admitir no están: eso es ser el master.
@@ -126,7 +135,7 @@ export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
  * sellador, con todas las capacidades. `profileId` = su pubkey → el nombre del perfil es
  * estable para siempre y coincide con la identidad que el usuario ya tenía (cero migración).
  */
-export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() }) {
+export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', now = Date.now() }) {
   if (!isPub(pub)) throw new Error('genesisActa: missing genesis pubkey')
   return {
     v: ACTA_V,
@@ -141,6 +150,14 @@ export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() 
     // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA
     // a cada miembro (ver content.js). Envuelto es público: solo lo abre su destinatario.
     keyring: [],
+    // LLAVE DE SELLADO (§8.9 de dotrino-vault/docs/secretos-sellados.md): con ella la
+    // bóveda FIRMA los sobres de los secretos, para que se sepa que salieron de ella.
+    // Vive aquí y no en un certificado aparte porque rota con el acta: cada acta nueva
+    // puede nombrar una llave nueva, y quien selle el acta es —siempre— la maestra.
+    // Nace en null: un perfil no tiene por qué sellar secretos.
+    sealPub: sealPub || null,
+    sealSince: sealPub ? 1 : 0,
+    sealKeys: [],
     updatedAt: now
   }
 }
@@ -148,7 +165,7 @@ export function genesisActa ({ pub, encPub = null, label = '', now = Date.now() 
 /** Comprobaciones de FORMA (sin cripto): que el acta sea un acta. */
 export function checkShape (acta) {
   if (!acta || typeof acta !== 'object') return 'no-acta'
-  if (acta.v !== ACTA_V) return 'version'
+  if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
   if (!isPub(acta.profileId) || !isPub(acta.sealer) || !isPub(acta.sealedBy)) return 'shape'
   if (!Number.isInteger(acta.seq) || acta.seq < 1) return 'seq'
   if (acta.seq > 1 && typeof acta.prev !== 'string') return 'prev'
@@ -174,6 +191,20 @@ export function checkShape (acta) {
     // arrancar en vez de avisar. Primero los servicios registran su llave (op
     // `encpub`), y cuando no quede ninguno sin ella se aprieta aquí.
     if (m.encPub != null && !isEncPub(m.encPub)) return 'encpub-invalido'
+  }
+  // LA LLAVE DE SELLADO Y SU REGISTRO. `sealPub` puede no estar (un perfil que no sella
+  // secretos), pero si está tiene que decir DESDE QUÉ acta manda: sin `sealSince` no se
+  // puede decidir con qué llave verificar un sobre viejo.
+  if (acta.v >= 2) {
+  if (acta.sealPub != null) {
+    if (!isPub(acta.sealPub)) return 'sealpub-invalido'
+    if (!Number.isInteger(acta.sealSince) || acta.sealSince < 1 || acta.sealSince > acta.seq) return 'sealsince'
+  } else if (acta.sealSince) return 'sealsince'
+  if (!Array.isArray(acta.sealKeys)) return 'sealkeys'
+  for (const k of acta.sealKeys) {
+    if (!isPub(k?.pub)) return 'sealkey-invalida'
+    if (!Number.isInteger(k.from) || !Number.isInteger(k.to) || k.from < 1 || k.to < k.from) return 'sealkey-rango'
+  }
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
   if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
@@ -216,7 +247,7 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  * Van en ARRAY porque hay combinaciones que deben ser atómicas: admitir al nuevo sellador y
  * traspasarle el master ocurre en el MISMO `seq` (§2.1.3).
  */
-export async function applyChanges (acta, changes, { by, now = Date.now() } = {}) {
+export async function applyChanges (acta, changes, { by, now = Date.now(), sealPub = null } = {}) {
   const shape = checkShape(acta)
   if (shape) throw new Error('invalid record: ' + shape)
   if (!by) throw new Error('applyChanges: missing `by` (who seals)')
@@ -227,6 +258,11 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
 
   const next = {
     ...acta,
+    // Asciende de v1 a v2 sin ceremonia: los campos de sellado nacen vacíos y la llave
+    // entra en cuanto quien sella pase una (`sealPub`).
+    v: ACTA_V,
+    sealPub: acta.sealPub || null,
+    sealSince: acta.sealPub ? acta.sealSince : 0,
     sealedBy: by,
     seq: acta.seq + 1,
     prev: await actaHash(acta),
@@ -234,9 +270,23 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
     revoked: [...(acta.revoked || [])],
     renounced: [...(acta.renounced || [])],
     keyring: (acta.keyring || []).map((g) => ({ ...g, wraps: { ...g.wraps } })),
+    sealKeys: (acta.sealKeys || []).map((k) => ({ ...k })),
     updatedAt: now
   }
   delete next.sig
+
+  // LA LLAVE DE SELLADO ROTA CON EL ACTA (§8.9 de `secretos-sellados.md`). Quien sella
+  // pasa la llave nueva; si no pasa ninguna, la de antes sigue mandando —un master que no
+  // sella secretos (el navegador) no tiene por qué inventarse una—.
+  //
+  // La anterior NO se tira: se guarda con el tramo de `seq` en el que estuvo en vigor,
+  // porque los sobres que firmó tienen que seguir verificando. Re-firmarlos al rotar
+  // sería recorrer todos los secretos en cada cambio de membresía.
+  if (sealPub && sealPub !== next.sealPub) {
+    if (next.sealPub) next.sealKeys.push({ pub: next.sealPub, from: next.sealSince, to: acta.seq })
+    next.sealPub = sealPub
+    next.sealSince = next.seq
+  }
 
   const find = (pub) => next.members.find((m) => m.pub === pub)
 
@@ -366,6 +416,19 @@ export async function applyChanges (acta, changes, { by, now = Date.now() } = {}
     throw new Error('the change would leave the record with no master')
   }
   return next
+}
+
+/**
+ * La llave que firmaba los sobres cuando el acta iba por `seq`. Es lo que necesita quien
+ * VERIFICA un sobre: el sobre dice con qué acta se selló, y esto dice con qué llave hay
+ * que comprobarlo. `null` si no había ninguna (perfil que no sellaba) o si el `seq` viene
+ * del futuro, que es un sobre que no puede ser bueno.
+ */
+export function sealKeyAt (acta, seq) {
+  if (!acta || !Number.isInteger(seq) || seq < 1 || seq > acta.seq) return null
+  if (acta.sealPub && seq >= acta.sealSince) return acta.sealPub
+  for (const k of acta.sealKeys || []) if (seq >= k.from && seq <= k.to) return k.pub
+  return null
 }
 
 // ----- renuncia (§2.2): el único cambio que no pasa por el master -----
