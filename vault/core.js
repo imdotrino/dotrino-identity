@@ -1470,8 +1470,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * Es opt-in a propósito: una identidad de navegador no sella nada, y un acta sin llave
      * de sellado es perfectamente válida.
      */
-    setSealKeyProvider (fn) {
-      sealKeyProvider = typeof fn === 'function' ? fn : null
+    setSealKeyProvider ({ provider } = {}) {
+      sealKeyProvider = typeof provider === 'function' ? provider : null
+      return { ok: true, set: !!sealKeyProvider }
     },
 
     /**
@@ -1486,7 +1487,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
 
     /** La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS. */
-    sealKeyAt (seq) {
+    sealKeyAt ({ seq } = {}) {
       return Acta.sealKeyAt(loadActa(), seq)
     },
 

@@ -170,6 +170,18 @@ export class Identity {
   // Acta de perfil (qué llaves son del perfil y qué puede cada una; ver acta-de-perfil.md)
   profileActa () { return this._h('profileActa') }
   profileMembers () { return this._h('profileMembers') }
+  /**
+   * Quien SELLA SOBRES (la bóveda) registra aquí cómo estrenar su llave de sellado: se
+   * llama al sellar cada acta, porque esa llave rota con el acta (§8.9 de
+   * `dotrino-vault/docs/secretos-sellados.md`). Va por aquí y no por el iframe porque
+   * este puente es en-proceso: al navegador no se le puede pasar una función, y tampoco
+   * la necesita — no sella secretos de nadie.
+   */
+  setSealKeyProvider (provider) { return this._h('setSealKeyProvider', { provider }) }
+  /** Estrena la llave de sellado en un acta nueva, sin tocar a ningún miembro. */
+  rotateSealKey () { return this._h('rotateSealKey') }
+  /** Con qué llave se comprueban los sobres que se firmaron con el acta `seq`. */
+  sealKeyAt (seq) { return this._h('sealKeyAt', { seq }) }
   myMembership () { return this._h('myMembership') }
   /**
    * La CADENA de actas desde `sinceSeq` (para que un dispositivo que estuvo apagado
