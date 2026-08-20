@@ -83,3 +83,15 @@ test('forma: una llave de sellado sin decir desde cuándo NO es un acta válida'
   assert.equal(checkShape({ ...acta, sealSince: 9 }), 'sealsince', 'ni desde un acta que no ha pasado')
   assert.equal(checkShape({ ...acta, sealKeys: [{ pub: s.pub, from: 3, to: 1 }] }), 'sealkey-rango')
 })
+
+test('estrenar la llave de sellado es, por si sola, un acta nueva', async () => {
+  const a = await key(); const s1 = await key(); const s2 = await key()
+  let acta = await sealActa({ acta: genesisActa({ pub: a.pub, sealPub: s1.pub }), privateJwk: a.privateJwk })
+  acta = await step(acta, [], a, { sealPub: s2.pub })
+  assert.equal(acta.seq, 2)
+  assert.equal(acta.sealPub, s2.pub)
+  assert.deepEqual(acta.sealKeys, [{ pub: s1.pub, from: 1, to: 1 }])
+
+  // Y sin llave nueva, una lista vacía sigue siendo lo que era: nada que sellar.
+  await assert.rejects(() => applyChanges(acta, [], { by: a.pub }), /no hay cambios/)
+})

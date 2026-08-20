@@ -253,8 +253,11 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   if (!by) throw new Error('applyChanges: missing `by` (who seals)')
   if (by !== acta.sealer) throw new Error('only the master can change the record; this device is not the master')
 
-  const list = Array.isArray(changes) ? changes : [changes]
-  if (list.length === 0) throw new Error('applyChanges: no hay cambios')
+  const list = (Array.isArray(changes) ? changes : [changes]).filter(Boolean)
+  // Estrenar la llave de sellado ES un cambio del acta, aunque no toque a ningún miembro:
+  // rota con el acta (§8.9) y el acta es lo que le da autoridad. Por eso una lista vacía
+  // se acepta si viene con llave nueva, y solo entonces.
+  if (list.length === 0 && !sealPub) throw new Error('applyChanges: no hay cambios')
 
   const next = {
     ...acta,

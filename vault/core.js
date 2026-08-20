@@ -1474,6 +1474,17 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       sealKeyProvider = typeof fn === 'function' ? fn : null
     },
 
+    /**
+     * Estrena la llave de sellado sin tocar a nadie más: pide una al proveedor y la nombra
+     * en un acta nueva. Es lo que hace la bóveda al arrancar si el acta no tiene llave, o
+     * si la que nombra no es suya (el disco se restauró, otro master la puso…).
+     */
+    async rotateSealKey () {
+      if (!sealKeyProvider) throw new Error('this identity does not seal envelopes')
+      const acta = await sealChanges([])
+      return { ok: true, seq: acta.seq, sealPub: acta.sealPub }
+    },
+
     /** La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS. */
     sealKeyAt (seq) {
       return Acta.sealKeyAt(loadActa(), seq)
