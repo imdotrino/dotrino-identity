@@ -53,10 +53,15 @@ const ACTA_LEIBLES = Object.freeze([1, 2])
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin'])
+/**
+ * `approve` es el aparato que APRUEBA: cuando un cajón exige aprobación por uso, el
+ * vault le avisa y solo su firma libera los secretos (normalmente el teléfono). Como
+ * `admin`, no viaja en un QR: se concede a mano (`dotrino-vault caps <ID> +approve`).
+ */
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
@@ -87,12 +92,13 @@ export function capScope (cap, cn = null) {
   if (cap === 'store') return 'vault:store'
   if (cap === 'read') return 'vault:read'
   if (cap === 'admin') return 'vault:admin'
+  if (cap === 'approve') return 'vault:approve'
   if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
   return null
 }
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
-export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin' })
+export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve' })
 
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')

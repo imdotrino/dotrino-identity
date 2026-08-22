@@ -145,7 +145,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   const r = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
   assert.equal(await verifyRenounce(r), true)
-  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'read', 'store'], 'se honra sin tocar el acta')
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'read', 'store'], 'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -153,7 +153,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'read', 'store'])
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'read', 'store'])
   assert.equal(tres.renounced.length, 1)
 })
 

@@ -87,7 +87,8 @@ export const SCOPE = Object.freeze({
   // Consola remota (docs/consola-remota.md): admitir y expulsar miembros a distancia.
   // NO incluye cambiar permisos, traspasar el mando ni conceder `admin`: eso es el rol
   // de master y sigue siendo local. No se empareja — se concede desde el PC.
-  ADMIN: 'vault:admin'
+  ADMIN: 'vault:admin',
+  APPROVE: 'vault:approve' // aprobar pedidos de secretos (cajones con `approval`); se concede a mano, como admin
 })
 
 /**
