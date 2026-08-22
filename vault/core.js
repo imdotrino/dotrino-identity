@@ -1667,6 +1667,29 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return Content.decryptWithCek({ cek, envelope })
     },
 
+    /**
+     * RE-ENVUELVE para otro miembro una llave que este aparato ya puede abrir.
+     *
+     * Es lo que permite completar a un aparato que entró tarde **sin la frase del
+     * perfil y sin que la bóveda tenga que abrir nada**: quien administra ya tiene su
+     * envoltura de ese cajón —por eso puede pulsar «Ver»—, así que abre la llave con la
+     * suya, que no sale de este dispositivo, y la vuelve a envolver para la pública del
+     * recién llegado.
+     *
+     * No regala nada: quien hace esto ya podía leer ese cajón, y a quien se lo entrega
+     * es a alguien que el ACTA —firmada por la maestra— ya reconoce como miembro. La
+     * autorización es el acta; esto solo es el sobre.
+     *
+     * @param {{ wrap: any, encPub: string }} o `wrap`: mi envoltura · `encPub`: la
+     *   pública de cifrado del miembro al que hay que envolvérsela.
+     * @returns {Promise<any>} la envoltura nueva, para que la bóveda la guarde.
+     */
+    async rewrapFor ({ wrap, encPub } = {}) {
+      if (!wrap || !encPub) throw new Error('rewrapFor: missing the wrap or the recipient key')
+      const cek = await Content.openWrap({ wrap, myEncPrivateKey: encKeypair.privateKey })
+      return Content.wrapForMember({ cek, memberEncPub: encPub })
+    },
+
     /** Abre un sobre de contenido con el llavero del perfil (todas las generaciones). */
     async openContent ({ envelope } = {}) {
       return Content.decryptWithKeyring({

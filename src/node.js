@@ -179,6 +179,8 @@ export class Identity {
    */
   /** Abre un sobre sellado A ESTE aparato (envoltura + sobre). Ver `core.js`. */
   openSealedValue (wrap, envelope) { return this._h('openSealedValue', { wrap, envelope }) }
+  /** Re-envuelve para otro miembro una llave que este aparato ya puede abrir. */
+  rewrapFor (wrap, encPub) { return this._h('rewrapFor', { wrap, encPub }) }
   setSealKeyProvider (provider) { return this._h('setSealKeyProvider', { provider }) }
   /** Estrena la llave de sellado en un acta nueva, sin tocar a ningún miembro. */
   rotateSealKey () { return this._h('rotateSealKey') }
