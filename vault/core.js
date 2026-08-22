@@ -21,7 +21,7 @@
 import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
-import { pubkeyId as pubkeyIdOf } from './capabilities.js'
+import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
@@ -1967,6 +1967,28 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       maybeRenewVaultCert()
       try { return await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
+    },
+
+    /**
+     * PUSH DE LA APP NATIVA: registra el token (FCM/APNs) de este aparato en el proxio,
+     * bajo la llave del dispositivo, para que la bóveda pueda «timbrarlo» cuando haya
+     * un pedido. La app nativa le pasa el token a la página; la página lo trae aquí.
+     */
+    async registerPush ({ kind = 'fcm', token } = {}) {
+      const device = loadVaultDevice()
+      if (!device) throw new Error('this device is not paired with a vault')
+      if (typeof token !== 'string' || !token) throw new Error('registerPush requires a token')
+      const v = loadVaultCert()
+      const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+      const client = new WebSocketProxyClient({ url: v?.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
+      await client.connect()
+      try {
+        await client.registerPushToken({
+          publicKey: device.publickey, token, kind,
+          sign: async (data) => (await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })).signature
+        })
+        return { ok: true, kind }
+      } finally { try { client.close() } catch (_) {} }
     },
 
     /** ¿Puede ESTE dispositivo aprobar pedidos? Mismo criterio que `canAdminVault`. */

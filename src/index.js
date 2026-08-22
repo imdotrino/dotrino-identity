@@ -412,6 +412,11 @@ export class Identity {
     return this._call('vaultApprovals', { op, ...(args || {}) }, 20000)
   }
 
+  /** Registra el token de push de la app nativa (FCM/APNs) bajo la llave de este aparato. */
+  async registerPush (args) {
+    return this._call('registerPush', args || {}, 20000)
+  }
+
   /** ¿El cert de este dispositivo le permite aprobar pedidos de la bóveda? */
   async canApproveVault () {
     return this._call('canApproveVault', {}, 20000)
