@@ -39,6 +39,9 @@ jobs:
           V=${GITHUB_SHA::8}
           sed -i "s|src=\"./vault.js\"|src=\"./vault.js?v=$V\"|" vault/index.html
           sed -i -E "s|from '(\./[a-zA-Z0-9_-]+\.js)'|from '\1?v=$V'|g" vault/*.js vault/vendor/*/*.js
+          # El importmap también: sin esto el index.js vendorizado se queda rancio en el borde
+          # (y arrastra a sus imports viejos) aunque el resto ya lleve ?v=.
+          sed -i -E "s|\"(\./vendor/[a-zA-Z0-9_-]+/index\.js)\"|\"\1?v=$V\"|g" vault/index.html
           COMMIT=${GITHUB_SHA::7}
           sed -i "s|</head>|  <meta name=\"commit\" content=\"$COMMIT\" />\\n</head>|" vault/index.html
       - uses: actions/configure-pages@v5
