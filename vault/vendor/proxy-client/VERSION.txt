@@ -1,2 +1,1 @@
-Copia vendorizada de @dotrino/proxy-client@0.10.0 (src/, sin dependencias).
-Ver dotrino-identity: el iframe se sirve estatico, transporte self-hosted (no CDN).
+0.11.0
