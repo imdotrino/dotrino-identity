@@ -175,11 +175,11 @@ test('revocaciones: se apuntan y se podan solas al vencer', async () => {
   assert.deepEqual(dos.revoked.map((r) => r.nonce), ['viva'])
 })
 
-test('CN: un servicio solo abre SU cajón, y no puede tener permisos de dispositivo', async () => {
+test('CN: un miembro con cajón abre SU cajón; lo demás son permisos que se le dan o no', async () => {
   const a = await key(); const proxy = await key(); const geo = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
 
-  // Se admiten dos servicios, cada uno con su nombre.
+  // Se admiten dos servicios, cada uno con su nombre y solo su cajón.
   const dos = await step(g, [
     { op: 'admit', member: { pub: proxy.pub, cn: 'proxy', label: 'proxy', caps: ['secrets'] } },
     { op: 'admit', member: { pub: geo.pub, cn: 'geo', label: 'geo', caps: ['secrets'] } }
@@ -188,18 +188,23 @@ test('CN: un servicio solo abre SU cajón, y no puede tener permisos de disposit
   assert.equal(isService(dos, proxy.pub), true)
   assert.equal(isService(dos, a.pub), false, 'el dueño es un dispositivo, no un servicio')
 
-  // La frontera: el proxy solo ve lo del proxy.
+  // La frontera del cajón: el proxy solo ve lo del proxy.
   assert.equal(memberCanReadSecrets(dos, proxy.pub, 'proxy'), true)
   assert.equal(memberCanReadSecrets(dos, proxy.pub, 'geo'), false, 'no ve el cajón de otro')
   assert.equal(memberCanReadSecrets(dos, a.pub, 'proxy'), false, 'un dispositivo no tiene cajón')
   assert.deepEqual(memberScopes(dos, proxy.pub), ['vault:secrets:proxy'])
 
-  // Y no se le pueden dar permisos de dispositivo, ni al admitirlo ni después.
-  const tres = await step(dos, [{ op: 'caps', pub: proxy.pub, caps: ['sign', 'store', 'read', 'secrets'] }], a)
-  assert.deepEqual(effectiveCaps(tres, proxy.pub), ['secrets'], 'un servicio no se asciende cambiándole permisos')
+  // PERMISOS, no tipos (2026-08-22): el cajón no recorta lo demás. Un miembro con CN puede
+  // llevar además capacidades de aparato — al admitirlo o después —, y siguen siendo
+  // exactamente las que se le dieron, ni una más.
+  const tres = await step(dos, [{ op: 'caps', pub: proxy.pub, caps: ['sign', 'secrets'] }], a)
+  assert.deepEqual([...effectiveCaps(tres, proxy.pub)].sort(), ['secrets', 'sign'])
+  assert.deepEqual([...memberScopes(tres, proxy.pub)].sort(), ['vault:secrets:proxy', 'vault:sign'])
+  assert.equal(memberCanReadSecrets(tres, proxy.pub, 'geo'), false, 'firmar no le abre otros cajones')
 
-  const cuatro = await step(tres, [{ op: 'admit', member: { pub: (await key()).pub, cn: 'bot', caps: ['sign', 'secrets'] } }], a)
-  assert.deepEqual(cuatro.members.at(-1).caps, ['secrets'])
+  const bot = await key()
+  const cuatro = await step(tres, [{ op: 'admit', member: { pub: bot.pub, cn: 'bot', caps: ['sign', 'secrets'] } }], a)
+  assert.deepEqual([...cuatro.members.at(-1).caps].sort(), ['secrets', 'sign'])
 })
 
 test('CN inválido o mezclado: el acta no cuadra', async () => {
@@ -211,8 +216,9 @@ test('CN inválido o mezclado: el acta no cuadra', async () => {
     /invalid CN/
   )
   // Un acta escrita a mano que mezcle las dos cosas no pasa la comprobación de forma.
+  // Un miembro con cajón SÍ puede llevar permisos de aparato (permisos, no tipos): eso cuadra.
   const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['sign', 'secrets'], addedAt: Date.now() }] }
-  assert.equal((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
+  assert.notEqual((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
   // Y `secrets` sin CN tampoco.
   const sinCn = { ...g, members: [...g.members, { pub: x.pub, cn: null, caps: ['secrets'], addedAt: Date.now() }] }
   assert.equal((await verifyActa({ acta: sinCn })).reason, 'secretos-sin-cn')
@@ -234,17 +240,19 @@ test('admin: es de dispositivo, tiene su scope y no se empareja sola', async () 
   assert.ok(memberScopes(dos, b.pub).includes('vault:admin'))
 })
 
-test('admin: un SERVICIO no puede administrar', async () => {
+test('admin: un miembro con cajón solo administra si el master se lo da, como cualquier aparato', async () => {
   const a = await key(); const x = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
 
-  // Por la puerta de adelante: al admitir, un miembro con CN solo conserva `secrets`.
-  const dos = await step(g, [{ op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: ['secrets', 'admin'] } }], a)
-  assert.deepEqual(dos.members.at(-1).caps, ['secrets'], 'la admin se cae al admitir un servicio')
+  // Es un permiso más: entra solo si el master lo sella, y se ve en el acta.
+  const dos = await step(g, [{ op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: ['secrets'] } }], a)
+  assert.deepEqual(dos.members.at(-1).caps, ['secrets'])
+  const tres = await step(dos, [{ op: 'caps', pub: x.pub, caps: ['secrets', 'admin'] }], a)
+  assert.deepEqual([...effectiveCaps(tres, x.pub)].sort(), ['admin', 'secrets'])
 
-  // Y por la de atrás: un acta escrita a mano que se la dé no pasa la forma.
-  const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['admin'], addedAt: Date.now() }] }
-  assert.equal((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
+  // Lo que NO pasa la forma es una capacidad que no existe.
+  const rara = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['secrets', 'vuela'], addedAt: Date.now() }] }
+  assert.equal((await verifyActa({ acta: rara })).reason, 'cap-desconocida')
 })
 
 test('admin: se puede renunciar (solo quita) y quitar desde el master', async () => {

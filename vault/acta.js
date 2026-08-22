@@ -68,6 +68,12 @@ export const PAIRED_CAPS = Object.freeze(['sign', 'store', 'read'])
 /** Capacidades de un SERVICIO (con CN): solo su propio cajón de secretos. */
 export const SERVICE_CAPS = Object.freeze(['secrets'])
 
+/**
+ * Qué capacidades puede llevar un miembro según tenga cajón (CN) o no. Con CN: su cajón
+ * y, si se le conceden, las de aparato. Sin CN: solo las de aparato (no hay cajón que abrir).
+ */
+export const allowedCaps = (cn) => (cn ? [...SERVICE_CAPS, ...DEVICE_CAPS] : [...DEVICE_CAPS])
+
 /** Un CN válido: minúsculas, números y guiones (igual que el namespace de secretos). */
 export const isValidCn = (cn) => typeof cn === 'string' && /^[a-z0-9-]{1,32}$/.test(cn)
 
@@ -178,7 +184,6 @@ export function checkShape (acta) {
     // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
     if (m.cn != null) {
       if (!isValidCn(m.cn)) return 'cn-invalido'
-      if (m.caps.some((c) => !SERVICE_CAPS.includes(c))) return 'servicio-con-capacidades-de-dispositivo'
     } else if (m.caps.includes('secrets')) {
       return 'secretos-sin-cn'
     }
@@ -306,8 +311,10 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           encPub: m.encPub || null,
           label: String(m.label || '').slice(0, 60),
           cn,
-          // Un servicio (con CN) solo puede tener `secrets`; un dispositivo, las otras tres.
-          caps: cleanCaps(m.caps).filter((c) => (cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c)),
+          // PERMISOS, no tipos (2026-08-22): el CN dice qué cajón abre; no recorta lo demás.
+          // Un miembro con CN puede llevar además las capacidades de aparato (un bot que
+          // firma como aparato del acta Y lee su cajón). Sin CN, `secrets` no significa nada.
+          caps: cleanCaps(m.caps).filter((c) => allowedCaps(cn).includes(c)),
           addedAt: now,
           cert: m.cert || null,
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
@@ -331,9 +338,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
       case 'caps': {
         const m = find(ch.pub)
         if (!m) throw new Error('caps: that member is not in the record')
-        // No se puede ascender un servicio a dispositivo cambiándole las capacidades: para
-        // eso hay que sacarlo y volver a admitirlo, que es un gesto visible.
-        m.caps = cleanCaps(ch.caps).filter((c) => (m.cn ? SERVICE_CAPS : DEVICE_CAPS).includes(c))
+        // El CN no cambia por aquí (quitar el cajón es sacar al miembro y volver a admitirlo,
+        // que es un gesto visible); las capacidades sí, dentro de lo que su CN permite.
+        m.caps = cleanCaps(ch.caps).filter((c) => allowedCaps(m.cn).includes(c))
         // CONCEDER LIMPIA LA RENUNCIA. `effectiveCaps` resta lo renunciado, así que sin
         // esto una renuncia sellada era IRREVERSIBLE: el master le devolvía el permiso en
         // `caps` y la resta seguía dejándolo fuera, para siempre. La interfaz promete
