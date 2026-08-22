@@ -404,6 +404,19 @@ export class Identity {
     return this._call('vaultAdmin', { op, ...(args || {}) }, 20000)
   }
 
+  /**
+   * PEDIDOS DE APROBACIÓN de la bóveda (cajones con `approval`): `op` = `approvals` ·
+   * `approve` · `deny` (estos dos con `{ id }`). Requiere `vault:approve` en el cert.
+   */
+  async vaultApprovals (op, args) {
+    return this._call('vaultApprovals', { op, ...(args || {}) }, 20000)
+  }
+
+  /** ¿El cert de este dispositivo le permite aprobar pedidos de la bóveda? */
+  async canApproveVault () {
+    return this._call('canApproveVault', {}, 20000)
+  }
+
   /** ¿El cert de este dispositivo le permite administrar el perfil a distancia? */
   async canAdminVault () {
     return this._call('canAdminVault', {}, 20000)

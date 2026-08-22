@@ -396,6 +396,21 @@ export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked
 }
 
 /**
+ * PEDIDOS DE APROBACIÓN (cajones con `approval`): `approvals` (listar) · `approve` ·
+ * `deny`. Van por `vault.secrets`, firmados por un aparato cuyo cert lleve
+ * `vault:approve` — que, como `admin`, no se recibe al emparejar: se concede a mano.
+ * La bóveda contesta un cuerpo firmado por la maestra (`{ op, items | ok }`).
+ */
+export async function requestApproval ({ master, proxy, device, cert, op, id, onRevoked } = {}) {
+  const res = await vaultRpc({
+    master, proxy, device, cert, onRevoked,
+    sendType: MSG.SECRETS, okType: MSG.SECRETS_RESULT,
+    data: id ? { op, id } : { op }
+  })
+  return res.body
+}
+
+/**
  * ¿Es AUTÉNTICO este `vault.admin.event` (entró o salió alguien del perfil)? Solo si va
  * firmado por la maestra PINEADA. Un aviso sin firma no se muestra: si no, cualquiera
  * podría llenar de alarmas falsas los dispositivos del usuario.
