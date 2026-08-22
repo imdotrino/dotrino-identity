@@ -394,3 +394,9 @@ test('encpub: registra la llave de un miembro YA admitido, sin tocarle nada mas'
   await assert.rejects(() => step(cuatro, [{ op: 'encpub', pub: x.pub, encPub: otra }], a), /not in the record/)
   await assert.rejects(() => step(cuatro, [{ op: 'encpub', pub: s.pub, encPub: 'basura' }], a), /invalid encryption key/)
 })
+
+test('remote: los pedidos de aprobación viajan por vault.secrets (la tabla local de MSG los conoce)', async () => {
+  const { VAULT_MSG } = await import('../vault/remote.js')
+  assert.equal(VAULT_MSG.SECRETS, 'vault.secrets')
+  assert.equal(VAULT_MSG.SECRETS_RESULT, 'vault.secrets.result')
+})

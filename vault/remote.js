@@ -38,6 +38,10 @@ const MSG = {
   // Renuncia: el miembro se quita capacidades a sí mismo y la bóveda la sella en el acta.
   RENOUNCE: 'vault.renounce',
   RENOUNCE_RESULT: 'vault.renounce.result',
+  // Pedidos de aprobación y llaves SSH del teléfono: van por el canal de secretos
+  // (`op: approvals | approve | deny | ssh.keys | ssh.key.add | ssh.key.rm`).
+  SECRETS: 'vault.secrets',
+  SECRETS_RESULT: 'vault.secrets.result',
   ERROR: 'vault.error'
 }
 export { MSG as VAULT_MSG }
