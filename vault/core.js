@@ -1709,11 +1709,34 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     /**
      * Las actas que este master conserva desde `sinceSeq` (sin incluirla), para que un
      * miembro que volvió pueda comprobar el encadenamiento. Vacío si se salió de la ventana.
+     *
+     * SOLO SE MANDA CUANDO HACE FALTA, que es casi nunca. `canAdopt` adopta el acta actual
+     * DE UN SALTO —sin mirar un solo eslabón— siempre que la haya sellado quien el que
+     * pregunta tiene por sellador; el `prev` solo se comprueba cuando la nueva es contigua,
+     * donde por definición no hay cadena que mandar. El único caso en que los eslabones
+     * resuelven algo es un TRASPASO de master durante el hueco: ahí el acta actual la firmó
+     * alguien que él no conoce, y el acta del traspaso —firmada por el sellador que sí
+     * conocía— es el puente.
+     *
+     * No es una optimización cosmética: cada acta es un snapshot COMPLETO de los miembros
+     * (~940 bytes por miembro), así que la ventana crece con cambios × miembros y llegó a
+     * pesar 991 KB de una respuesta de 1,03 MB. El proxio corta el frame a 1 MB, cerraba la
+     * conexión de la bóveda con un 1009 y la dejaba muda para TODO el ecosistema, sin un
+     * solo log de su lado (2026-08-24: el bot social dejó de publicar y eco se quedó sin un
+     * eco que mostrar).
      */
     async actaHistory ({ sinceSeq = 0 } = {}) {
       const cur = loadActa()
-      const hist = loadHistory().filter((a) => a.seq > sinceSeq)
-      const all = cur && cur.seq > sinceSeq ? [...hist, cur] : hist
+      if (!cur || !(cur.seq > sinceSeq)) return { chain: [], window: ACTA_WINDOW }
+      const hist = loadHistory()
+      const mine = hist.find((a) => a.seq === sinceSeq) || null
+      // Sin acta previa (`sinceSeq` 0, un agente headless) se adopta la actual por
+      // «sin-acta-previa». Y si la suya se salió de la ventana, la cadena tampoco encadena
+      // hasta ella: en los dos casos, mandarla es tirar cientos de KB por el transporte.
+      if (!mine) return { chain: [], window: ACTA_WINDOW }
+      // Puede dar el salto él solo: el sellador no cambió.
+      if (cur.sealedBy === mine.sealer) return { chain: [], window: ACTA_WINDOW }
+      const all = [...hist.filter((a) => a.seq > sinceSeq), cur]
       return { chain: all.sort((a, b) => a.seq - b.seq), window: ACTA_WINDOW }
     },
 
