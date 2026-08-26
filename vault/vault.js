@@ -105,6 +105,22 @@ import { pubkeyId } from './capabilities.js'
   // libera y otra pestaña visible lo toma. Así varias apps abiertas no compiten.
   const SELF_FLAG = 'dotrino.self-vault.enabled' // persistido en localStorage (kv)
   const SELF_LOCK = 'dotrino-self-vault'
+  /**
+   * Proxio del mostrador, SOLO en localhost (`?proxy=ws://…` en la URL de este iframe).
+   *
+   * En producción es el del ecosistema y no hay nada que elegir. Existe porque las
+   * pruebas de punta a punta levantan su propio proxio y prometen no tocar producción:
+   * sin esto, el mostrador de una bóveda-en-pestaña marcaba a `proxy.dotrino.com` desde
+   * el banco de pruebas. Es el mismo permiso que ya tiene `?vault=` en la consola.
+   */
+  const selfProxyUrl = (() => {
+    try {
+      const u = new URL(location.href)
+      if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) return null
+      const p = u.searchParams.get('proxy')
+      return /^wss?:\/\//.test(p || '') ? p : null
+    } catch (_) { return null }
+  })()
   let daemon = null           // handle de startDeviceVault cuando ESTE iframe es el activo
   let _lockResolver = null    // resolver del callback del lock (libera al resolverlo)
 
@@ -133,7 +149,7 @@ import { pubkeyId } from './capabilities.js'
       // Import dinámico: aísla fallos del vendor del arranque del vault (cargado por
       // todas las apps). El import map de index.html resuelve @dotrino/vault.
       const { startDeviceVault } = await import('@dotrino/vault')
-      daemon = await startDeviceVault(selfIdentity)
+      daemon = await startDeviceVault(selfIdentity, selfProxyUrl ? { proxyUrl: selfProxyUrl } : undefined)
       daemon.onPendingChange(() => broadcast('selfVault', { pending: daemon.listPending() }))
       broadcast('selfVault', { running: true })
     } catch (e) { daemon = null; broadcast('selfVault', { error: e?.message || String(e) }) }
