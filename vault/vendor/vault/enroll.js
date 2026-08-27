@@ -261,9 +261,15 @@ export function createEnrollDesk ({
     pend.dpub = d.dpub
     pend.deviceId = deviceId
     pend.commit = d.commit
-    // Llave de CIFRADO del dispositivo: con ella se le envuelve la clave de contenido del
-    // perfil al admitirlo. Sin ella entra, pero no podrá leer lo que haya guardado.
+    // Llave de CIFRADO del dispositivo: con ella se le envuelve la clave del cajón al
+    // admitirlo. Un SERVICIO sin ella entraría al acta y no podría leer NUNCA ninguna
+    // variable —las privadas van selladas a esta llave—, así que se corta aquí en vez
+    // de admitirlo y dejar que falle más tarde y en otro sitio. Un dispositivo de
+    // persona sí puede entrar sin ella: no lee variables de servicio.
     if (typeof d.encPub === 'string') pend.encPub = d.encPub
+    if (!pend.encPub && scopeToCn(pend.scope)) {
+      return reply(from, { type: MSG_ERROR, error: 'a service must send its encryption key (update @dotrino/vault on the service)' })
+    }
     // Certificado de continuidad (opcional): lo firma la identidad que se une, con su
     // propia llave. Se comprueba aquí y se guarda con el miembro al aprobar.
     if (d.continuity) {
@@ -335,8 +341,11 @@ export function createEnrollDesk ({
     let record = null
     try {
       if (typeof identity.admitMember === 'function') {
+        // PERMISOS, no tipos (2026-08-22): las capacidades son las del scope ENTERO. Un
+        // cajón (`secrets:<ns>`) suma `secrets` y fija el CN; no borra lo demás — un bot
+        // con `sign,secrets:eco` firma como aparato del acta Y lee solo su cajón.
         const cn = scopeToCn(pend.scope)
-        const caps = cn ? ['secrets'] : scopeToCaps(pend.scope)
+        const caps = [...new Set([...scopeToCaps(pend.scope), ...(cn ? ['secrets'] : [])])]
         if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
       }
       record = (await identity.profileActa?.())?.acta || null

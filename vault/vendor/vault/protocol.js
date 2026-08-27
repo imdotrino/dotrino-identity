@@ -66,6 +66,16 @@ export const MSG = Object.freeze({
   // Va FIRMADO por la maestra y el agente lo verifica contra su `iss` pineada: un
   // aviso de reinicio sin autenticar ES un ataque de denegación.
   SECRETS_CHANGED: 'vault.secrets.changed',   // vault → servicio: { body:{op,ns,ts}, signature }
+  // REPARTIR LA LLAVE DE UN CAJÓN A UN MIEMBRO NUEVO. Lo hace el SERVICIO y no la
+  // bóveda, porque la bóveda no puede abrir la llave sin la frase y el servicio ya la
+  // tiene: re-envolverla no le añade ningún poder. Ver `docs/secretos-sellados.md` §8.11.
+  //
+  // El servicio NO se fía de lo que le manden: comprueba la firma de la maestra, comprueba
+  // el ACTA que viene dentro (también firmada) y saca de ahí la llave pública del
+  // destinatario. Así, ni siquiera una bóveda comprometida puede hacerle envolver la
+  // llave para alguien que la maestra no haya metido en su propio cajón.
+  REWRAP: 'vault.rewrap',                     // vault → servicio: { body:{op,owner,gen,wrap,target,acta,ts}, signature }
+  REWRAP_OK: 'vault.rewrap.ok',               // servicio → vault: { data:{op,owner,gen,target,wrap,ts}, signature, cert }
   // --- CONSOLA REMOTA (docs/consola-remota.md) — requiere cert `vault:admin` ---
   // Un solo mensaje con `data.op`: pending · pair · approve · reject · revoke · audit.
   // Admitir y expulsar, nada más: cambiar permisos, traspasar el mando y los secretos

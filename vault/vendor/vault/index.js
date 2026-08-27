@@ -25,10 +25,10 @@
  * (`identity.signDelegation`). Transporte: `@dotrino/proxy-client` (import perezoso).
  * No reimplementa nada del ecosistema.
  */
-import { verifyChain } from '@dotrino/identity/capabilities'
+import { verifyChain, verifyDeviceSig } from '@dotrino/identity/capabilities'
 import { createEnrollDesk, deviceIdOf, DEVICE_TTL_MS, FRESH_WINDOW_MS } from './enroll.js'
 // Las constantes del protocolo salen del MISMO módulo que usa el daemon: si la lista
-// local se queda corta, el dispositivo deja de atender mensajes sin que nadie lo note.
+// local se queda corta, el dispositivo deja de handle mensajes sin que nadie lo note.
 import { MSG, SCOPE } from './protocol.js'
 
 const SIGN_SCOPE = SCOPE.SIGN
@@ -168,15 +168,132 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (mine) desk.emitRevoke(chk.device, mine.nonce)
   }
 
+  /**
+   * Lo que el daemon comprueba antes de cualquier operación firmada, en un solo sitio:
+   * frescura (anti-replay), cadena de certs, scope esperado y revocaciones.
+   *
+   * Estaba repetido en `handleRenew` y `handleDevices` con matices distintos; al añadir
+   * el resto de operaciones eso habría sido cuatro copias divergiendo.
+   */
+  async function authorise (from, p, expectedScope) {
+    const d = p?.data
+    if (!d || !p.signature || !p.cert) {
+      send(from, { type: MSG.ERROR, error: 'invalid request' })
+      return null
+    }
+    if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
+      send(from, { type: MSG.ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or a clock out of sync)' })
+      return null
+    }
+    const chk = await verifyChain({
+      data: d, signature: p.signature, cert: p.cert,
+      ...(expectedScope ? { expectedScope } : {}),
+      trustedIssuer: iss, revoked: await revocationSet(),
+    })
+    if (!chk.ok) {
+      send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
+      return null
+    }
+    return chk
+  }
+
+  /**
+   * FIRMAR en name de la identidad. Es la razón de ser de una bóveda, y faltaba: un
+   * aparato enrolado contra este dispositivo podía renovar su cert y listar aparatos,
+   * pero no pedir la única cosa para la que se enroló.
+   */
+  async function handleSign (from, p) {
+    const chk = await authorise(from, p, SCOPE.SIGN)
+    if (!chk) return
+    const toSign = p.data?.payload
+    if (toSign == null) return send(from, { type: MSG.ERROR, error: 'data.payload required' })
+    const { signature, publickey } = await identity.signData(toSign)
+    send(from, { type: MSG.SIGNED, signature, publickey, device: chk.device })
+  }
+
+  /** Leer del almacén del perfil. Mismo scope que en el daemon: `read`. */
+  async function handleGet (from, p) {
+    const chk = await authorise(from, p, SCOPE.READ)
+    if (!chk) return
+    const id = p.data?.id || 'root'
+    try {
+      const node = await identity.getNode?.(id)
+      send(from, { type: MSG.DATA, id, node: node ?? null })
+    } catch (e) {
+      send(from, { type: MSG.ERROR, error: 'get: ' + e.message })
+    }
+  }
+
+  /**
+   * Escribir en el almacén. Se pasa por `vaultStore`, que es el mismo camino que usa
+   * un aparato contra el daemon — no se reimplementa el store aquí.
+   */
+  async function handleStore (from, p) {
+    const d = p?.data
+    if (!d || typeof d.method !== 'string') {
+      return send(from, { type: MSG.ERROR, error: 'store: invalid method' })
+    }
+    const chk = await authorise(from, p, SCOPE.STORE)
+    if (!chk) return
+    try {
+      const result = await identity.vaultStore?.(d.method, d.args || [])
+      send(from, { type: MSG.DATA, id: d.method, node: result ?? null })
+    } catch (e) {
+      send(from, { type: MSG.ERROR, error: 'store: ' + e.message })
+    }
+  }
+
+  /**
+   * ¿Sigue este aparato dentro del acta? Lo pregunta un aparato al arrancar, y por eso
+   * NO va firmado con cert: va firmado con su propia llave. Un aparato revocado tiene
+   * que poder enterarse de que lo está.
+   */
+  async function handleCheck (from, p) {
+    const d = p?.data
+    if (!d || typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) return
+    const pub = d.publickey
+    if (typeof pub !== 'string') return send(from, { type: MSG.ERROR, error: 'unauthorized: shape' })
+    if (!(await verifyDeviceSig({ publickey: pub, data: d, signature: p.signature }))) {
+      return send(from, { type: MSG.ERROR, error: 'unauthorized: bad-signature' })
+    }
+    const record = (await identity.profileActa?.().catch(() => null))?.acta || null
+    const inside = (record?.members || []).some((m) => m?.pub === pub)
+    if (inside) return send(from, { type: MSG.CHECKED, in: true })
+
+    // Fuera del acta: se le dice, y además se le re-emite el aviso firmado si consta
+    // revocado — para que se apague solo en vez de quedarse creyendo que sigue dentro.
+    const { revokedCerts, issued } = await identity.listDelegations()
+    const mine = (revokedCerts || issued || []).find((x) => x.sub === pub && x.revokedAt)
+    if (mine) desk.emitRevoke(pub, mine.nonce)
+    send(from, { type: MSG.CHECKED, in: false })
+  }
+
+  /**
+   * Un fallo dentro de un handler NO se traga.
+   *
+   * El router llevaba `.catch(() => {})` en cada rama: si algo reventaba, el aparato del
+   * otro lado se quedaba esperando para siempre y aquí no quedaba rastro. Ahora se
+   * contesta el error — que es lo que permite depurarlo desde el lado que pregunta.
+   */
+  const handle = (name, promise, from) => Promise.resolve(promise).catch((e) => {
+    send(from, { type: MSG.ERROR, error: `${name}: ${e?.message || e}` })
+  })
+
   client.on('message', (_from, p) => {
     if (!p || typeof p !== 'object') return
     // El QR corto no lleva la llave: el aparato la pide con un HELLO presentando el `sn`.
-    if (p.type === MSG.HELLO) Promise.resolve(desk.handleHello(_from, p)).catch(() => {})
-    else if (p.type === MSG.ENROLL) desk.handleEnroll(_from, p).catch(() => {})
+    if (p.type === MSG.HELLO) handle('hello', desk.handleHello(_from, p), _from)
+    else if (p.type === MSG.ENROLL) handle('enroll', desk.handleEnroll(_from, p), _from)
     // Camino A: el aparato devuelve su acta sellada admitiendo a esta bóveda.
-    else if (p.type === MSG.ACTA_SEALED) Promise.resolve(desk.handleActaSealed(_from, p)).catch(() => {})
-    else if (p.type === MSG.RENEW) handleRenew(_from, p).catch(() => {})
-    else if (p.type === MSG.DEVICES) handleDevices(_from, p).catch(() => {})
+    else if (p.type === MSG.ACTA_SEALED) handle('acta', desk.handleActaSealed(_from, p), _from)
+    else if (p.type === MSG.RENEW) handle('renew', handleRenew(_from, p), _from)
+    else if (p.type === MSG.DEVICES) handle('devices', handleDevices(_from, p), _from)
+    // Lo que faltaba para que un aparato enrolado aquí pueda hacer lo mismo que contra
+    // el daemon del PC: firmar, leer, guardar y comprobar que sigue dentro.
+    else if (p.type === MSG.SIGN) handle('sign', handleSign(_from, p), _from)
+    else if (p.type === MSG.GET) handle('get', handleGet(_from, p), _from)
+    else if (p.type === MSG.STORE) handle('store', handleStore(_from, p), _from)
+    else if (p.type === MSG.CHECK) handle('check', handleCheck(_from, p), _from)
   })
 
   /**
