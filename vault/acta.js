@@ -53,15 +53,21 @@ const ACTA_LEIBLES = Object.freeze([1, 2])
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
  * `approve` es el aparato que APRUEBA: cuando un cajón exige aprobación por uso, el
  * vault le avisa y solo su firma libera los secretos (normalmente el teléfono). Como
  * `admin`, no viaja en un QR: se concede a mano (`dotrino-vault caps <ID> +approve`).
+ *
+ * `passwords` es el aparato que puede PEDIR CREDENCIALES de la bóveda de contraseñas
+ * (el gestor: la extensión del navegador, la app del teléfono). Pide de a una y por
+ * dominio; nunca lista la bóveda. Va aquí y no en una lista aparte porque quién puede
+ * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
+ * de lo mismo obliga a acordarse de los dos al quitar un aparato.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
@@ -93,12 +99,13 @@ export function capScope (cap, cn = null) {
   if (cap === 'read') return 'vault:read'
   if (cap === 'admin') return 'vault:admin'
   if (cap === 'approve') return 'vault:approve'
+  if (cap === 'passwords') return 'vault:passwords'
   if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
   return null
 }
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
-export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve' })
+export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords' })
 
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')

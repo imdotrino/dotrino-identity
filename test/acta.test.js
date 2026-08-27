@@ -145,7 +145,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   const r = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
   assert.equal(await verifyRenounce(r), true)
-  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'read', 'store'], 'se honra sin tocar el acta')
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'passwords', 'read', 'store'], 'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -153,7 +153,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'read', 'store'])
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'store'])
   assert.equal(tres.renounced.length, 1)
 })
 
@@ -238,6 +238,27 @@ test('admin: es de dispositivo, tiene su scope y no se empareja sola', async () 
   const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'admin'] } }], a)
   assert.ok(memberCan(dos, b.pub, 'admin'))
   assert.ok(memberScopes(dos, b.pub).includes('vault:admin'))
+})
+
+/**
+ * `passwords` — el gestor de contraseñas. Es un permiso del acta y no una lista aparte
+ * de la bóveda: quitar un aparato tiene que ser un solo acto, en un solo sitio.
+ */
+test('passwords: es de dispositivo, tiene su scope y NO viene con el emparejamiento por defecto', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+
+  assert.equal(capScope('passwords'), 'vault:passwords')
+  assert.ok(DEVICE_CAPS.includes('passwords'), 'un aparato puede pedir contraseñas')
+  assert.ok(!PAIRED_CAPS.includes('passwords'), 'pero no lo recibe cualquier aparato por emparejarse')
+
+  // Estar en el acta NO basta: hay que tener el permiso.
+  const soloLee = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read'] } }], a)
+  assert.equal(memberCan(soloLee, b.pub, 'passwords'), false, 'estar en el acta bastaba para pedir contraseñas')
+
+  const conPermiso = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'passwords'] } }], a)
+  assert.ok(memberCan(conPermiso, b.pub, 'passwords'))
+  assert.ok(memberScopes(conPermiso, b.pub).includes('vault:passwords'))
 })
 
 test('admin: un miembro con cajón solo administra si el master se lo da, como cualquier aparato', async () => {
