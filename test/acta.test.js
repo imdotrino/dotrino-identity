@@ -145,7 +145,9 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   const r = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk })
   assert.equal(await verifyRenounce(r), true)
-  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'passwords', 'read', 'store'], 'se honra sin tocar el acta')
+  // `sealer` entra en la lista desde 2026-08-30: sellar es un permiso de aparato, y este
+  // miembro los tiene todos. De paso queda probado que una bóveda puede RENUNCIAR a sellar.
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store'], 'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -153,7 +155,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'store'])
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store'])
   assert.equal(tres.renounced.length, 1)
 })
 

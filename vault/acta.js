@@ -49,7 +49,15 @@ export const ACTA_V = 2
 const ACTA_LEIBLES = Object.freeze([1, 2])
 
 /**
- * Lista CERRADA de capacidades. Sellar y admitir no están: eso es ser el master.
+ * Lista CERRADA de capacidades.
+ *
+ * `sealer` es SELLAR EL ACTA, y desde 2026-08-30 es un permiso como los demás — se da y se
+ * quita con `caps <ID> +sella`. Antes no existía: sellar era «ser el master», y punto. Se
+ * abrió para el **multivault**: que una segunda bóveda pueda sellar hace que perder una
+ * máquina no se lleve la cuenta por delante. Cuidado con no confundirlo con el CAMPO
+ * `acta.sealer`, que es otra cosa: el campo dice **quién manda** (y solo cambia en un
+ * traspaso); el permiso dice **quién puede firmar el acta**. Admitir sigue sin ser un
+ * permiso: se admite sellando.
  *
  * `secrets` es distinta de las otras: solo la pueden tener los miembros con **CN**
  * (los servicios), y lo que abre es únicamente el cajón de SU nombre. Ver `cn` abajo.
@@ -60,7 +68,7 @@ const ACTA_LEIBLES = Object.freeze([1, 2])
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -74,7 +82,7 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
  * de lo mismo obliga a acordarse de los dos al quitar un aparato.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
@@ -107,12 +115,13 @@ export function capScope (cap, cn = null) {
   if (cap === 'admin') return 'vault:admin'
   if (cap === 'approve') return 'vault:approve'
   if (cap === 'passwords') return 'vault:passwords'
+  if (cap === 'sealer') return 'vault:sealer'
   if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
   return null
 }
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
-export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords' })
+export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords', sealer: 'vault:sealer' })
 
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -155,31 +164,33 @@ export async function memberId (pub) {
 
 /** ¿Esta acta es un traspaso? (la firmó uno y nombra master a otro) */
 /**
- * QUIÉNES PUEDEN SELLAR ESTA ACTA. Normalmente uno —`sealer`, el master— y entonces dos
- * actas legítimas con el mismo `seq` son imposibles (D4), que es de donde salía «no hay
- * merge, ni precedencia, ni votación».
+ * QUIÉNES PUEDEN SELLAR ESTA ACTA: quien manda (`sealer`) más todo miembro con el permiso
+ * `sealer`. Normalmente solo el primero, y entonces dos actas legítimas con el mismo `seq`
+ * son imposibles (D4) — de ahí salía «no hay merge, ni precedencia, ni votación».
  *
- * **MULTIVAULT** (dueño, 2026-08-30): se pueden nombrar selladores adicionales en
- * `cosealers`, para que perder una bóveda no se lleve la cuenta por delante. El precio es
- * que la imposibilidad deja de ser criptográfica y pasa a ser práctica —«no suelen estar
- * las dos abiertas a la vez»—, así que el empate ya no es imposible: es raro.
+ * **MULTIVAULT** (dueño, 2026-08-30): dándole el permiso a otra bóveda, perder una máquina
+ * deja de llevarse la cuenta. El precio es que la imposibilidad baja de criptográfica a
+ * práctica —«no suelen estar las dos abiertas a la vez»—, así que el empate ya no es
+ * imposible: es raro. Lo resuelve `canAdopt` con las reglas que ya existían: gana el
+ * traspaso, y si no, la de hash menor. Determinista, sin relojes y sin votación. Lo que NO
+ * resuelve: el que pierde el desempate **pierde su cambio**, y quien selló tiene que
+ * enterarse (§2.4.1 punto 5).
  *
- * Lo que lo sostiene ya estaba escrito y funcionando en `canAdopt`: a igual `seq` gana el
- * traspaso, y si no, la de hash menor. Determinista, sin relojes y sin votación. Lo que
- * NO resuelve, y hay que decirlo: el que pierde el desempate **pierde su cambio**, así que
- * quien selló tiene que enterarse (§2.4.1 punto 5).
- *
- * `sealer` sigue siendo el principal y el único que cuenta para `isHandover`: un traspaso
- * es cambiar quién manda, no quién puede firmar.
+ * Es un PERMISO y no un campo aparte, y eso se nota en todo lo que ya no hace falta
+ * escribir: se da y se quita con `caps`, quitar al miembro se lo lleva, y no hay forma de
+ * nombrar sellador a quien no está en la cuenta.
  */
-export const sealersOf = (acta) => {
+export const sealersOf = (acta, renounces = []) => {
   if (!acta) return []
-  const extra = Array.isArray(acta.cosealers) ? acta.cosealers : []
-  return [acta.sealer, ...extra.filter((p) => p && p !== acta.sealer)]
+  const extra = (acta.members || [])
+    .filter((m) => m.pub !== acta.sealer && memberCan(acta, m.pub, 'sealer', renounces))
+    .map((m) => m.pub)
+  return [acta.sealer, ...extra]
 }
 
 /** ¿Puede `pub` sellar la siguiente acta de este perfil? */
-export const canSeal = (acta, pub) => sealersOf(acta).includes(pub)
+export const canSeal = (acta, pub, renounces = []) =>
+  !!acta && (pub === acta.sealer || memberCan(acta, pub, 'sealer', renounces))
 
 export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
 
@@ -260,16 +271,6 @@ export function checkShape (acta) {
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
   if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
-  if (acta.cosealers !== undefined) {
-    if (!Array.isArray(acta.cosealers)) return 'cosealers'
-    // Un cosellador que no es miembro podría sellar sin estar en la cuenta: exactamente
-    // el mismo agujero que `sealer-no-es-miembro` cierra para el principal.
-    for (const p of acta.cosealers) {
-      if (!isPub(p)) return 'cosealer-shape'
-      if (!acta.members.some((m) => m.pub === p)) return 'cosellador-no-es-miembro'
-    }
-    if (new Set(acta.cosealers).size !== acta.cosealers.length) return 'cosellador-duplicado'
-  }
   if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
   return null
 }
@@ -305,8 +306,8 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  * `by` es quien va a sellar: si no es el sellador vigente, se rechaza (regla 1).
  *
  * Cambios: `{op:'admit', member}` · `{op:'caps', pub, caps}` · `{op:'remove', pub}` ·
- * `{op:'handover', to}` · `{op:'cosealer', pub, on}` · `{op:'revoke', nonce, until}` ·
- * `{op:'renounce', record}`.
+ * `{op:'handover', to}` · `{op:'revoke', nonce, until}` · `{op:'renounce', record}`.
+ * Sellar se concede con `{op:'caps'}` como cualquier otro permiso.
  * Van en ARRAY porque hay combinaciones que deben ser atómicas: admitir al nuevo sellador y
  * traspasarle el master ocurre en el MISMO `seq` (§2.1.3).
  */
@@ -427,12 +428,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         const i = next.members.findIndex((m) => m.pub === ch.pub)
         if (i < 0) throw new Error('remove: that member is not in the record')
         if (next.members[i].pub === next.sealer) throw new Error('remove: cannot remove the master; hand the sealing over first')
-        // Y si era COSELLADOR, deja de serlo aquí mismo. Dejarlo en la lista sería un
-        // sellador que ya no está en la cuenta: exactamente lo que checkShape prohíbe, y
-        // se descubriría al sellar la siguiente en vez de ahora.
-        if (Array.isArray(next.cosealers) && next.cosealers.includes(next.members[i].pub)) {
-          next.cosealers = next.cosealers.filter((p) => p !== next.members[i].pub)
-        }
+        // Quitar al miembro se lleva su permiso de sellar: no hay lista aparte que limpiar.
         const fuera = next.members.splice(i, 1)[0]
         // Sus envolturas se van con él: sin ellas no puede abrir ninguna generación. (El
         // acceso al contenido FUTURO se corta rotando, ver content.js; lo ya leído no vuelve.)
@@ -445,30 +441,6 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
       case 'handover': {
         if (!find(ch.to)) throw new Error('handover: the new master must be a member (admit them in the same change)')
         next.sealer = ch.to
-        break
-      }
-      /**
-       * MULTIVAULT: nombrar (o quitar) a otro sellador. `{op:'cosealer', pub, on}`.
-       *
-       * No es un traspaso: `sealer` no se mueve, así que `isHandover` sigue significando
-       * lo mismo y el desempate «gana la que traspasa» no se ve afectado.
-       *
-       * Tiene que ser MIEMBRO, por lo mismo que el principal: un sellador fuera de la
-       * cuenta podría cambiarla sin estar en ella.
-       */
-      case 'cosealer': {
-        if (!isPub(ch.pub)) throw new Error('cosealer: invalid key')
-        const on = ch.on !== false
-        const cur = Array.isArray(next.cosealers) ? [...next.cosealers] : []
-        if (on) {
-          if (!find(ch.pub)) throw new Error('cosealer: the new sealer must be a member (admit them in the same change)')
-          if (ch.pub === next.sealer) throw new Error('cosealer: that key is already the master')
-          if (!cur.includes(ch.pub)) cur.push(ch.pub)
-        } else {
-          const i = cur.indexOf(ch.pub)
-          if (i >= 0) cur.splice(i, 1)
-        }
-        next.cosealers = cur
         break
       }
       case 'keyring': {

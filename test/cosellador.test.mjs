@@ -34,9 +34,9 @@ async function cuentaConDosBovedas () {
 
   // B entra como miembro Y queda nombrada cosellador, en el MISMO seq: un sellador que
   // no es miembro no existe (checkShape), así que las dos cosas van juntas.
+  // El permiso `sealer` va en el admit, como cualquier otro: no hay op especial.
   acta = await applyChanges(acta, [
-    { op: 'admit', member: { pub: B.publickey, label: 'bóveda B', caps: ['sign', 'read', 'store'] } },
-    { op: 'cosealer', pub: B.publickey }
+    { op: 'admit', member: { pub: B.publickey, label: 'bóveda B', caps: ['sign', 'read', 'store', 'sealer'] } }
   ], { by: A.publickey })
   acta = await sellar(acta, A)
   return { A, B, acta }
@@ -113,21 +113,30 @@ test('empate a igual seq: gana la de hash menor, y gana lo MISMO en los dos lado
     'el aparato admitido en la rama que pierde no queda en la cuenta: hay que avisarlo')
 })
 
-test('quitar a la bóveda B la quita también de selladores, no deja un fantasma', async () => {
+test('quitar a la bóveda B se lleva su permiso de sellar: no hay lista aparte', async () => {
   const { A, B, acta } = await cuentaConDosBovedas()
   let sinB = await applyChanges(acta, { op: 'remove', pub: B.publickey }, { by: A.publickey })
   sinB = await sellar(sinB, A)
 
-  assert.equal(checkShape(sinB), null, 'un sellador que ya no es miembro dejaría el acta inválida')
+  assert.equal(checkShape(sinB), null)
   assert.equal(canSeal(sinB, B.publickey), false)
   assert.deepEqual(sealersOf(sinB), [A.publickey])
 })
 
-test('un cosellador que no es miembro no se puede nombrar', async () => {
-  const { A, acta } = await cuentaConDosBovedas()
-  const fuera = await makeDeviceKey()
+/**
+ * Al ser un permiso y no un campo aparte, «sellador que no es miembro» deja de poder
+ * escribirse: los permisos viven DENTRO del miembro. Lo que sí hay que comprobar es que
+ * se pueda QUITAR, que es la otra mitad de «se puede dar o quitar».
+ */
+test('el permiso de sellar se quita, y entonces B deja de poder', async () => {
+  const { A, B, acta } = await cuentaConDosBovedas()
+  let sinPermiso = await applyChanges(acta, { op: 'caps', pub: B.publickey, caps: ['sign', 'read', 'store'] }, { by: A.publickey })
+  sinPermiso = await sellar(sinPermiso, A)
+
+  assert.equal(canSeal(sinPermiso, B.publickey), false)
+  assert.deepEqual(sealersOf(sinPermiso), [A.publickey])
   await assert.rejects(
-    () => applyChanges(acta, { op: 'cosealer', pub: fuera.publickey }, { by: A.publickey }),
-    /must be a member/
+    () => applyChanges(sinPermiso, { op: 'caps', pub: A.publickey, caps: ['sign'] }, { by: B.publickey }),
+    /not the master, nor a co-sealer/
   )
 })
