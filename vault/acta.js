@@ -6,9 +6,16 @@
  * Diseño completo y decisiones en `dotrino-vault/docs/acta-de-perfil.md`.
  *
  * Las cuatro reglas que este módulo hace cumplir:
- *   1. **Un solo sellador** (el «master»). Solo el sellador vigente puede producir la
- *      siguiente acta. Como las llaves son intransferibles no se puede clonar → dos actas
- *      legítimas con el mismo `seq` son imposibles: no hay bifurcaciones que resolver.
+ *   1. **Solo sella quien el acta nombra.** Normalmente uno —`sealer`, el master—, y
+ *      entonces dos actas legítimas con el mismo `seq` son imposibles: no hay
+ *      bifurcaciones que resolver.
+ *      **MULTIVAULT** (dueño, 2026-08-30): se pueden nombrar selladores adicionales en
+ *      `cosealers`, para que perder una bóveda no se lleve la cuenta por delante. Ahí la
+ *      imposibilidad pasa de criptográfica a práctica —«no suelen estar las dos abiertas
+ *      a la vez»—, así que el empate deja de ser imposible y pasa a ser raro. Lo resuelve
+ *      `canAdopt` con las reglas que ya existían: gana el traspaso, y si no, la de hash
+ *      menor. Determinista, sin relojes y sin votación. Lo que NO resuelve: el que pierde
+ *      el desempate **pierde su cambio**, y quien lo selló tiene que enterarse (§2.4.1.5).
  *   2. **`seq` monotónico + `prev`** (hash del acta anterior): cadena verificable.
  *   3. **Nunca dejar el perfil sin quien firme**: un cambio que quite el último `sign` se
  *      rechaza.
@@ -147,6 +154,33 @@ export async function memberId (pub) {
 }
 
 /** ¿Esta acta es un traspaso? (la firmó uno y nombra master a otro) */
+/**
+ * QUIÉNES PUEDEN SELLAR ESTA ACTA. Normalmente uno —`sealer`, el master— y entonces dos
+ * actas legítimas con el mismo `seq` son imposibles (D4), que es de donde salía «no hay
+ * merge, ni precedencia, ni votación».
+ *
+ * **MULTIVAULT** (dueño, 2026-08-30): se pueden nombrar selladores adicionales en
+ * `cosealers`, para que perder una bóveda no se lleve la cuenta por delante. El precio es
+ * que la imposibilidad deja de ser criptográfica y pasa a ser práctica —«no suelen estar
+ * las dos abiertas a la vez»—, así que el empate ya no es imposible: es raro.
+ *
+ * Lo que lo sostiene ya estaba escrito y funcionando en `canAdopt`: a igual `seq` gana el
+ * traspaso, y si no, la de hash menor. Determinista, sin relojes y sin votación. Lo que
+ * NO resuelve, y hay que decirlo: el que pierde el desempate **pierde su cambio**, así que
+ * quien selló tiene que enterarse (§2.4.1 punto 5).
+ *
+ * `sealer` sigue siendo el principal y el único que cuenta para `isHandover`: un traspaso
+ * es cambiar quién manda, no quién puede firmar.
+ */
+export const sealersOf = (acta) => {
+  if (!acta) return []
+  const extra = Array.isArray(acta.cosealers) ? acta.cosealers : []
+  return [acta.sealer, ...extra.filter((p) => p && p !== acta.sealer)]
+}
+
+/** ¿Puede `pub` sellar la siguiente acta de este perfil? */
+export const canSeal = (acta, pub) => sealersOf(acta).includes(pub)
+
 export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
 
 /**
@@ -226,6 +260,16 @@ export function checkShape (acta) {
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
   if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
+  if (acta.cosealers !== undefined) {
+    if (!Array.isArray(acta.cosealers)) return 'cosealers'
+    // Un cosellador que no es miembro podría sellar sin estar en la cuenta: exactamente
+    // el mismo agujero que `sealer-no-es-miembro` cierra para el principal.
+    for (const p of acta.cosealers) {
+      if (!isPub(p)) return 'cosealer-shape'
+      if (!acta.members.some((m) => m.pub === p)) return 'cosellador-no-es-miembro'
+    }
+    if (new Set(acta.cosealers).size !== acta.cosealers.length) return 'cosellador-duplicado'
+  }
   if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
   return null
 }
@@ -261,7 +305,8 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  * `by` es quien va a sellar: si no es el sellador vigente, se rechaza (regla 1).
  *
  * Cambios: `{op:'admit', member}` · `{op:'caps', pub, caps}` · `{op:'remove', pub}` ·
- * `{op:'handover', to}` · `{op:'revoke', nonce, until}` · `{op:'renounce', record}`.
+ * `{op:'handover', to}` · `{op:'cosealer', pub, on}` · `{op:'revoke', nonce, until}` ·
+ * `{op:'renounce', record}`.
  * Van en ARRAY porque hay combinaciones que deben ser atómicas: admitir al nuevo sellador y
  * traspasarle el master ocurre en el MISMO `seq` (§2.1.3).
  */
@@ -269,7 +314,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   const shape = checkShape(acta)
   if (shape) throw new Error('invalid record: ' + shape)
   if (!by) throw new Error('applyChanges: missing `by` (who seals)')
-  if (by !== acta.sealer) throw new Error('only the master can change the record; this device is not the master')
+  // El mensaje conserva «not the master» a propósito: es una cadena que hay código y
+  // pruebas emparejando, y cambiarla en silencio es justo lo que rompe cosas sin ruido.
+  if (!canSeal(acta, by)) throw new Error('only a sealer named by the record can change it: this device is not the master, nor a co-sealer')
 
   const list = (Array.isArray(changes) ? changes : [changes]).filter(Boolean)
   // Estrenar la llave de sellado ES un cambio del acta, aunque no toque a ningún miembro:
@@ -380,6 +427,12 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         const i = next.members.findIndex((m) => m.pub === ch.pub)
         if (i < 0) throw new Error('remove: that member is not in the record')
         if (next.members[i].pub === next.sealer) throw new Error('remove: cannot remove the master; hand the sealing over first')
+        // Y si era COSELLADOR, deja de serlo aquí mismo. Dejarlo en la lista sería un
+        // sellador que ya no está en la cuenta: exactamente lo que checkShape prohíbe, y
+        // se descubriría al sellar la siguiente en vez de ahora.
+        if (Array.isArray(next.cosealers) && next.cosealers.includes(next.members[i].pub)) {
+          next.cosealers = next.cosealers.filter((p) => p !== next.members[i].pub)
+        }
         const fuera = next.members.splice(i, 1)[0]
         // Sus envolturas se van con él: sin ellas no puede abrir ninguna generación. (El
         // acceso al contenido FUTURO se corta rotando, ver content.js; lo ya leído no vuelve.)
@@ -392,6 +445,30 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
       case 'handover': {
         if (!find(ch.to)) throw new Error('handover: the new master must be a member (admit them in the same change)')
         next.sealer = ch.to
+        break
+      }
+      /**
+       * MULTIVAULT: nombrar (o quitar) a otro sellador. `{op:'cosealer', pub, on}`.
+       *
+       * No es un traspaso: `sealer` no se mueve, así que `isHandover` sigue significando
+       * lo mismo y el desempate «gana la que traspasa» no se ve afectado.
+       *
+       * Tiene que ser MIEMBRO, por lo mismo que el principal: un sellador fuera de la
+       * cuenta podría cambiarla sin estar en ella.
+       */
+      case 'cosealer': {
+        if (!isPub(ch.pub)) throw new Error('cosealer: invalid key')
+        const on = ch.on !== false
+        const cur = Array.isArray(next.cosealers) ? [...next.cosealers] : []
+        if (on) {
+          if (!find(ch.pub)) throw new Error('cosealer: the new sealer must be a member (admit them in the same change)')
+          if (ch.pub === next.sealer) throw new Error('cosealer: that key is already the master')
+          if (!cur.includes(ch.pub)) cur.push(ch.pub)
+        } else {
+          const i = cur.indexOf(ch.pub)
+          if (i >= 0) cur.splice(i, 1)
+        }
+        next.cosealers = cur
         break
       }
       case 'keyring': {
@@ -629,7 +706,7 @@ export async function canAdopt ({ candidate, current }) {
   if (!current) return { adopt: true, reason: 'sin-acta-previa' }
 
   if (candidate.seq > current.seq) {
-    if (candidate.sealedBy !== current.sealer) return { adopt: false, reason: 'sellador-no-autorizado' }
+    if (!canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'sellador-no-autorizado' }
     if (candidate.seq === current.seq + 1 && candidate.prev !== await actaHash(current)) {
       return { adopt: false, reason: 'no-encadena' }
     }
@@ -639,7 +716,18 @@ export async function canAdopt ({ candidate, current }) {
   if (candidate.seq === current.seq) {
     const [hCan, hCur] = [await actaHash(candidate), await actaHash(current)]
     if (hCan === hCur) return { adopt: false, reason: 'misma-acta' }
-    if (candidate.sealedBy !== current.sealedBy) return { adopt: false, reason: 'otro-sellador' }
+    // A igual `seq`, con multivault, las dos ramas pueden venir de selladores DISTINTOS y
+    // ser las dos legítimas. Antes era imposible y se rechazaba de plano; ahora se
+    // desempata con las reglas de abajo, que ya estaban escritas.
+    //
+    // Se conserva primero la comparación de siempre (`mismo sealedBy`) y no se sustituye:
+    // en un TRASPASO las dos ramas las firmó el saliente, y `current` ya nombra al
+    // entrante como `sealer` — así que preguntarle a `current` si el saliente puede
+    // sellar da «no», y se perdería el desempate «gana la que traspasa». La pregunta
+    // correcta es por el acta PADRE, que aquí no se tiene; tener el mismo `sealedBy` es
+    // exactamente lo que dice que las dos salieron de ella.
+    const mismoFirmante = candidate.sealedBy === current.sealedBy
+    if (!mismoFirmante && !canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'otro-sellador' }
     const canT = isHandover(candidate)
     const curT = isHandover(current)
     if (canT && !curT) return { adopt: true, reason: 'traspaso-gana' }
@@ -654,6 +742,6 @@ export default {
   ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, isHandover,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
-  cardBody, makeProfileCard, verifyProfileCard, canAdoptCard,
+  cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
   effectiveCaps, memberCan, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
 }
