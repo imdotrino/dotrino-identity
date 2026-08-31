@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, isHandover
+  checkShape, actaHash, isHandover, memberCanSign
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
 
@@ -139,4 +139,45 @@ test('el permiso de sellar se quita, y entonces B deja de poder', async () => {
     () => applyChanges(sinPermiso, { op: 'caps', pub: A.publickey, caps: ['sign'] }, { by: B.publickey }),
     /not the master, nor a co-sealer/
   )
+})
+
+/**
+ * FIRMAR POR LA IDENTIDAD: manda el acta, y va enmascarado.
+ *
+ * El agujero que esto cierra: `setCaps` sella el acta pero NO reemite ni revoca el
+ * certificado del aparato, así que quitarle `firma` no se lo quitaba mientras el papel
+ * siguiera vivo — hasta 30 días. Quien autoriza es el acta.
+ */
+test('quitar «firma» del acta se nota aunque el papel siga vivo', async () => {
+  const A = await makeDeviceKey()
+  const tel = await makeDeviceKey()
+  let acta = genesisActa({ pub: A.publickey, label: 'bóveda' })
+  acta = await sellar(acta, A)
+  acta = await applyChanges(acta, [
+    { op: 'admit', member: { pub: tel.publickey, label: 'teléfono', caps: ['sign', 'read'] } }
+  ], { by: A.publickey })
+  acta = await sellar(acta, A)
+
+  assert.equal(memberCanSign(acta, tel.publickey), true)
+
+  acta = await applyChanges(acta, [{ op: 'caps', pub: tel.publickey, caps: ['read'] }], { by: A.publickey })
+  acta = await sellar(acta, A)
+  assert.equal(memberCanSign(acta, tel.publickey), false, 'el acta manda, no el certificado')
+})
+
+test('un servicio solo firma lo de su cajón; un aparato tuyo, todo', async () => {
+  const A = await makeDeviceKey()
+  const bot = await makeDeviceKey()
+  const tel = await makeDeviceKey()
+  let acta = genesisActa({ pub: A.publickey, label: 'bóveda' })
+  acta = await sellar(acta, A)
+  acta = await applyChanges(acta, [
+    { op: 'admit', member: { pub: bot.publickey, label: 'bot', cn: 'eco', caps: ['sign', 'secrets'] } },
+    { op: 'admit', member: { pub: tel.publickey, label: 'teléfono', caps: ['sign'] } }
+  ], { by: A.publickey })
+  acta = await sellar(acta, A)
+
+  assert.equal(memberCanSign(acta, bot.publickey, 'eco'), true, 'dentro de su cajón, sí')
+  assert.equal(memberCanSign(acta, bot.publickey, 'trueque'), false, 'fuera, no')
+  assert.equal(memberCanSign(acta, tel.publickey, 'eco'), true, 'un aparato tuyo no tiene cajón que lo limite')
 })

@@ -551,6 +551,29 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
  * ¿Puede este miembro leer el cajón de secretos `ns`? Solo si su CN es exactamente ése.
  * Es la frontera que pediste: la llave del proxy no ve nada más que lo del proxy.
  */
+/**
+ * ¿PUEDE ESTE MIEMBRO FIRMAR POR LA IDENTIDAD, Y QUÉ?
+ *
+ * Manda el acta, no el certificado (dueño, 2026-08-31). Y el matiz que hace falta decir en
+ * voz alta: `sign` **no** es «firma lo que quiera». Va enmascarado, igual que `secrets` lo
+ * va por el `cn` — *«puede firmar por identidad pero solo lo que permitan los permisos»*.
+ *
+ * Por qué existe con nombre propio en vez de un `memberCan(acta, pub, 'sign')` suelto: la
+ * regla se comprueba en DOS bóvedas (el daemon y la de navegador) y se comprobaba mal en
+ * las dos —miraban el papel—. Con un solo sitio, cuando el enmascarado crezca, crece una
+ * vez y las dos lo heredan.
+ *
+ * `ns` es opcional y es para lo que va atado a un cajón: un servicio (miembro con `cn`)
+ * solo firma dentro del suyo. Sin `ns`, se pregunta por la capacidad a secas.
+ */
+export function memberCanSign (acta, pub, ns = null) {
+  if (!memberCan(acta, pub, 'sign')) return false
+  if (ns == null) return true
+  const m = (acta?.members || []).find((x) => x.pub === pub)
+  // Un aparato tuyo (sin `cn`) firma como tú. Uno de servicio, solo lo de su cajón.
+  return !m?.cn || m.cn === ns
+}
+
 export function memberCanReadSecrets (acta, pub, ns) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m || !m.cn) return false
@@ -735,5 +758,5 @@ export default {
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
-  effectiveCaps, memberCan, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
+  effectiveCaps, memberCan, memberCanSign, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
 }
