@@ -64,7 +64,7 @@ test('rotar: la llave nueva manda desde su acta, y la vieja sigue verificando su
  * No se puede reescribir —está firmada—, así que se lee tal cual y se traduce; la primera
  * vez que esa cuenta cambie algo, la nueva sale ya en v3 y el campo desaparece solo.
  */
-test('un acta vieja se lee, su campo `sealer` vale como permiso, y asciende a v3', async () => {
+test('un acta vieja se lee, su campo `sealer` vale como permiso, y asciende', async () => {
   const a = await key(); const s = await key()
   const base = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
   // Un acta tal como quedó ESCRITA antes: con el campo, sin la llave de sellado, y sin
@@ -78,7 +78,7 @@ test('un acta vieja se lee, su campo `sealer` vale como permiso, y asciende a v3
   assert.equal(canSeal(revieja, a.pub), true, 'el campo se traduce a permiso al leerla')
 
   const next = await step(revieja, [{ op: 'label', pub: a.pub, label: 'PC' }], a, { sealPub: s.pub })
-  assert.equal(next.v, 3, 'la siguiente ya nace sin campo')
+  assert.equal(next.v, 4, 'la siguiente ya nace sin campo')
   assert.equal(next.sealer, undefined)
   assert.equal(canSeal(next, a.pub), true, 'y el que sellaba sigue sellando, ahora por permiso')
   assert.equal(next.sealPub, s.pub)

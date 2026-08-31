@@ -281,3 +281,36 @@ test('la cadena legítima pasa, y solo lleva los cambios de sellador', async () 
   assert.deepEqual(r.sealers.sort(), [A.publickey, B.publickey].sort())
   assert.equal(r.seq, tres.seq)
 })
+
+/**
+ * LOS ESLABONES NO CADUCAN. El resto de las actas sí —la ventana existe para que un
+ * miembro que estuvo apagado compruebe el encadenamiento— pero si la poda se lleva un
+ * cambio de sellador, nadie de fuera puede volver a anclar en el génesis. Y no hay forma
+ * de reconstruirlo.
+ */
+test('la poda respeta los eslabones de la cadena, por muchas actas que pasen', async () => {
+  const A = await makeDeviceKey()
+  const B = await makeDeviceKey()
+  let acta = await sellar(genesisActa({ pub: A.publickey, label: 'A' }), A)
+  const historia = [acta]
+
+  // Sumar la segunda bóveda: eslabón 2.
+  acta = await applyChanges(acta, [{ op: 'admit', member: { pub: B.publickey, label: 'B', caps: ['sign', 'sealer'] } }], { by: A.publickey })
+  acta = await sellar(acta, A)
+  historia.push(acta)
+  assert.equal(acta.sealerChanged, true)
+
+  // Y 60 cambios que NO tocan quién sella: más que la ventana de retención (50).
+  for (let i = 0; i < 60; i++) {
+    acta = await applyChanges(acta, [{ op: 'label', pub: B.publickey, label: 'B' + i }], { by: A.publickey })
+    acta = await sellar(acta, A)
+    historia.push(acta)
+    assert.equal(acta.sealerChanged, false, 'renombrar no cambia quién sella')
+  }
+
+  // La cadena sigue siendo de DOS eslabones más la actual, y verifica.
+  const eslabones = historia.filter((a) => a.sealerChanged)
+  assert.equal(eslabones.length, 2, 'solo el génesis y la entrada de B')
+  const r = await verifySealerChain([...eslabones, acta], { expectedProfileId: historia[0].profileId })
+  assert.equal(r.ok, true, r.reason)
+})

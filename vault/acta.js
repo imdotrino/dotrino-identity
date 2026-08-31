@@ -37,7 +37,7 @@
 import { canonicalStringify } from './core.js'
 import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
 
-export const ACTA_V = 3
+export const ACTA_V = 4
 
 /**
  * Versiones de acta que se ACEPTAN al leer. La 1 sigue entrando porque una v1 en el disco
@@ -57,7 +57,11 @@ export const ACTA_V = 3
  * entiende; la PRIMERA vez que esa cuenta cambie algo, la nueva sale ya en v3 y el campo
  * desaparece solo.
  */
-const ACTA_LEIBLES = Object.freeze([1, 2, 3])
+const ACTA_LEIBLES = Object.freeze([1, 2, 3, 4])
+/** Desde esta versión, el acta lleva su eslabón de la cadena de selladores. */
+const V_CON_CADENA = 4
+/** ¿Esta acta lleva el eslabón? Las anteriores se leen igual; no pueden encadenar. */
+const conCadena = (acta) => Number(acta?.v) >= V_CON_CADENA
 /** Desde esta versión, sellar es solo un permiso y no hay campo `sealer`. */
 const V_SIN_CAMPO_SELLADOR = 3
 /** ¿Este acta es de las viejas, con el campo? */
@@ -306,10 +310,12 @@ export function checkShape (acta) {
     const a = acta.sealerAnchor
     if (typeof a !== 'object' || !Number.isInteger(a.seq) || a.seq < 1 || a.seq >= acta.seq) return 'sealeranchor'
     if (typeof a.hash !== 'string' || !/^[0-9a-f]{64}$/.test(a.hash)) return 'sealeranchor'
-  } else if (acta.seq > 1 && !conCampoSellador(acta)) {
-    // Solo el génesis puede no apuntar a nada. (Las viejas no tenían el campo: se les pasa.)
-    return 'sealeranchor'
   }
+  // El ancla NO se exige: una cuenta que viene de antes de v4 escribe su primera acta
+  // nueva sin poder apuntar a nada (su padre no era eslabón), y exigirla la dejaría
+  // inválida. Lo que sostiene la cadena no es el ancla sino que **cada eslabón lo selle
+  // alguien a quien el anterior autorizaba**; el ancla añade que no se pueda empalmar un
+  // eslabón de otra rama, y se comprueba cuando viene (ver `verifySealerChain`).
   if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
   return null
 }
@@ -371,8 +377,11 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
     if (!v.ok) return { ok: false, reason: `eslabon-${i}:` + v.reason }
     // Encadena con el anterior: mismo `seq` y mismo hash. Sin el hash bastaría con
     // acertar un número para colar un eslabón de otra rama.
+    // El ancla, SI viene: fija que este eslabón sale del anterior y no de otra rama. Una
+    // cuenta anterior a v4 puede no traerla, y entonces lo que sostiene la cadena es lo de
+    // abajo — que es lo que de verdad impide falsificarla.
     const a = actual.sealerAnchor
-    if (!a || a.seq !== previo.seq || a.hash !== await actaHash(previo)) {
+    if (a && (a.seq !== previo.seq || a.hash !== await actaHash(previo))) {
       return { ok: false, reason: `eslabon-${i}:no-encadena` }
     }
     // Y lo que da la autoridad: quien la selló tenía permiso SEGÚN EL ESLABÓN ANTERIOR.

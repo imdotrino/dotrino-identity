@@ -528,12 +528,43 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // que la nueva desciende de la que uno tenía. Más viejo que la ventana ⇒ re-admitirse.
   const ACTA_WINDOW = 50
   const loadHistory = () => { try { return JSON.parse(kv.getItem(ACTA_HISTORY_STORAGE) || '[]') || [] } catch (_) { return [] } }
+  /**
+   * LOS ESLABONES DE LA CADENA DE SELLADORES NO CADUCAN (dueño, 2026-08-31).
+   *
+   * El resto sí: la ventana existe para que un miembro que estuvo apagado compruebe el
+   * encadenamiento al volver, y para eso las últimas bastan. Pero los eslabones donde
+   * CAMBIÓ quién sella son otra cosa — son lo que deja a un EXTRAÑO anclar en el génesis
+   * y saber que hablas tú. Si la poda se los lleva, nadie de fuera puede verificar nada
+   * tuyo nunca más, y no hay forma de reconstruirlos.
+   *
+   * El comentario de la ventana decía «un tercero no las necesita, le basta el snapshot
+   * actual». Era cierto mientras el ancla fuera una llave fija; dejó de serlo en cuanto
+   * varias llaves pueden sellar.
+   *
+   * No crecen: solo suman al añadir o quitar una bóveda, que casi nunca pasa. Un usuario
+   * normal guarda uno —el génesis— para siempre.
+   */
   const pushHistory = (acta) => {
     if (!acta) return
     const h = loadHistory().filter((a) => a.seq !== acta.seq)
     h.push(acta)
     h.sort((a, b) => a.seq - b.seq)
-    kv.setItem(ACTA_HISTORY_STORAGE, JSON.stringify(h.slice(-ACTA_WINDOW)))
+    const ventana = h.slice(-ACTA_WINDOW)
+    const enVentana = new Set(ventana.map((a) => a.seq))
+    const eslabones = h.filter((a) => a.sealerChanged && !enVentana.has(a.seq))
+    kv.setItem(ACTA_HISTORY_STORAGE, JSON.stringify([...eslabones, ...ventana].sort((a, b) => a.seq - b.seq)))
+  }
+
+  /**
+   * La CADENA DE SELLADORES para mandarla con una firma: `[génesis, …cambios…, actual]`.
+   * Es lo que un extraño necesita para anclar en el `profileId`, y es corta a propósito —
+   * no lleva las actas de emparejar aparatos, que son casi todas.
+   */
+  const sealerChain = () => {
+    const cur = loadActa()
+    if (!cur) return []
+    const eslabones = loadHistory().filter((a) => a.sealerChanged).sort((a, b) => a.seq - b.seq)
+    return cur.sealerChanged ? eslabones : [...eslabones, cur]
   }
 
   const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }
