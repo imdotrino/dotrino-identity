@@ -211,7 +211,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey })
     if (!v.ok) throw new Error('invalid cert: ' + v.reason)
     if (res.cert.iss !== qr.iss) throw new Error('cert signed by a master key different from the one you saw')
-    if (res.cert.sub !== dev.publickey) throw new Error('cert emitido para otro dispositivo')
+    if (res.cert.sub !== dev.publickey) throw new Error('cert issued for a different device')
     return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
   } finally { try { client.close() } catch (_) {} }
 }

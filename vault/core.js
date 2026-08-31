@@ -1124,7 +1124,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const tries = (() => { try { return JSON.parse(kv.getItem('dotrino.identity.pwd.tries') || 'null') } catch (_) { return null } })() || { n: 0, at: 0 }
       const waitMs = tries.n >= 5 ? Math.min(2 ** (tries.n - 4) * 1000, 5 * 60 * 1000) : 0
       const left = tries.at + waitMs - Date.now()
-      if (left > 0) throw new Error(`demasiados intentos: espera ${Math.ceil(left / 1000)} s`)
+      if (left > 0) throw new Error(`too many attempts: wait ${Math.ceil(left / 1000)} s`)
       const proof = await derivePwd(password, pwd.salt, pwd.iter)
       if (proof !== pwd.verifier) {
         kv.setItem('dotrino.identity.pwd.tries', JSON.stringify({ n: tries.n + 1, at: Date.now() }))
