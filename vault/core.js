@@ -563,8 +563,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   const sealerChain = () => {
     const cur = loadActa()
     if (!cur) return []
-    const eslabones = loadHistory().filter((a) => a.sealerChanged).sort((a, b) => a.seq - b.seq)
-    return cur.sealerChanged ? eslabones : [...eslabones, cur]
+    // La vigente cuenta como parte del material aunque todavía no esté en la historia
+    // (ahí entra al dejar de serlo). Sin esto, una cuenta recién creada devolvía [].
+    const porSeq = new Map([...loadHistory(), cur].map((a) => [a.seq, a]))
+    const eslabones = [...porSeq.values()].filter((a) => a.sealerChanged).sort((a, b) => a.seq - b.seq)
+    // Y la actual va al final si ella misma no es un eslabón: el verificador necesita ver
+    // la cabeza para saber en qué `seq` está y quién la selló.
+    return eslabones.length && eslabones[eslabones.length - 1].seq === cur.seq ? eslabones : [...eslabones, cur]
   }
 
   const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }
@@ -627,7 +632,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const { generation } = await Content.makeGeneration({ members: base.members, gen: 1 })
       base.keyring = [generation]
     } catch (e) { console.warn('[identity] could not create the content key:', e.message) }
-    saveActa(await seal(base))
+    const genesis = await seal(base)
+    saveActa(genesis)
+    // EL GÉNESIS VA A LA HISTORIA DESDE EL PRIMER DÍA. Es el ancla de la cadena de
+    // selladores —el único eslabón autofirmado por la llave que da nombre al perfil— y
+    // sin él nadie de fuera puede verificar nada de esta cuenta, nunca. Antes solo se
+    // guardaba lo que DEJABA de ser vigente, así que una cuenta que nunca cambió su acta
+    // no tenía génesis guardado y su cadena salía vacía.
+    pushHistory(genesis)
     return loadActa()
   }
 
@@ -1144,7 +1156,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   const LOCK_EXEMPT = new Set([
     'profileLockStatus', 'unlockProfile', 'listProfiles', 'currentProfile',
     'switchProfile', 'createProfile',
-    'profileActa', 'profileMembers', 'myMembership', 'isMaster'
+    'profileActa', 'profileMembers', 'myMembership', 'isMaster', 'sealerChain'
   ])
 
   const handlers = {
@@ -1497,6 +1509,20 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!acta) return null
       return { acta, isMaster: amMaster(), myCaps: Acta.effectiveCaps(acta, publickeyJwkStr, loadRenounces()) }
     },
+
+    /**
+     * LA CADENA DE SELLADORES, para mandarla junto con una firma.
+     *
+     * Es lo que deja a un EXTRAÑO comprobar que quien firmó habla por esta identidad, sin
+     * preguntarle a nadie: `[génesis, …cambios de sellador…, acta actual]`. No son todas
+     * las actas —eso crecería con cada emparejamiento— sino solo los eslabones donde
+     * cambió quién sella, que casi nunca pasa. Lo normal es longitud 1: el génesis.
+     *
+     * Una cuenta de una sola bóveda devuelve SIEMPRE eso y nada más, y no puede quedarse
+     * obsoleta: su conjunto de selladores no puede cambiar, porque el único no puede
+     * quitarse a sí mismo y no hay otro que se lo quite.
+     */
+    async sealerChain () { return sealerChain() },
 
     /**
      * Quien sella sobres de secretos (la bóveda) registra aquí cómo estrenar su LLAVE DE

@@ -278,6 +278,8 @@ export class Identity {
 
   /** El acta vigente + si este dispositivo es el master + sus capacidades efectivas. */
   async profileActa () { return this._call('profileActa') }
+  /** La cadena de selladores, para mandarla con una firma (ver `vault/acta.js`). */
+  async sealerChain () { return this._call('sealerChain') }
 
   /** Miembros del perfil, ya con id legible y capacidades efectivas. */
   async profileMembers () { return this._call('profileMembers') }

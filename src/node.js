@@ -169,6 +169,8 @@ export class Identity {
   listDelegations () { return this._h('listDelegations') }
   // Acta de perfil (qué llaves son del perfil y qué puede cada una; ver acta-de-perfil.md)
   profileActa () { return this._h('profileActa') }
+  /** La cadena de selladores, para mandarla con una firma (ver `vault/acta.js`). */
+  sealerChain () { return this._h('sealerChain') }
   profileMembers () { return this._h('profileMembers') }
   /**
    * Quien SELLA SOBRES (la bóveda) registra aquí cómo estrenar su llave de sellado: se

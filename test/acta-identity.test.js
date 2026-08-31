@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Identity, makeDeviceKey } from '../src/node.js'
+import { verifySealerChain } from '../vault/acta.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'acta-'))
 
@@ -231,4 +232,49 @@ test('tarjeta: no retrocede, y avisa si cambió el master', async () => {
   assert.equal((await alice.adoptPeerCard(v1)).adopted, false)
 
   for (const d of [dirB, dirA]) fs.rmSync(d, { recursive: true, force: true })
+})
+
+/**
+ * LA CADENA QUE SALE. Es lo que se manda con una firma para que un extraño pueda anclar
+ * en el génesis sin preguntarle a nadie.
+ */
+test('una cuenta de una sola bóveda devuelve SIEMPRE el génesis y nada más', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+
+  let cadena = await id.sealerChain()
+  assert.equal(cadena.length, 1, 'recién creada: el génesis es a la vez ancla y cabeza')
+  assert.equal(cadena[0].seq, 1)
+  assert.equal(cadena[0].sealedBy, id.me.publickey, 'autofirmado: es el ancla')
+
+  // Emparejar aparatos NO añade eslabones: no cambia quién sella. Lo único que crece es
+  // la CABEZA —el acta vigente, que va al final para que el verificador vea en qué `seq`
+  // está y quién la selló—, y esa se reemplaza, no se acumula.
+  for (let i = 0; i < 3; i++) {
+    const d = await makeDeviceKey({ label: 'aparato' + i })
+    await id.admitMember({ pub: d.publickey, label: 'aparato' + i, caps: ['sign', 'read'] })
+  }
+  cadena = await id.sealerChain()
+  assert.equal(cadena.filter((a) => a.sealerChanged).length, 1, 'un solo eslabón tras tres aparatos')
+  assert.equal(cadena.length, 2, 'ese eslabón, más la cabeza')
+  const v = await verifySealerChain(cadena, { expectedProfileId: id.me.publickey })
+  assert.equal(v.ok, true, v.reason)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('sumar una bóveda alarga la cadena a dos, y se verifica contra el génesis', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const vault = await makeDeviceKey({ label: 'Bóveda' })
+
+  await id.admitMember({ pub: vault.publickey, label: 'Bóveda', caps: ['sign', 'read', 'sealer'] })
+  const cadena = await id.sealerChain()
+  // El acta que admite la bóveda ES un eslabón y a la vez la cabeza: no se duplica.
+  assert.equal(cadena.filter((a) => a.sealerChanged).length, 2, 'génesis + la entrada de la bóveda')
+  assert.equal(cadena.length, 2)
+
+  const r = await verifySealerChain(cadena, { expectedProfileId: id.me.publickey })
+  assert.equal(r.ok, true, r.reason)
+  assert.deepEqual(r.sealers.sort(), [id.me.publickey, vault.publickey].sort())
+  fs.rmSync(dir, { recursive: true, force: true })
 })
