@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, memberCanSign, memberCanScope
+  checkShape, actaHash, memberCanSign, memberCanScope, verifySealerChain
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
 
@@ -218,4 +218,66 @@ test('el scope del papel se traduce al permiso del acta, y lo desconocido no pas
   assert.equal(memberCanScope(acta, tel.publickey, 'vault:inventado'), false)
   assert.equal(memberCanScope(acta, tel.publickey, ''), false)
   assert.equal(memberCanScope(null, tel.publickey, 'vault:read'), false, 'sin acta no se autoriza nada')
+})
+
+// ---------- la cadena de selladores: lo que verifica un EXTRAÑO ----------
+
+/**
+ * EL ATAQUE QUE ESTO CIERRA, y que se demostró funcionando antes de escribirlo: con tu
+ * `profileId` —que es público, viaja en cada firma tuya— cualquiera fabrica un acta donde
+ * él sella, la firma con su propia llave, y `verifyActa` la da por buena. Está firmada;
+ * solo que por él. Con eso suplantaba tu identidad ante geo, ante reputación, ante todos.
+ */
+test('un acta suelta fabricada para tu profileId NO pasa la cadena', async () => {
+  const victima = await makeDeviceKey()
+  const suya = await sellar(genesisActa({ pub: victima.publickey, label: 'v' }), victima)
+
+  const malo = await makeDeviceKey()
+  const falsa = await sellar({
+    ...suya,
+    seq: 99,
+    prev: 'a'.repeat(64),
+    sealedBy: malo.publickey,
+    sealerAnchor: { seq: 1, hash: await actaHash(suya) },
+    members: [{ pub: malo.publickey, encPub: null, label: 'yo', cn: null, caps: ['sign', 'sealer'], addedAt: Date.now(), cert: null }]
+  }, malo)
+
+  // Sola pasa: está firmada por quien dice haberla firmado. Ese era el agujero.
+  assert.equal((await verifyActa({ acta: falsa, expectedProfileId: suya.profileId })).ok, true)
+
+  // Con la cadena no: el génesis de la víctima NO le da permiso de sellar.
+  const r = await verifySealerChain([suya, falsa], { expectedProfileId: suya.profileId })
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /sellador-no-autorizado/)
+
+  // Y no puede empezar la cadena por la suya: no está autofirmada por ese profileId.
+  const solo = await verifySealerChain([falsa], { expectedProfileId: suya.profileId })
+  assert.equal(solo.ok, false)
+})
+
+test('la cadena legítima pasa, y solo lleva los cambios de sellador', async () => {
+  const A = await makeDeviceKey()
+  const B = await makeDeviceKey()
+  const tel = await makeDeviceKey()
+
+  const genesis = await sellar(genesisActa({ pub: A.publickey, label: 'A' }), A)
+
+  // Emparejar aparatos NO entra en la cadena: no cambia quién sella.
+  let acta = await applyChanges(genesis, [{ op: 'admit', member: { pub: tel.publickey, label: 'tel', caps: ['sign'] } }], { by: A.publickey })
+  acta = await sellar(acta, A)
+  assert.equal(acta.sealerChanged, false, 'admitir un aparato no cambia quién sella')
+
+  // Sumar la segunda bóveda SÍ.
+  let dos = await applyChanges(acta, [{ op: 'admit', member: { pub: B.publickey, label: 'B', caps: ['sign', 'sealer'] } }], { by: A.publickey })
+  dos = await sellar(dos, A)
+  assert.equal(dos.sealerChanged, true)
+
+  // Y a partir de ahí, B sella sin que A intervenga — sin la llave del génesis.
+  let tres = await applyChanges(dos, [{ op: 'label', pub: tel.publickey, label: 'Teléfono' }], { by: B.publickey })
+  tres = await sellar(tres, B)
+
+  const r = await verifySealerChain([genesis, dos, tres], { expectedProfileId: genesis.profileId })
+  assert.equal(r.ok, true, r.reason)
+  assert.deepEqual(r.sealers.sort(), [A.publickey, B.publickey].sort())
+  assert.equal(r.seq, tres.seq)
 })

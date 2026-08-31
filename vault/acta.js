@@ -225,6 +225,12 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', n
     sealedBy: pub,
     seq: 1,
     prev: null,
+    // LA CADENA DE SELLADORES. El génesis es el ancla: está autofirmado por la llave que
+    // da nombre al perfil, así que no apunta a nada y no hay nada que falsificar sin ella.
+    sealerAnchor: null,
+    // `true` porque el génesis ESTABLECE el primer conjunto de selladores: es el eslabón
+    // 1 de la cadena, y por eso la siguiente acta tiene que apuntarle a él.
+    sealerChanged: true,
     members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS, 'sealer'], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
@@ -294,6 +300,16 @@ export function checkShape (acta) {
   // Es el hermano del cierre de `sign`, y sustituye a «el sellador tiene que ser miembro»
   // ahora que sellar es solo un permiso y los permisos ya son de miembros por definición.
   if (!sealersOf(acta).length) return 'sin-sellador'
+  // La cadena de selladores: el génesis es el ancla (`null`); cualquier otra apunta a un
+  // eslabón anterior. Sin `hash` no se puede encadenar nada, así que se exige la forma.
+  if (acta.sealerAnchor != null) {
+    const a = acta.sealerAnchor
+    if (typeof a !== 'object' || !Number.isInteger(a.seq) || a.seq < 1 || a.seq >= acta.seq) return 'sealeranchor'
+    if (typeof a.hash !== 'string' || !/^[0-9a-f]{64}$/.test(a.hash)) return 'sealeranchor'
+  } else if (acta.seq > 1 && !conCampoSellador(acta)) {
+    // Solo el génesis puede no apuntar a nada. (Las viejas no tenían el campo: se les pasa.)
+    return 'sealeranchor'
+  }
   if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
   return null
 }
@@ -315,6 +331,57 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
  * decide aquí sino al adoptarla (`canAdopt`), comparándola con la que ya tienes.
  * @returns {{ok:boolean, reason?:string}}
  */
+/**
+ * ¿HABLA ESTA ACTA POR ESTA IDENTIDAD? Lo que comprueba un EXTRAÑO, sin saber nada de ti.
+ *
+ * Recibe la cadena de selladores: `[génesis, …cambios de sellador…, acta actual]`. No son
+ * todas tus actas —eso crecería con cada emparejamiento— sino solo los eslabones donde
+ * cambió quién sella, que casi nunca pasa. Lo normal es longitud 1 o 2.
+ *
+ * Qué se comprueba, y por qué basta:
+ *   1. el primer eslabón es el GÉNESIS y está autofirmado por `profileId`. Ese es el
+ *      ancla: sin esa llave no se puede fabricar, y el `profileId` ya lo conoce quien
+ *      verifica (viaja en cada firma tuya);
+ *   2. cada eslabón siguiente lo selló alguien a quien el ANTERIOR autorizaba;
+ *   3. y apunta al anterior por `seq` + hash, así que no se puede colar uno de otra rama.
+ *
+ * Sin esto, un acta suelta es falsificable: con tu `profileId` cualquiera fabrica una
+ * donde él sella, y `verifyActa` la da por buena — está firmada, solo que por él.
+ *
+ * Lo que NO resuelve, y no lo esconde: la frescura. Quien guardó una cadena vieja sigue
+ * aceptando a un sellador que ya retiraste. Es el problema de siempre y hace falta un
+ * oráculo, no más firmas.
+ */
+export async function verifySealerChain (chain, { expectedProfileId = null } = {}) {
+  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
+  const [raiz] = chain
+
+  if (raiz.seq !== 1 || raiz.sealerAnchor != null) return { ok: false, reason: 'no-empieza-en-genesis' }
+  // El ancla: el génesis se firma a sí mismo con la llave que da nombre al perfil.
+  if (raiz.sealedBy !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
+  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
+  const vr = await verifyActa({ acta: raiz })
+  if (!vr.ok) return { ok: false, reason: 'genesis:' + vr.reason }
+
+  for (let i = 1; i < chain.length; i++) {
+    const previo = chain[i - 1]
+    const actual = chain[i]
+    if (actual.profileId !== raiz.profileId) return { ok: false, reason: 'otro-perfil' }
+    const v = await verifyActa({ acta: actual })
+    if (!v.ok) return { ok: false, reason: `eslabon-${i}:` + v.reason }
+    // Encadena con el anterior: mismo `seq` y mismo hash. Sin el hash bastaría con
+    // acertar un número para colar un eslabón de otra rama.
+    const a = actual.sealerAnchor
+    if (!a || a.seq !== previo.seq || a.hash !== await actaHash(previo)) {
+      return { ok: false, reason: `eslabon-${i}:no-encadena` }
+    }
+    // Y lo que da la autoridad: quien la selló tenía permiso SEGÚN EL ESLABÓN ANTERIOR.
+    if (!canSeal(previo, actual.sealedBy)) return { ok: false, reason: `eslabon-${i}:sellador-no-autorizado` }
+  }
+  const ultima = chain[chain.length - 1]
+  return { ok: true, profileId: raiz.profileId, seq: ultima.seq, sealers: sealersOf(ultima) }
+}
+
 export async function verifyActa ({ acta, expectedProfileId } = {}) {
   const shape = checkShape(acta)
   if (shape) return { ok: false, reason: shape }
@@ -513,6 +580,35 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   if (!sealersOf(next).length) {
     throw new Error('the change would leave the record with nobody able to seal it')
   }
+
+  /**
+   * LA CADENA DE SELLADORES. Es lo que deja a un EXTRAÑO comprobar que quien firmó esto
+   * habla por esta identidad, sin tener que mandarle todas las actas.
+   *
+   * El problema: el acta suelta es falsificable —con tu `profileId`, que es público,
+   * cualquiera fabrica una donde él sella—. Y mandar la cadena entera no sale a cuenta
+   * porque crece con cada emparejamiento, que es lo que más cambia.
+   *
+   * La salida: solo encadenar los eslabones donde CAMBIA quién sella, que casi nunca pasa.
+   * Un usuario normal tiene cadena de longitud 1 —el génesis— para siempre; con una
+   * segunda bóveda, 2. Ese es el tamaño real, no el número de actas.
+   *
+   * Cada acta apunta al último cambio ANTERIOR a ella, nunca a sí misma (sería circular:
+   * el puntero va dentro de lo que se firma). Y `sealerChanged` dice si ELLA es uno, para
+   * que la siguiente sepa a dónde apuntar teniendo solo a su padre delante.
+   *
+   * Y lo que esto resuelve y el génesis firmando no resolvía: **no hace falta la llave del
+   * génesis para sumar un sellador.** La bóveda que ya está autorizada sella el acta que
+   * autoriza a la siguiente, y ese eslabón vale porque el anterior la autorizaba a ella.
+   * El génesis firmó el eslabón 1 y puede estar perdido desde entonces — que es justo el
+   * desastre para el que existe el multivault.
+   */
+  const antes = sealersOf(acta).slice().sort().join('|')
+  const despues = sealersOf(next).slice().sort().join('|')
+  next.sealerChanged = antes !== despues
+  next.sealerAnchor = acta.sealerChanged
+    ? { seq: acta.seq, hash: await actaHash(acta) }
+    : (acta.sealerAnchor || null)
   // EL DOBLE FILTRO (dueño, 2026-08-31): un acta nueva tiene que pasar el filtro de la
   // ANTERIOR —quién podía sellar, arriba— y también el de LA QUE SE VA A FIRMAR. Si no
   // pasa los dos, no se firma.
@@ -804,7 +900,7 @@ export async function canAdopt ({ candidate, current }) {
 }
 
 export default {
-  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape,
+  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
