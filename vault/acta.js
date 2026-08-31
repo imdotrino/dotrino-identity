@@ -578,6 +578,31 @@ export function memberCanSign (acta, pub, ns = null) {
   return ns != null && m.cn === ns
 }
 
+/**
+ * ¿PUEDE ESTE MIEMBRO LO QUE PIDE EL SCOPE? La misma pregunta para todos los mostradores.
+ *
+ * El certificado dice a qué se comprometió la bóveda cuando conectó el aparato; el ACTA
+ * dice lo que puede hoy. Y no coinciden: cambiar los permisos sella el acta pero NO
+ * reemite ni revoca el papel, que vive hasta 30 días. Quitarle `lee` a un aparato y que
+ * siguiera leyendo un mes es el mismo fallo que estaba en `sign`, en cada mostrador que
+ * se olvidara de preguntar.
+ *
+ * Por eso esto existe y por eso traduce el SCOPE (el idioma del certificado) a la
+ * capacidad (el idioma del acta): así el guardia se pone UNA vez, junto a la verificación
+ * de la cadena, y un mostrador nuevo lo hereda en lugar de tener que acordarse.
+ *
+ * Devuelve `false` ante un scope que no reconoce: si aparece uno nuevo, lo que toca es
+ * añadirlo aquí, no que se cuele por no estar en la lista.
+ */
+export function memberCanScope (acta, pub, scope) {
+  if (!acta || typeof scope !== 'string') return false
+  const secretos = /^vault:secrets:([a-z0-9-]{1,32})$/.exec(scope)
+  if (secretos) return memberCanReadSecrets(acta, pub, secretos[1])
+  if (scope === 'vault:sign') return memberCanSign(acta, pub)
+  const cap = Object.keys(CAP_SCOPE).find((c) => CAP_SCOPE[c] === scope)
+  return cap ? memberCan(acta, pub, cap) : false
+}
+
 export function memberCanReadSecrets (acta, pub, ns) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m || !m.cn) return false
@@ -762,5 +787,5 @@ export default {
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
-  effectiveCaps, memberCan, memberCanSign, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
+  effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
 }

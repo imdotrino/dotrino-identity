@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, isHandover, memberCanSign
+  checkShape, actaHash, isHandover, memberCanSign, memberCanScope
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
 
@@ -184,4 +184,37 @@ test('un servicio solo firma lo de su cajón; un aparato tuyo, todo', async () =
   assert.equal(memberCanSign(acta, bot.publickey), false, 'un servicio no firma por la identidad')
   assert.equal(memberCanSign(acta, tel.publickey), true, 'un aparato tuyo sí')
   assert.equal(memberCanSign(acta, tel.publickey, 'eco'), true, 'y ningún cajón lo limita')
+})
+
+/**
+ * UN SOLO GUARDIA PARA TODOS LOS MOSTRADORES.
+ *
+ * El certificado dice a qué se comprometió la bóveda al conectar el aparato; el acta dice
+ * lo que puede HOY. Cambiar permisos sella el acta pero no reemite el papel, que vive
+ * hasta 30 días — así que un mostrador que se fíe del papel sigue diciendo que sí durante
+ * esa ventana. Pasaba en `sign`, `read` y `store`, cada uno por su cuenta.
+ */
+test('el scope del papel se traduce al permiso del acta, y lo desconocido no pasa', async () => {
+  const A = await makeDeviceKey()
+  const tel = await makeDeviceKey()
+  const bot = await makeDeviceKey()
+  let acta = genesisActa({ pub: A.publickey, label: 'bóveda' })
+  acta = await sellar(acta, A)
+  acta = await applyChanges(acta, [
+    { op: 'admit', member: { pub: tel.publickey, label: 'teléfono', caps: ['read'] } },
+    { op: 'admit', member: { pub: bot.publickey, label: 'bot', cn: 'eco', caps: ['secrets'] } }
+  ], { by: A.publickey })
+  acta = await sellar(acta, A)
+
+  assert.equal(memberCanScope(acta, tel.publickey, 'vault:read'), true)
+  assert.equal(memberCanScope(acta, tel.publickey, 'vault:store'), false, 'lo que el acta no da, no pasa')
+  assert.equal(memberCanScope(acta, tel.publickey, 'vault:sign'), false)
+
+  assert.equal(memberCanScope(acta, bot.publickey, 'vault:secrets:eco'), true, 'su cajón')
+  assert.equal(memberCanScope(acta, bot.publickey, 'vault:secrets:trueque'), false, 'el de al lado no')
+
+  // Un scope que no está en la lista se RECHAZA en vez de colarse por no reconocerlo.
+  assert.equal(memberCanScope(acta, tel.publickey, 'vault:inventado'), false)
+  assert.equal(memberCanScope(acta, tel.publickey, ''), false)
+  assert.equal(memberCanScope(null, tel.publickey, 'vault:read'), false, 'sin acta no se autoriza nada')
 })
