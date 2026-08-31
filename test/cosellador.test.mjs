@@ -179,5 +179,9 @@ test('un servicio solo firma lo de su cajón; un aparato tuyo, todo', async () =
 
   assert.equal(memberCanSign(acta, bot.publickey, 'eco'), true, 'dentro de su cajón, sí')
   assert.equal(memberCanSign(acta, bot.publickey, 'trueque'), false, 'fuera, no')
-  assert.equal(memberCanSign(acta, tel.publickey, 'eco'), true, 'un aparato tuyo no tiene cajón que lo limite')
+  // Y SIN decir cajón: eso es pedir «firma por la identidad, en general». El `cn` del
+  // acta ya dice que este no puede, sin mirar qué se firma (dueño, 2026-08-31).
+  assert.equal(memberCanSign(acta, bot.publickey), false, 'un servicio no firma por la identidad')
+  assert.equal(memberCanSign(acta, tel.publickey), true, 'un aparato tuyo sí')
+  assert.equal(memberCanSign(acta, tel.publickey, 'eco'), true, 'y ningún cajón lo limita')
 })

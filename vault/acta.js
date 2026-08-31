@@ -568,10 +568,14 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
  */
 export function memberCanSign (acta, pub, ns = null) {
   if (!memberCan(acta, pub, 'sign')) return false
-  if (ns == null) return true
   const m = (acta?.members || []).find((x) => x.pub === pub)
-  // Un aparato tuyo (sin `cn`) firma como tú. Uno de servicio, solo lo de su cajón.
-  return !m?.cn || m.cn === ns
+  // SIN `cn` = un aparato TUYO: firma como tú, y no hay nada que preguntarle a nadie.
+  if (!m?.cn) return true
+  // CON `cn` = un servicio, y el cajón lo dice EL ACTA. Así que no hace falta —ni vale—
+  // preguntarle al contenido de qué es: quien pregunta sin decir cajón está pidiendo
+  // «firma por la identidad, en general», y eso un servicio no lo hace. Solo se le
+  // reconoce la firma dentro del suyo.
+  return ns != null && m.cn === ns
 }
 
 export function memberCanReadSecrets (acta, pub, ns) {
