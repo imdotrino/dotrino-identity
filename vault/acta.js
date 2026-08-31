@@ -192,6 +192,15 @@ export const sealersOf = (acta, renounces = []) => {
 export const canSeal = (acta, pub, renounces = []) =>
   !!acta && (pub === acta.sealer || memberCan(acta, pub, 'sealer', renounces))
 
+/**
+ * El acta la firmó alguien DISTINTO del sellador que ella misma nombra.
+ *
+ * ⚠️ Desde el multivault esto ya NO significa «es un traspaso», y confundirlo costó un
+ * desempate mal resuelto: cuando sella la segunda bóveda, el acta sigue nombrando
+ * sellador a la primera y la firma la segunda, así que esto da `true` sin que nadie
+ * traspase nada. Es condición NECESARIA de un traspaso, no suficiente — lo que lo
+ * distingue es que un traspaso CAMBIA a quién nombra (ver `canAdopt`).
+ */
 export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
 
 /**
@@ -700,8 +709,19 @@ export async function canAdopt ({ candidate, current }) {
     // exactamente lo que dice que las dos salieron de ella.
     const mismoFirmante = candidate.sealedBy === current.sealedBy
     if (!mismoFirmante && !canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'otro-sellador' }
-    const canT = isHandover(candidate)
-    const curT = isHandover(current)
+    // UN TRASPASO ES EL QUE CAMBIA A QUIÉN NOMBRA, no el que firma otro. Con una sola
+    // bóveda daba igual —solo un traspaso podía firmar sin ser el sellador—, pero con dos
+    // la segunda firma sin serlo cada vez que sella, y entonces TODA acta suya se leía
+    // como un traspaso y ganaba el desempate por la puerta de atrás.
+    //
+    // Las dos ramas salen del mismo padre, así que comparar a quién nombra cada una
+    // resuelve los tres casos: si nombran al mismo (dos coselladores trabajando), no hay
+    // traspaso y decide el hash; si una nombra a otro, esa es la que traspasa y gana; y
+    // si las dos traspasan a destinos distintos, vuelven a empatar y decide el hash,
+    // que es lo que §2.4.1 ya decía.
+    const mismoSellador = candidate.sealer === current.sealer
+    const canT = isHandover(candidate) && !mismoSellador
+    const curT = isHandover(current) && !mismoSellador
     if (canT && !curT) return { adopt: true, reason: 'traspaso-gana' }
     if (!canT && curT) return { adopt: false, reason: 'traspaso-gana' }
     return hCan < hCur ? { adopt: true, reason: 'desempate-hash' } : { adopt: false, reason: 'desempate-hash' }
