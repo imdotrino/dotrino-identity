@@ -93,5 +93,5 @@ test('estrenar la llave de sellado es, por si sola, un acta nueva', async () => 
   assert.deepEqual(acta.sealKeys, [{ pub: s1.pub, from: 1, to: 1 }])
 
   // Y sin llave nueva, una lista vacía sigue siendo lo que era: nada que sellar.
-  await assert.rejects(() => applyChanges(acta, [], { by: a.pub }), /no hay cambios/)
+  await assert.rejects(() => applyChanges(acta, [], { by: a.pub }), /no changes/)
 })

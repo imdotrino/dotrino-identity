@@ -54,8 +54,8 @@ export async function makeContentKey () {
  * @returns {Promise<{epk:string, iv:string, ct:string}>}
  */
 export async function wrapForMember ({ cek, memberEncPub }) {
-  if (typeof cek !== 'string' || !cek) throw new Error('wrapForMember: falta la clave de contenido')
-  if (typeof memberEncPub !== 'string' || !memberEncPub) throw new Error('wrapForMember: el miembro no tiene llave de cifrado')
+  if (typeof cek !== 'string' || !cek) throw new Error('wrapForMember: missing content key')
+  if (typeof memberEncPub !== 'string' || !memberEncPub) throw new Error('wrapForMember: member has no encryption key')
   const eph = await subtle.generateKey(ECDH, false, ['deriveBits'])
   const key = await sharedKey(eph.privateKey, memberEncPub)
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))

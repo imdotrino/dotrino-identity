@@ -155,7 +155,7 @@ export async function makeDeviceEncKey () {
  * dice nada útil.
  */
 export async function importDeviceEncKey (encPrivateJwk) {
-  if (!encPrivateJwk || typeof encPrivateJwk !== 'object') throw new Error('importDeviceEncKey: falta el JWK de la privada')
+  if (!encPrivateJwk || typeof encPrivateJwk !== 'object') throw new Error('importDeviceEncKey: missing private JWK')
   return crypto.subtle.importKey('jwk', encPrivateJwk, ECDH, false, ['deriveBits'])
 }
 
@@ -178,7 +178,7 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data 
   // `privateKey` (CryptoKey, posiblemente NO extractable) tiene prioridad: firma
   // sin tocar bytes de la privada. Con CryptoKey es obligatorio pasar `publickey`.
   if (privateKey) {
-    if (!publickey) throw new Error('signWithDevice: con privateKey (CryptoKey) se requiere publickey')
+    if (!publickey) throw new Error('signWithDevice: publickey is required when privateKey is a CryptoKey')
     const signature = await rawSign(privateKey, enc(canonicalStringify(data)))
     return { signature, publickey }
   }

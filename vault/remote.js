@@ -161,11 +161,11 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // rechaza el que no coincida con el modo con el que ella abrió el emparejamiento. Así
     // ninguno de los dos puede hacer, a mitad de camino, algo distinto de lo que el humano
     // vio anunciado en las dos pantallas.
-    const adoptar = intent === 'adopt'
-    if (adoptar && typeof onAdopt !== 'function') throw new Error('enrollDevice(adopt): falta onAdopt')
+    const adopting = intent === 'adopt'
+    if (adopting && typeof onAdopt !== 'function') throw new Error('enrollDevice(adopt): missing onAdopt')
     const data = {
       op: 'enroll', dpub: dev.publickey, token: qr.token || qr.sn, sn: qr.sn, commit, label, ts: Date.now(), intent,
-      ...(adoptar && profileId ? { profileId } : {}),
+      ...(adopting && profileId ? { profileId } : {}),
       ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {})
     }
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
@@ -181,7 +181,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
         // CAMINO A · la bóveda dice quién es (con el código de vuelta, misma defensa que el
         // ENROLLED): este aparato la admite en SU acta, le envuelve la clave de contenido y
         // le traspasa el mando, todo en un solo `seq`, y le manda el acta sellada.
-        else if (p.type === MSG.ENROLL_ADOPT && adoptar) {
+        else if (p.type === MSG.ENROLL_ADOPT && adopting) {
           if (p.code !== code || sellando) return
           sellando = true
           Promise.resolve(onAdopt({ pub: p.pub, encPub: p.encPub || null, label: p.label || '' }))
@@ -190,7 +190,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
         }
         // La bóveda ya se vio como sellador y devuelve el acta definitiva (con los certs
         // re-emitidos, §D9). Es la que este aparato adopta.
-        else if (p.type === MSG.ACTA_ADOPTED && adoptar) { cleanup(); resolve(p) }
+        else if (p.type === MSG.ACTA_ADOPTED && adopting) { cleanup(); resolve(p) }
         else if (p.type === MSG.ERROR) { cleanup(); reject(new Error(p.error)) }
       })
       const t = setTimeout(() => { cleanup(); reject(new Error('timeout waiting for approval at the vault')) }, approveTimeoutMs)
@@ -201,7 +201,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
 
     // Camino A: aquí no hay cert que validar — este aparato NO delega su identidad, sigue
     // siendo la cuenta. Lo que vuelve es el acta ya sellada por la bóveda.
-    if (adoptar) {
+    if (adopting) {
       if (!res.acta) throw new Error('the vault did not return the adopted record')
       if (res.acta.sealer !== qr.iss) throw new Error('the record is sealed by a vault other than the one you saw')
       return { device: dev, cert: null, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta, adopted: true }
@@ -210,7 +210,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
     const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey })
     if (!v.ok) throw new Error('invalid cert: ' + v.reason)
-    if (res.cert.iss !== qr.iss) throw new Error('cert firmado por una maestra distinta a la que viste')
+    if (res.cert.iss !== qr.iss) throw new Error('cert signed by a master key different from the one you saw')
     if (res.cert.sub !== dev.publickey) throw new Error('cert emitido para otro dispositivo')
     return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
   } finally { try { client.close() } catch (_) {} }
@@ -245,7 +245,7 @@ const REVOKE_GRACE_MS = 1500
  * ejecuta el autoborrado (`onRevoked`) tras verificar la firma contra la maestra pineada.
  */
 async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('faltan datos de emparejamiento')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('missing pairing data')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
@@ -298,7 +298,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
  * nada, como cualquier otro mensaje sin firma.
  */
 export async function checkMembership ({ master, proxy, device, onRevoked, timeoutMs = 12000 } = {}) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey)) throw new Error('faltan datos del dispositivo')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey)) throw new Error('missing device data')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()

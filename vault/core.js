@@ -590,7 +590,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     try {
       const { generation } = await Content.makeGeneration({ members: base.members, gen: 1 })
       base.keyring = [generation]
-    } catch (e) { console.warn('[identity] no se pudo crear la clave de contenido:', e.message) }
+    } catch (e) { console.warn('[identity] could not create the content key:', e.message) }
     saveActa(await seal(base))
     return loadActa()
   }
@@ -1137,7 +1137,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
     // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
     async setProfilePassword ({ password }) {
-      if (locked) throw new Error('perfil bloqueado')
+      if (locked) throw new Error('profile locked')
       if (!password || String(password).length < 4) throw new Error('password must be at least 4 characters')
       const salt = b64(crypto.getRandomValues(new Uint8Array(16)))
       const verifier = await derivePwd(password, salt, PWD_ITER)
@@ -1146,7 +1146,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { ok: true }
     },
     async removeProfilePassword () {
-      if (locked) throw new Error('perfil bloqueado')
+      if (locked) throw new Error('profile locked')
       kv.removeItem(PWD_STORAGE)
       try { sessionKv?.removeItem(_scoped(PWD_SESSION)) } catch (_) {}
       return { ok: true }
@@ -1431,13 +1431,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { id: pid, name: me.nickname, pubkey: publickeyJwkStr, pendingJoin: !!forVault }
     },
     async switchProfile ({ id } = {}) {
-      if (!loadProfiles().find((p) => p.id === id)) throw new Error('perfil no existe')
+      if (!loadProfiles().find((p) => p.id === id)) throw new Error('profile does not exist')
       rawKv.setItem(CURRENT_STORAGE, id) // la app recarga la página → re-init con el nuevo perfil
       return { id }
     },
     async renameProfile ({ id, name } = {}) {
       const list = loadProfiles(); const e = list.find((p) => p.id === (id || currentPid))
-      if (!e) throw new Error('perfil no existe')
+      if (!e) throw new Error('profile does not exist')
       e.name = String(name || '').slice(0, 40); saveProfiles(list)
       if (e.id === currentPid) { me = { ...(me || {}), nickname: e.name }; saveMe(me) }
       return { id: e.id, name: e.name }
@@ -1448,7 +1448,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       // dejarte sin ninguna de un clic. La expulsión no pasa por aquí (ver `purgeProfile`):
       // ahí sí se va la última, porque no es un descuido sino que te echaron.
       if (list.length <= 1) throw new Error('cannot delete the only profile')
-      if (!list.find((p) => p.id === id)) throw new Error('perfil no existe')
+      if (!list.find((p) => p.id === id)) throw new Error('profile does not exist')
       return purgeProfile(id)
     },
 
@@ -2179,7 +2179,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const raw = kv.getItem(KEY_STORAGE)
       if (!raw) {
         throw new Error('This profile stores its key as NON-exportable (theft protection). ' +
-          'Para usar tu identidad en otro navegador, conecta ese navegador a tu bóveda (vault) desde profile.dotrino.com.')
+          'To use this identity in another browser, link that browser to your vault from profile.dotrino.com.')
       }
       const keys = JSON.parse(raw)
       const encRaw = kv.getItem(ENC_KEY_STORAGE)
@@ -2314,7 +2314,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     kv.setItem(ME_STORAGE, JSON.stringify(me))
   }
   // Acta de perfil: si no existe, nace ahora (un miembro, este dispositivo, que es el master).
-  try { await ensureActa() } catch (e) { console.warn('[identity] no se pudo crear el acta de perfil:', e.message) }
+  try { await ensureActa() } catch (e) { console.warn('[identity] could not create the profile record:', e.message) }
 
   // Perfil compartido: jalar del vault en background (gana el más nuevo).
   pullProfileFromVault()

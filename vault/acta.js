@@ -323,7 +323,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   // Estrenar la llave de sellado ES un cambio del acta, aunque no toque a ningún miembro:
   // rota con el acta (§8.9) y el acta es lo que le da autoridad. Por eso una lista vacía
   // se acepta si viene con llave nueva, y solo entonces.
-  if (list.length === 0 && !sealPub) throw new Error('applyChanges: no hay cambios')
+  if (list.length === 0 && !sealPub) throw new Error('applyChanges: no changes')
 
   const next = {
     ...acta,
@@ -363,7 +363,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
     switch (ch?.op) {
       case 'admit': {
         const m = ch.member
-        if (!isPub(m?.pub)) throw new Error('admit: falta la pubkey del miembro')
+        if (!isPub(m?.pub)) throw new Error('admit: missing member pubkey')
         if (find(m.pub)) throw new Error('admit: that member is already in the record')
         const cn = m.cn != null ? String(m.cn) : null
         if (cn !== null && !isValidCn(cn)) throw new Error('admit: invalid CN (lowercase, digits and hyphens)')
@@ -458,7 +458,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         break
       }
       case 'revoke': {
-        if (typeof ch.nonce !== 'string') throw new Error('revoke: falta el nonce')
+        if (typeof ch.nonce !== 'string') throw new Error('revoke: missing nonce')
         next.revoked.push({ nonce: ch.nonce, until: ch.until || (now + 30 * 24 * 60 * 60 * 1000) })
         break
       }
@@ -473,7 +473,7 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         break
       }
       default:
-        throw new Error('cambio desconocido: ' + ch?.op)
+        throw new Error('unknown change: ' + ch?.op)
     }
   }
 
@@ -508,7 +508,7 @@ export function sealKeyAt (acta, seq) {
 /** Crea el registro firmado con el que un miembro se QUITA capacidades a sí mismo. */
 export async function makeRenounce ({ member, caps, privateKey, privateJwk, now = Date.now() }) {
   const body = { op: 'renounce', member, caps: cleanCaps(caps), ts: now }
-  if (body.caps.length === 0) throw new Error('renuncia: no hay capacidades que quitar')
+  if (body.caps.length === 0) throw new Error('resign: no capabilities to remove')
   const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: member, data: body })
   return { ...body, sig: signature }
 }
