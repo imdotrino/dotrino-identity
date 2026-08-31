@@ -13,7 +13,7 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId, PEER_SKEW_MS } from './capabilities.js'
 
 const MSG = {
   HELLO: 'vault.hello',
@@ -208,7 +208,9 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     }
 
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
-    const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey })
+    // `PEER_SKEW_MS`: el cert lo acaba de sellar la bóveda con SU reloj y lo valida ESTE
+    // aparato con el suyo. Sin margen, ir 850 ms por detrás bastaba para no poder enrolarse.
+    const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey, skewMs: PEER_SKEW_MS })
     if (!v.ok) throw new Error('invalid cert: ' + v.reason)
     if (res.cert.iss !== qr.iss) throw new Error('cert signed by a master key different from the one you saw')
     if (res.cert.sub !== dev.publickey) throw new Error('cert issued for a different device')

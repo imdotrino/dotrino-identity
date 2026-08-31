@@ -196,6 +196,25 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data 
  *   5) `nonce` no revocado (`revoked`: fn(nonce)→bool, Set o mapa).
  * @returns {{ok:boolean, reason?:string, iss?, sub?, scope?, iat?, exp?, nonce?}}
  */
+/**
+ * MARGEN DE RELOJ ENTRE DOS APARATOS. Sin esto, emparejar es una lotería.
+ *
+ * La bóveda sella el certificado con SU reloj (`iat`) y el aparato lo valida con el suyo.
+ * Con tolerancia cero, un aparato que vaya un pelo por detrás rechaza un certificado
+ * perfectamente bueno con `not-yet-valid` — y el usuario no ve un problema de hora, ve un
+ * emparejamiento que no funciona. Pasó de verdad (2026-08-31): un teléfono **850 ms** por
+ * detrás, medido, no podía enrolarse en ninguna bóveda.
+ *
+ * Dos minutos es generoso para un reloj a la deriva y no significa nada frente a un
+ * certificado que vale 30 días: aceptarlo dos minutos antes de tiempo no le abre la puerta
+ * a nadie, porque lo que autoriza es la FIRMA, no la hora.
+ *
+ * Es para comparar aparatos DISTINTOS. Donde el mismo operador controla los dos relojes
+ * —un servicio validando en la máquina que emite— el estricto sigue siendo lo correcto, y
+ * por eso el default de `verifyDelegation` no cambia.
+ */
+export const PEER_SKEW_MS = 120_000
+
 export async function verifyDelegation ({ cert, expectedScope, expectedSub, now = Date.now(), skewMs = 0, revoked } = {}) {
   if (!cert || typeof cert !== 'object') return { ok: false, reason: 'no-cert' }
   const { v, iss, sub, scope, iat, exp, nonce, sig } = cert

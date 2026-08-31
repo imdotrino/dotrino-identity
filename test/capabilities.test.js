@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { Identity, makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, MAX_DELEGATION_MS } from '../src/node.js'
+import { PEER_SKEW_MS } from '../vault/capabilities.js'
 
 let seq = 0
 async function freshMaster () {
@@ -191,4 +192,29 @@ test('quitar el DISPOSITIVO retira todos sus certificados, no solo uno', async (
   assert.equal(issued.filter(x => x.sub === D.publickey).length, 0, 'el aparato queda fuera')
   assert.ok(issued.some(x => x.nonce === c.cert.nonce), 'no se toca a los demás aparatos')
   assert.ok([a, b].every(x => x.cert.nonce), 'los dos certs existieron')
+})
+
+/**
+ * EL MARGEN DE RELOJ, que es lo que hace que emparejar funcione en el mundo real.
+ * Un teléfono 850 ms por detrás —medido en uno de verdad— no podía enrolarse en ninguna
+ * bóveda: el cert acababa de sellarse con el reloj de ella y aquí se leía como futuro.
+ */
+test('un aparato que va un poco por detrás acepta el cert recién emitido', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const { cert } = await P.signDelegation(D.publickey, 'vault:sign')
+  const atrasado = cert.iat - 850   // el reloj del teléfono, tal cual se midió
+
+  assert.equal((await verifyDelegation({ cert, now: atrasado })).reason, 'not-yet-valid',
+    'sin margen se rechaza, que es el fallo que hubo')
+  assert.equal((await verifyDelegation({ cert, now: atrasado, skewMs: PEER_SKEW_MS })).ok, true,
+    'con el margen entre aparatos, se acepta')
+})
+
+test('el margen no resucita un cert de verdad vencido', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const { cert } = await P.signDelegation(D.publickey, 'vault:sign', { ttlMs: 1000 })
+  const muyDespues = cert.exp + PEER_SKEW_MS + 1000
+  assert.equal((await verifyDelegation({ cert, now: muyDespues, skewMs: PEER_SKEW_MS })).reason, 'expired')
 })
