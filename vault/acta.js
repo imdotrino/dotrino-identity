@@ -358,6 +358,35 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
  * aceptando a un sellador que ya retiraste. Es el problema de siempre y hace falta un
  * oráculo, no más firmas.
  */
+/**
+ * ¿DE QUIÉN ES ESTO? La pregunta que se hacen geo, reputación y cualquiera que reciba algo
+ * firmado de un desconocido. Es lo único que necesitan llamar.
+ *
+ * Devuelve el `profileId` —la identidad— o por qué no.
+ *
+ * EL CERTIFICADO NO HACE FALTA AQUÍ, y conviene decirlo porque es lo que uno espera:
+ * el acta ya dice quién puede firmar por la identidad, y la cadena prueba el acta. El
+ * certificado es del protocolo aparato↔bóveda (autenticar peticiones), no de atribuir
+ * contenido. Mezclarlos obligaba a que cada post arrastrara un papel que no aporta nada.
+ *
+ * Lo que SÍ hay que entender: esto dice «esta identidad firmó esto», no «esto es
+ * reciente». Si la cadena que te llega es vieja, sigue verificando — para eso está el
+ * registro público, que es otra capa.
+ */
+export async function verifySignedBy ({ data, signature, publickey, chain, expectedProfileId = null } = {}) {
+  if (!data || typeof signature !== 'string' || typeof publickey !== 'string') {
+    return { ok: false, reason: 'shape' }
+  }
+  const c = await verifySealerChain(chain, { expectedProfileId })
+  if (!c.ok) return { ok: false, reason: 'cadena:' + c.reason }
+  const cabeza = chain[chain.length - 1]
+  // Quien firmó tiene que ser miembro CON `sign` en el acta vigente de esa cadena. Si le
+  // quitaste el permiso, sus firmas dejan de contar en cuanto se ve un acta más nueva.
+  if (!memberCanSign(cabeza, publickey)) return { ok: false, reason: 'firmante-no-autorizado' }
+  if (!(await verifyDeviceSig({ publickey, data, signature }))) return { ok: false, reason: 'firma-invalida' }
+  return { ok: true, profileId: c.profileId, seq: c.seq, signer: publickey }
+}
+
 export async function verifySealerChain (chain, { expectedProfileId = null } = {}) {
   if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
   const [raiz] = chain
@@ -909,7 +938,7 @@ export async function canAdopt ({ candidate, current }) {
 }
 
 export default {
-  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain,
+  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain, verifySignedBy,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,

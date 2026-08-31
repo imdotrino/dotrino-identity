@@ -1357,7 +1357,22 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (data == null) throw new Error('data required')
       const local = async () => {
         const bytes = new TextEncoder().encode(canonicalStringify(data))
-        return { signature: await signBytes(keypair.privateKey, bytes), publickey: publickeyJwkStr }
+        const acta = loadActa()
+        return {
+          signature: await signBytes(keypair.privateKey, bytes),
+          publickey: publickeyJwkStr,
+          // A NOMBRE DE QUIÉN VA. `publickey` es la llave de ESTE aparato, y las apps la
+          // venían guardando como si fuera la identidad: publicar desde el teléfono y
+          // desde el PC quedaba a nombre de dos «personas» distintas, y la reputación se
+          // repartía entre ellas en vez de acumularse.
+          //
+          // La identidad es el `profileId` —la llave del génesis, que no cambia nunca— y
+          // la cadena es lo que prueba que este firmante le pertenece. Van juntos porque
+          // por separado no sirven: el `profileId` solo es una afirmación, y la cadena sin
+          // él no dice a quién atribuir.
+          profileId: acta?.profileId || publickeyJwkStr,
+          chain: sealerChain()
+        }
       }
       const acta = loadActa()
       const puedeFirmar = !acta || Acta.memberCan(acta, publickeyJwkStr, 'sign', loadRenounces())

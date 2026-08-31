@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Identity, makeDeviceKey } from '../src/node.js'
-import { verifySealerChain } from '../vault/acta.js'
+import { verifySealerChain, verifySignedBy } from '../vault/acta.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'acta-'))
 
@@ -276,5 +276,59 @@ test('sumar una bóveda alarga la cadena a dos, y se verifica contra el génesis
   const r = await verifySealerChain(cadena, { expectedProfileId: id.me.publickey })
   assert.equal(r.ok, true, r.reason)
   assert.deepEqual(r.sealers.sort(), [id.me.publickey, vault.publickey].sort())
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/**
+ * DE PUNTA A PUNTA: un aparato publica y un EXTRAÑO averigua de quién es, sin preguntarle
+ * a nadie y sin certificado — el acta ya dice quién firma y la cadena prueba el acta.
+ *
+ * El fallo que esto cierra: las apps guardaban `me.publickey` como identidad, que es la
+ * llave del APARATO. Publicar desde el teléfono y desde el PC quedaba a nombre de dos
+ * personas distintas, y la reputación se repartía entre ellas.
+ */
+test('dos aparatos de la misma cuenta publican como LA MISMA identidad', async () => {
+  const dir = tmp()
+  const pc = await Identity.connect({ dir })          // el fundador
+  const cuenta = pc.me.publickey
+
+  const tel = await makeDeviceKey({ label: 'Teléfono' })
+  await pc.admitMember({ pub: tel.publickey, label: 'Teléfono', caps: ['sign', 'read'] })
+
+  const post = { op: 'eco', texto: 'hola', ts: Date.now() }
+  const delPc = await pc.signData(post)
+
+  // El teléfono firma con SU llave, y la cadena es la misma de la cuenta.
+  const { signWithDevice } = await import('../vault/capabilities.js')
+  const { signature } = await signWithDevice({ privateJwk: tel.privateJwk, data: post })
+  const delTel = { signature, publickey: tel.publickey, chain: await pc.sealerChain() }
+
+  const a = await verifySignedBy({ data: post, ...delPc })
+  const b = await verifySignedBy({ data: post, ...delTel })
+
+  assert.equal(a.ok, true, a.reason)
+  assert.equal(b.ok, true, b.reason)
+  assert.equal(a.profileId, cuenta)
+  assert.equal(b.profileId, cuenta, 'el teléfono publica a nombre de la CUENTA, no de su llave')
+  assert.notEqual(a.signer, b.signer, 'aunque firmen llaves distintas')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a quien le quitaste `firma`, sus firmas dejan de contar', async () => {
+  const dir = tmp()
+  const pc = await Identity.connect({ dir })
+  const tel = await makeDeviceKey({ label: 'Teléfono' })
+  await pc.admitMember({ pub: tel.publickey, label: 'Teléfono', caps: ['sign', 'read'] })
+
+  const post = { op: 'eco', texto: 'hola', ts: Date.now() }
+  const { signWithDevice } = await import('../vault/capabilities.js')
+  const { signature } = await signWithDevice({ privateJwk: tel.privateJwk, data: post })
+
+  assert.equal((await verifySignedBy({ data: post, signature, publickey: tel.publickey, chain: await pc.sealerChain() })).ok, true)
+
+  await pc.setCaps(tel.publickey, ['read'])
+  const r = await verifySignedBy({ data: post, signature, publickey: tel.publickey, chain: await pc.sealerChain() })
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'firmante-no-autorizado', 'con la cadena nueva, ya no cuenta')
   fs.rmSync(dir, { recursive: true, force: true })
 })
