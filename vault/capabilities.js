@@ -105,8 +105,20 @@ export async function commitCode ({ code, dpub, sn }) {
 export { avatarSvg, avatarDataUri } from './avatar.js'
 
 /** Cuerpo canónico del certificado (lo que se firma): el cert SIN la firma. */
+/**
+ * Lo que se firma de un certificado. `seq` en vez de `exp` (dueño, 2026-08-31).
+ *
+ * EL PAPEL YA NO CADUCA POR RELOJ: caduca cuando cambia el acta. Antes vencía a los 30
+ * días, y eso obligaba a que alguien con la maestra estuviera disponible cada mes o los
+ * aparatos se quedaban fuera — con una bóveda que pasa casi todo el tiempo cerrada, eso
+ * no iba a pasar nunca.
+ *
+ * Atarlo al `seq` hace las dos cosas de golpe: quitarle un permiso a un aparato surte
+ * efecto AL INSTANTE (el acta sube de `seq` y su papel deja de valer, sin esperar a
+ * ninguna renovación), y nadie tiene que abrir nada por calendario.
+ */
 export function delegationBody (cert) {
-  return { v: cert.v, iss: cert.iss, sub: cert.sub, scope: cert.scope, iat: cert.iat, exp: cert.exp, nonce: cert.nonce }
+  return { v: cert.v, iss: cert.iss, sub: cert.sub, scope: cert.scope, iat: cert.iat, seq: cert.seq, nonce: cert.nonce }
 }
 
 /**
@@ -164,8 +176,8 @@ export async function importDeviceEncKey (encPrivateJwk) {
  * es `iss`. Lo usa el handler del vault (con la clave maestra). Devuelve el cert
  * completo `{ v, iss, sub, scope, iat, exp, nonce, sig }`.
  */
-export async function signDelegationWith (privateKey, iss, { sub, scope, iat, exp, nonce }) {
-  const body = { v: 1, iss, sub, scope, iat, exp, nonce }
+export async function signDelegationWith (privateKey, iss, { sub, scope, iat, seq, nonce }) {
+  const body = { v: 1, iss, sub, scope, iat, seq, nonce }
   const sig = await rawSign(privateKey, enc(canonicalStringify(body)))
   return { ...body, sig }
 }
@@ -215,17 +227,29 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data 
  */
 export const PEER_SKEW_MS = 120_000
 
-export async function verifyDelegation ({ cert, expectedScope, expectedSub, now = Date.now(), skewMs = 0, revoked } = {}) {
+export async function verifyDelegation ({ cert, expectedScope, expectedSub, actaSeq = null, sealers = null, revoked } = {}) {
   if (!cert || typeof cert !== 'object') return { ok: false, reason: 'no-cert' }
-  const { v, iss, sub, scope, iat, exp, nonce, sig } = cert
+  const { v, iss, sub, scope, iat, seq, nonce, sig } = cert
   if (v !== 1 || typeof iss !== 'string' || typeof sub !== 'string' || typeof sig !== 'string') return { ok: false, reason: 'shape' }
-  if (typeof iat !== 'number' || typeof exp !== 'number' || (typeof scope !== 'string' && !Array.isArray(scope))) return { ok: false, reason: 'shape' }
+  if (typeof iat !== 'number' || typeof seq !== 'number' || (typeof scope !== 'string' && !Array.isArray(scope))) return { ok: false, reason: 'shape' }
   if (!(await rawVerify(iss, enc(canonicalStringify(delegationBody(cert))), sig))) return { ok: false, reason: 'bad-signature' }
-  // `skewMs` tolera la diferencia de reloj entre el EMISOR (vault) y el VERIFICADOR
-  // (p.ej. el bridge de geo, otra máquina). Default 0 = estricto.
-  const sk = Math.max(0, skewMs)
-  if (now < iat - sk) return { ok: false, reason: 'not-yet-valid' }
-  if (now > exp + sk) return { ok: false, reason: 'expired' }
+  // EL ACTA ES EL VENCIMIENTO (dueño, 2026-08-31). No hay reloj: un papel vale mientras
+  // sea el del acta vigente, y deja de valer en cuanto el acta sube de `seq`.
+  //
+  // Llegan el `seq` y la LISTA DE SELLADORES, no el acta entera, y no por capricho: este
+  // módulo no sabe de actas —`acta.js` importa de aquí, así que mirar para allá sería un
+  // ciclo— y la regla de quién sella tiene que seguir viviendo en el acta, en un solo
+  // sitio. Quien verifica saca la lista con `sealersOf` y la pasa.
+  //
+  // Sin esos datos no se puede juzgar, y se dice en vez de contestar «vale» a solas:
+  // devolver `ok` sin haber comprobado nada es exactamente cómo un papel viejo seguía
+  // entrando.
+  if (typeof actaSeq !== 'number' || !Array.isArray(sealers)) return { ok: false, reason: 'no-acta' }
+  if (seq !== actaSeq) return { ok: false, reason: 'stale-acta' }
+  // Y QUIEN LO EMITIÓ TIENE QUE PODER SELLAR. No se compara contra «la maestra»: cualquiera
+  // que el acta nombre sellador emite papeles válidos — si no, la segunda bóveda podría
+  // invalidar todos los certificados al sellar y luego no poder dar los nuevos.
+  if (!sealers.includes(iss)) return { ok: false, reason: 'untrusted-issuer' }
   if (expectedScope != null && !scopeAllows(scope, expectedScope)) return { ok: false, reason: 'scope' }
   if (expectedSub != null && sub !== expectedSub) return { ok: false, reason: 'sub' }
   if (nonce && revoked) {
@@ -244,15 +268,16 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, now 
  *   4) opcional: `cert.iss === trustedIssuer` (fija la identidad maestra esperada).
  * @returns {{ok:boolean, reason?:string, issuer?:string, device?:string}}
  */
-export async function verifyChain ({ data, signature, cert, expectedScope, expectedIssuer, trustedIssuer, now = Date.now(), skewMs = 0, revoked } = {}) {
+export async function verifyChain ({ data, signature, cert, expectedScope, actaSeq = null, sealers = null, revoked } = {}) {
   if (!data || typeof data !== 'object' || typeof signature !== 'string') return { ok: false, reason: 'shape' }
   const device = data.publickey
   if (typeof device !== 'string') return { ok: false, reason: 'no-device-pubkey' }
   if (!(await rawVerify(device, enc(canonicalStringify(data)), signature))) return { ok: false, reason: 'bad-action-signature' }
   if (!cert || cert.sub !== device) return { ok: false, reason: 'cert-device-mismatch' }
-  const d = await verifyDelegation({ cert, expectedScope, now, skewMs, revoked })
+  // `actaSeq` + `sealers` sustituyen a `trustedIssuer`: ya no se compara contra UNA llave
+  // (la maestra), sino contra lo que el acta dice — quién puede sellar, y cuál es el acta
+  // vigente. Ver `verifyDelegation`.
+  const d = await verifyDelegation({ cert, expectedScope, actaSeq, sealers, revoked })
   if (!d.ok) return { ok: false, reason: d.reason }
-  const issuer = trustedIssuer != null ? trustedIssuer : expectedIssuer
-  if (issuer != null && cert.iss !== issuer) return { ok: false, reason: 'untrusted-issuer' }
-  return { ok: true, issuer: cert.iss, device }
+  return { ok: true, issuer: cert.iss, device, scope: cert.scope }
 }
