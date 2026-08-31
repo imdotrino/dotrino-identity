@@ -78,7 +78,7 @@ test('un acta vieja se lee, su campo `sealer` vale como permiso, y asciende', as
   assert.equal(canSeal(revieja, a.pub), true, 'el campo se traduce a permiso al leerla')
 
   const next = await step(revieja, [{ op: 'label', pub: a.pub, label: 'PC' }], a, { sealPub: s.pub })
-  assert.equal(next.v, 4, 'la siguiente ya nace sin campo')
+  assert.equal(next.v, ACTA_V, 'la siguiente ya nace sin campo, y en la versión de hoy')
   assert.equal(next.sealer, undefined)
   assert.equal(canSeal(next, a.pub), true, 'y el que sellaba sigue sellando, ahora por permiso')
   assert.equal(next.sealPub, s.pub)

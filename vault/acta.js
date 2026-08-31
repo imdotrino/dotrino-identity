@@ -37,7 +37,7 @@
 import { canonicalStringify } from './core.js'
 import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
 
-export const ACTA_V = 4
+export const ACTA_V = 5
 
 /**
  * Versiones de acta que se ACEPTAN al leer. La 1 sigue entrando porque una v1 en el disco
@@ -57,7 +57,11 @@ export const ACTA_V = 4
  * entiende; la PRIMERA vez que esa cuenta cambie algo, la nueva sale ya en v3 y el campo
  * desaparece solo.
  */
-const ACTA_LEIBLES = Object.freeze([1, 2, 3, 4])
+// v5 mete DENTRO del acta el eslabón publicable de la cadena de selladores, firmado
+// aparte (ver `sealerLinkOf`): así se publica solo eso y no el acta entera, que llevaba
+// los aparatos con sus nombres. Una v4 se sigue leyendo, pero no tiene eslabón y por tanto
+// no puede publicar: su cuenta no aparece en el registro hasta que selle una v5 nueva.
+const ACTA_LEIBLES = Object.freeze([1, 2, 3, 4, 5])
 /** Desde esta versión, el acta lleva su eslabón de la cadena de selladores. */
 const V_CON_CADENA = 4
 /** ¿Esta acta lleva el eslabón? Las anteriores se leen igual; no pueden encadenar. */
@@ -187,6 +191,124 @@ export async function actaHash (acta) {
   return hex(await crypto.subtle.digest('SHA-256', enc(canonicalStringify(actaBody(acta)))))
 }
 
+/**
+ * EL ESLABÓN DE LA CADENA DE SELLADORES: lo ÚNICO que se publica.
+ *
+ * El problema que resuelve (dueño, 2026-08-31). Publicar «los eslabones donde cambia quién
+ * sella» sonaba a publicar poco, pero un eslabón ERA un acta entera: se fue a un repo
+ * público con los `label` y los `cn` de cada aparato y el llavero. Recortar el acta no
+ * vale, porque su firma cubre el acta entera y dejaría de verificar.
+ *
+ * La salida es del dueño y es mejor que tener dos documentos que puedan discrepar: se
+ * construye el eslabón, **se firma**, se mete en el acta, y **se firma el acta encima**.
+ * Resultado: uno solo, firmado dos veces.
+ *
+ *   · quien tiene el acta la verifica y con eso el eslabón de dentro queda validado —
+ *     no hay nada aparte en lo que confiar;
+ *   · quien solo tiene el registro verifica la firma del eslabón, que es de la misma
+ *     llave y dice lo mismo. Discrepar es imposible por construcción.
+ *
+ * ENCADENA CONTRA EL ESLABÓN ANTERIOR, no contra el acta anterior. El `sealerAnchor` del
+ * acta apunta al hash del ACTA previa, y quien solo lee el registro no la tiene ni puede
+ * calcularla — la cadena publicada tiene que sostenerse sola.
+ *
+ * Lo que lleva es lo mínimo para responder «¿esta llave sigue pudiendo sellar?»: nada de
+ * miembros, ni etiquetas, ni cajones, ni llavero.
+ */
+export const SEALER_LINK_V = 1
+
+/** El cuerpo firmable del eslabón (todo menos su propia firma). */
+export const sealerLinkBody = (link) => { const { sig, ...body } = link || {}; return body }
+
+/** Hash del eslabón. Es a esto a lo que apunta el `prev` del siguiente. */
+export async function sealerLinkHash (link) {
+  return hex(await crypto.subtle.digest('SHA-256', enc(canonicalStringify(sealerLinkBody(link)))))
+}
+
+/** El eslabón que hay que publicar de esta acta, o `null` si no cambió el sellador. */
+export const sealerLinkOf = (acta) => (acta?.sealerChanged && acta?.sealerLink) || null
+
+/**
+ * ¿Es este eslabón coherente con el acta que lo lleva? Es lo que hace verdad la frase «ya
+ * está validado dentro del acta»: la firma del acta cubre el eslabón, pero eso solo prueba
+ * que está ahí — que DIGA lo mismo que el acta hay que comprobarlo.
+ */
+export function checkSealerLink (acta) {
+  const l = acta?.sealerLink
+  if (!l) return acta?.sealerChanged && acta?.v >= 5 ? 'eslabon-ausente' : null
+  if (l.v !== SEALER_LINK_V) return 'eslabon-version'
+  if (typeof l.sig !== 'string') return 'eslabon-sin-firma'
+  if (l.profileId !== acta.profileId) return 'eslabon-otro-perfil'
+  // EL ACTA VIGENTE ARRASTRA EL ÚLTIMO ESLABÓN, que casi nunca es de ella: los selladores
+  // cambian poquísimo y las actas cambian con cada emparejamiento. Así que solo cuando
+  // ESTA acta es el eslabón se le exige que coincida en `seq` y en quién lo firmó; si lo
+  // hereda, basta con que venga de antes.
+  if (acta.sealerChanged) {
+    if (l.seq !== acta.seq) return 'eslabon-otro-seq'
+    if (l.by !== acta.sealedBy) return 'eslabon-otro-sellador'
+  } else if (!(l.seq < acta.seq)) {
+    return 'eslabon-del-futuro'
+  }
+  // Y en los dos casos tiene que DECIR LO MISMO que el acta sobre quién sella: si no
+  // cambiaron, el heredado los sigue describiendo. Esto es lo que impide que el acta y su
+  // eslabón cuenten cosas distintas — que es todo el punto de meterlo dentro.
+  const dice = [...(l.sealers || [])].slice().sort().join('|')
+  const segunElActa = sealersOf(acta).slice().sort().join('|')
+  if (dice !== segunElActa) return 'eslabon-no-cuadra'
+  return null
+}
+
+/** Firma del eslabón por quien sella. Se hace ANTES de firmar el acta que lo lleva. */
+export async function verifySealerLink (link) {
+  if (!link || link.v !== SEALER_LINK_V) return { ok: false, reason: 'eslabon-version' }
+  if (!isPub(link.profileId) || !isPub(link.by)) return { ok: false, reason: 'eslabon-forma' }
+  if (!Array.isArray(link.sealers) || !link.sealers.length || !link.sealers.every(isPub)) return { ok: false, reason: 'eslabon-selladores' }
+  if (typeof link.seq !== 'number' || link.seq < 1) return { ok: false, reason: 'eslabon-seq' }
+  if (typeof link.sig !== 'string') return { ok: false, reason: 'eslabon-sin-firma' }
+  const ok = await verifyDeviceSig({ publickey: link.by, data: sealerLinkBody(link), signature: link.sig })
+  return ok ? { ok: true } : { ok: false, reason: 'eslabon-firma-invalida' }
+}
+
+/**
+ * VERIFICA LA CADENA PUBLICADA — la que vive en el registro, sin actas de por medio.
+ *
+ * Es la hermana de `verifySealerChain`, que hace lo mismo con actas enteras para quien las
+ * tiene. Lo que comprueba, y por qué basta:
+ *   1. el primero es el GÉNESIS: `seq 1`, sin `prev`, y firmado por `profileId` — el ancla,
+ *      que no se puede fabricar sin la llave que da nombre al perfil;
+ *   2. cada siguiente lo firmó alguien a quien el ANTERIOR autorizaba;
+ *   3. y apunta al anterior por `seq` + hash, así que no se cuela uno de otra rama.
+ *
+ * Lo que NO resuelve, y no lo esconde: la frescura. Quien guardó una cadena vieja sigue
+ * aceptando a un sellador retirado; para eso está mirar el registro, no más firmas.
+ */
+export async function verifySealerLinkChain (chain, { expectedProfileId = null } = {}) {
+  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
+  const [raiz] = chain
+  if (raiz?.seq !== 1 || raiz?.prev != null) return { ok: false, reason: 'no-empieza-en-genesis' }
+  if (raiz.by !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
+  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
+  const vr = await verifySealerLink(raiz)
+  if (!vr.ok) return { ok: false, reason: 'genesis:' + vr.reason }
+
+  for (let i = 1; i < chain.length; i++) {
+    const previo = chain[i - 1]
+    const actual = chain[i]
+    if (actual?.profileId !== raiz.profileId) return { ok: false, reason: `eslabon-${i}:otro-perfil` }
+    if (!(actual.seq > previo.seq)) return { ok: false, reason: `eslabon-${i}:seq-no-crece` }
+    const v = await verifySealerLink(actual)
+    if (!v.ok) return { ok: false, reason: `eslabon-${i}:` + v.reason }
+    const a = actual.prev
+    if (!a || a.seq !== previo.seq || a.hash !== await sealerLinkHash(previo)) {
+      return { ok: false, reason: `eslabon-${i}:no-encadena` }
+    }
+    // Y lo que da la autoridad: quien lo firmó podía sellar SEGÚN EL ESLABÓN ANTERIOR.
+    if (!previo.sealers.includes(actual.by)) return { ok: false, reason: `eslabon-${i}:sellador-no-autorizado` }
+  }
+  const ultimo = chain[chain.length - 1]
+  return { ok: true, profileId: raiz.profileId, seq: ultimo.seq, sealers: [...ultimo.sealers] }
+}
+
 /** Id legible de un miembro (mismo formato que el deviceId del emparejamiento). */
 export async function memberId (pub) {
   const id = (await pubkeyId(pub)).slice(0, 8).toUpperCase()
@@ -265,6 +387,9 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', c
     // `true` porque el génesis ESTABLECE el primer conjunto de selladores: es el eslabón
     // 1 de la cadena, y por eso la siguiente acta tiene que apuntarle a él.
     sealerChanged: true,
+    // EL ESLABÓN 1 de la cadena publicable, todavía SIN FIRMAR: lo firma `sealActa` con la
+    // misma llave, y después firma el acta que lo lleva. Es lo único que sale al registro.
+    sealerLink: { v: SEALER_LINK_V, profileId: pub, seq: 1, by: pub, sealers: [pub], prev: null, iat: now },
     members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS, 'sealer'], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
@@ -355,8 +480,20 @@ export function checkShape (acta) {
 export async function sealActa ({ acta, privateKey, privateJwk }) {
   const shape = checkShape(acta)
   if (shape) throw new Error('invalid record: ' + shape)
-  const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: acta.sealedBy, data: actaBody(acta) })
-  const sealed = { ...acta, sig: signature }
+  // PRIMERO EL ESLABÓN, DESPUÉS EL ACTA. Este es el orden que hace que no puedan discrepar:
+  // se firma el eslabón, se mete en el acta, y la firma del acta lo cubre. Quien tiene el
+  // acta lo da por bueno con verificarla; quien solo tiene el registro verifica su firma.
+  // Si ya viene firmado no se vuelve a firmar: se está arrastrando el de un acta anterior.
+  let conEslabon = acta
+  if (acta.sealerLink && !acta.sealerLink.sig) {
+    if (acta.sealerLink.by !== acta.sealedBy) throw new Error('invalid record: the chain link names a sealer other than the one signing')
+    const { signature: firmaEslabon } = await signWithDevice({
+      privateKey, privateJwk, publickey: acta.sealedBy, data: sealerLinkBody(acta.sealerLink)
+    })
+    conEslabon = { ...acta, sealerLink: { ...acta.sealerLink, sig: firmaEslabon } }
+  }
+  const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: conEslabon.sealedBy, data: actaBody(conEslabon) })
+  const sealed = { ...conEslabon, sig: signature }
   // La TARJETA se firma en el mismo gesto y viaja con el acta: así cualquier miembro puede
   // entregársela a un contacto sin ser el master y sin contarle nada de más.
   sealed.card = await makeProfileCard({ acta: sealed, privateKey, privateJwk })
@@ -457,7 +594,11 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
   if (typeof acta.sig !== 'string') return { ok: false, reason: 'sin-firma' }
   if (expectedProfileId != null && acta.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
   const ok = await verifyDeviceSig({ publickey: acta.sealedBy, data: actaBody(acta), signature: acta.sig })
-  return ok ? { ok: true } : { ok: false, reason: 'firma-invalida' }
+  if (!ok) return { ok: false, reason: 'firma-invalida' }
+  // El eslabón va DENTRO y la firma de arriba lo cubre, pero eso solo prueba que está ahí.
+  // Que diga lo mismo que el acta es lo que hace verdad «ya está validado dentro».
+  const mal = checkSealerLink(acta)
+  return mal ? { ok: false, reason: mal } : { ok: true }
 }
 
 /**
@@ -691,6 +832,24 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   // dos veces que esto importa —construirla, y adoptar una ajena— se tienen las dos.
   if (!canSeal(next, by)) {
     throw new Error('the change would leave whoever seals it unable to seal: a record must pass the filter of the one it replaces AND its own')
+  }
+  // EL ESLABÓN PUBLICABLE. Si cambió quién sella se acuña uno nuevo —sin firmar, lo firma
+  // `sealActa`— encadenado al que traía el acta anterior. Si no cambió, se arrastra el
+  // mismo: así el acta vigente SIEMPRE lleva el último eslabón, y `prev` apunta al eslabón
+  // anterior de la cadena (no al acta anterior, que quien lee el registro no tiene).
+  if (next.sealerChanged) {
+    const anterior = acta.sealerLink || null
+    next.sealerLink = {
+      v: SEALER_LINK_V,
+      profileId: next.profileId,
+      seq: next.seq,
+      by,
+      sealers: sealersOf(next).slice().sort(),
+      prev: anterior ? { seq: anterior.seq, hash: await sealerLinkHash(anterior) } : null,
+      iat: now
+    }
+  } else if (acta.sealerLink) {
+    next.sealerLink = acta.sealerLink
   }
   return next
 }

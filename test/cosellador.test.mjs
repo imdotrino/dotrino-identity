@@ -18,7 +18,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, memberCanSign, memberCanScope, verifySealerChain
+  checkShape, actaHash, memberCanSign, memberCanScope, verifySealerChain,
+  sealerLinkOf, verifySealerLinkChain
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
 
@@ -233,12 +234,16 @@ test('un acta suelta fabricada para tu profileId NO pasa la cadena', async () =>
   const suya = await sellar(genesisActa({ pub: victima.publickey, label: 'v' }), victima)
 
   const malo = await makeDeviceKey()
+  // La forja va COMPLETA, con su eslabón coherente: si se dejara el de la víctima, el acta
+  // ya no cuadraría consigo misma y la pillaría `verifyActa` sola. Se hace bien a propósito,
+  // porque lo que esta prueba tiene que enseñar es que ni así cuela.
   const falsa = await sellar({
     ...suya,
     seq: 99,
     prev: 'a'.repeat(64),
     sealedBy: malo.publickey,
     sealerAnchor: { seq: 1, hash: await actaHash(suya) },
+    sealerLink: { v: 1, profileId: suya.profileId, seq: 99, by: malo.publickey, sealers: [malo.publickey], prev: null, iat: Date.now() },
     members: [{ pub: malo.publickey, encPub: null, label: 'yo', cn: null, caps: ['sign', 'sealer'], addedAt: Date.now(), cert: null }]
   }, malo)
 
@@ -347,4 +352,73 @@ test('la dirección tiene que ser https, y sin adornos', async () => {
   }
   // Y sin dirección es lo NORMAL: una cuenta de una sola bóveda no tiene nada que refrescar.
   assert.equal(genesisActa({ pub: A.publickey }).chainUrl, null)
+})
+
+/**
+ * LO QUE SE PUBLICA.
+ *
+ * El 2026-08-31 el registro llegó a publicar el acta ENTERA —los `label` y los `cn` de cada
+ * aparato, y el llavero— porque «un eslabón» era un acta. La salida fue del dueño: se firma
+ * el eslabón, se mete en el acta y se firma el acta encima. Uno solo, firmado dos veces.
+ *
+ * Estas pruebas fijan las dos mitades de eso: que lo que sale no lleva nada de dentro, y
+ * que no puede contradecir al acta que lo lleva.
+ */
+test('el eslabón publicable no lleva aparatos, ni etiquetas, ni cajones, ni llavero', async () => {
+  const A = await makeDeviceKey()
+  const B = await makeDeviceKey()
+  const g = await sellar(genesisActa({ pub: A.publickey, label: 'el-portátil-de-casa' }), A)
+  let dos = await applyChanges(g, [
+    { op: 'admit', member: { pub: B.publickey, label: 'servidor-secreto', cn: 'eco', caps: ['sign', 'sealer'] } }
+  ], { by: A.publickey })
+  dos = await sellar(dos, A)
+
+  const publicado = JSON.stringify([sealerLinkOf(g), sealerLinkOf(dos)])
+  for (const filtracion of ['el-portátil-de-casa', 'servidor-secreto', 'eco', 'members', 'keyring', 'card', 'cert']) {
+    assert.ok(!publicado.includes(filtracion), `NO se publica: ${filtracion}`)
+  }
+  assert.deepEqual(Object.keys(sealerLinkOf(dos)).sort(),
+    ['by', 'iat', 'prev', 'profileId', 'sealers', 'seq', 'sig', 'v'], 'y nada más que esto')
+})
+
+test('la cadena publicada se verifica sola, sin actas', async () => {
+  const A = await makeDeviceKey()
+  const B = await makeDeviceKey()
+  const g = await sellar(genesisActa({ pub: A.publickey, label: 'A' }), A)
+  let dos = await applyChanges(g, [
+    { op: 'admit', member: { pub: B.publickey, label: 'B', caps: ['sign', 'sealer'] } }
+  ], { by: A.publickey })
+  dos = await sellar(dos, A)
+
+  const cadena = [sealerLinkOf(g), sealerLinkOf(dos)]
+  const r = await verifySealerLinkChain(cadena, { expectedProfileId: g.profileId })
+  assert.equal(r.ok, true, r.reason)
+  assert.equal(r.seq, 2)
+  assert.deepEqual(r.sealers.slice().sort(), [A.publickey, B.publickey].sort())
+
+  // Y no cuela una cadena fabricada con tu profileId, que es público.
+  const malo = await makeDeviceKey()
+  const inventado = { v: 1, profileId: g.profileId, seq: 1, by: malo.publickey, sealers: [malo.publickey], prev: null, iat: Date.now() }
+  const falso = { ...inventado, sig: (await signWithDevice({ privateJwk: malo.privateJwk, data: inventado })).signature }
+  const mala = await verifySealerLinkChain([falso], { expectedProfileId: g.profileId })
+  assert.equal(mala.ok, false)
+  assert.match(mala.reason, /genesis-no-autofirmado/)
+})
+
+test('el eslabón NO puede decir algo distinto que el acta que lo lleva', async () => {
+  const A = await makeDeviceKey()
+  const malo = await makeDeviceKey()
+  const g = await sellar(genesisActa({ pub: A.publickey, label: 'A' }), A)
+
+  // Alguien mete en el acta un eslabón que se nombra sellador. Está firmado por él, así que
+  // el eslabón solo verifica — pero el acta y su eslabón dejan de contar lo mismo.
+  const cuerpo = { v: 1, profileId: g.profileId, seq: 1, by: malo.publickey, sealers: [malo.publickey], prev: null, iat: Date.now() }
+  const trucada = await sellar({
+    ...g,
+    sealerLink: { ...cuerpo, sig: (await signWithDevice({ privateJwk: malo.privateJwk, data: cuerpo })).signature }
+  }, A)
+
+  const v = await verifyActa({ acta: trucada })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /eslabon-(no-cuadra|otro-sellador)/)
 })
