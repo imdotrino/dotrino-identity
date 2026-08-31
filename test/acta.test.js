@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, isHandover,
+  genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, canSeal,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
   memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape
 } from '../vault/acta.js'
@@ -30,12 +30,12 @@ test('génesis: un miembro, es el master, y verifica', async () => {
 
   assert.equal((await verifyActa({ acta })).ok, true)
   assert.equal(acta.profileId, a.pub, 'el perfil se llama como su primera llave')
-  assert.equal(acta.sealer, a.pub)
   assert.equal(acta.sealedBy, a.pub)
+  assert.equal(acta.sealer, undefined, 'el campo ya no existe: sellar es un permiso')
   assert.equal(acta.seq, 1)
-  assert.deepEqual(acta.members[0].caps, [...PAIRED_CAPS], 'el dueño nace como dispositivo: acceso a todo lo suyo')
+  assert.deepEqual(acta.members[0].caps, [...PAIRED_CAPS, 'sealer'], 'el dueño nace pudiendo todo lo suyo, y sellando')
   assert.equal(acta.members[0].cn, null, 'y sin CN, porque no es un servicio')
-  assert.equal(isHandover(acta), false)
+  assert.equal(canSeal(acta, a.pub), true, 'y sella por el PERMISO, no por un campo')
 })
 
 test('admitir: solo el master puede, y la cadena encadena', async () => {
@@ -56,58 +56,50 @@ test('admitir: solo el master puede, y la cadena encadena', async () => {
   )
 })
 
-test('no se puede dejar el perfil sin nadie que firme, ni expulsar al master', async () => {
+test('no se puede dejar el perfil sin nadie que firme, ni sin nadie que selle', async () => {
   const a = await key(); const b = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
   const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read'] } }], a)
 
   await assert.rejects(() => applyChanges(dos, [{ op: 'caps', pub: a.pub, caps: ['read'] }], { by: a.pub }), /no member able to sign/)
-  await assert.rejects(() => applyChanges(dos, [{ op: 'remove', pub: a.pub }], { by: a.pub }), /cannot remove the master/)
+  // Ya no hay «no puedes expulsar al master»: sellar es un permiso y el cierre es que no
+  // quede NADIE que pueda sellar. Con `b` sin `sign`, aquí salta antes el de firmantes.
+  await assert.rejects(() => applyChanges(dos, [{ op: 'remove', pub: a.pub }], { by: a.pub }), /no member able to sign/)
 })
 
-test('traspaso: admitir y nombrar master van en el MISMO seq', async () => {
+/**
+ * NO HAY TRASPASO. Sellar es un permiso: se concede y se quita como cualquier otro, y no
+ * hay ningún campo que mover (dueño, 2026-08-31: «SEAL es el nuevo master»). Ceder el
+ * mando es dar `sella` al otro; dejar de tenerlo es que ÉL te lo quite — nunca tú.
+ */
+test('ceder el mando es conceder `sella`, y quitárselo lo hace el otro', async () => {
   const disp = await key(); const vault = await key()
   const g = await sealActa({ acta: genesisActa({ pub: disp.pub, label: 'Celular' }), privateJwk: disp.privateJwk })
 
-  const traspaso = await step(g, [
-    { op: 'admit', member: { pub: vault.pub, label: 'Bóveda', caps: [...CAPS] } },
-    { op: 'handover', to: vault.pub }
-  ], disp)
+  const dos = await step(g, [{ op: 'admit', member: { pub: vault.pub, label: 'Bóveda', caps: [...CAPS] } }], disp)
+  assert.equal(canSeal(dos, vault.pub), true, 'la bóveda ya puede sellar')
+  assert.equal(canSeal(dos, disp.pub), true, 'y el aparato también: ahora mandan los dos')
 
-  assert.equal((await verifyActa({ acta: traspaso })).ok, true, 'la firma es del SALIENTE y verifica')
-  assert.equal(traspaso.sealedBy, disp.pub, 'la firmó el master saliente')
-  assert.equal(traspaso.sealer, vault.pub, 'el master pasa a ser la bóveda')
-  assert.equal(isHandover(traspaso), true)
-  assert.equal(traspaso.profileId, disp.pub, 'el perfil sigue llamándose igual')
+  // El aparato NO puede quitarse el permiso a sí mismo: dejaría un acta que él mismo
+  // firma sin poder firmarla, y no habría vuelta atrás.
+  await assert.rejects(() => applyChanges(dos, [{ op: 'caps', pub: disp.pub, caps: ['read'] }], { by: disp.pub }),
+    /unable to seal/, 'nadie se quita a sí mismo el sello')
 
-  // El saliente ya no puede sellar nada.
-  await assert.rejects(() => applyChanges(traspaso, [{ op: 'caps', pub: disp.pub, caps: ['read'] }], { by: disp.pub }), /not the master/)
-  // El entrante sí.
-  const cuatro = await step(traspaso, [{ op: 'caps', pub: disp.pub, caps: ['store', 'read'] }], vault)
-  assert.deepEqual(effectiveCaps(cuatro, disp.pub), ['read', 'store'])
+  // Se lo quita la bóveda, que sí pasa los dos filtros.
+  const tres = await step(dos, [{ op: 'caps', pub: disp.pub, caps: ['store', 'read'] }], vault)
+  assert.equal(canSeal(tres, disp.pub), false, 'ya no sella')
+  assert.equal(canSeal(tres, vault.pub), true)
+  await assert.rejects(() => applyChanges(tres, [{ op: 'caps', pub: vault.pub, caps: ['read'] }], { by: disp.pub }), /not the master/)
 })
 
-test('MASTER OBSOLETO: a igual seq gana el acta que traspasa', async () => {
+test('un acta no puede quedarse sin NADIE que la selle', async () => {
   const a = await key(); const b = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
-
-  // La buena: A traspasa a B.
-  const traspaso = await step(g, [
-    { op: 'admit', member: { pub: b.pub, caps: [...CAPS] } },
-    { op: 'handover', to: b.pub }
-  ], a)
-  // La mala: A restaurado de un respaldo sella su propio seq 2, creyéndose master.
-  const fantasma = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read'] } }], a)
-
-  assert.equal(traspaso.seq, fantasma.seq, 'mismo seq: es el empate que hay que romper')
-
-  const gana = await canAdopt({ candidate: traspaso, current: fantasma })
-  assert.equal(gana.adopt, true)
-  assert.equal(gana.reason, 'traspaso-gana')
-
-  const pierde = await canAdopt({ candidate: fantasma, current: traspaso })
-  assert.equal(pierde.adopt, false)
-  assert.equal(pierde.reason, 'traspaso-gana')
+  // `b` firma, para que el cierre que salte sea el de SELLADORES y no el de firmantes.
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['sign', 'read'] } }], a)
+  // Quitar al único sellador la deja muerta: nunca más se podría cambiar.
+  await assert.rejects(() => applyChanges(dos, [{ op: 'remove', pub: a.pub }], { by: a.pub }),
+    /nobody able to seal/)
 })
 
 test('adopción: nunca hacia atrás, ni sin encadenar, ni de un sellador no autorizado', async () => {
@@ -235,7 +227,10 @@ test('admin: es de dispositivo, tiene su scope y no se empareja sola', async () 
   assert.equal(capScope('admin'), 'vault:admin')
   assert.ok(DEVICE_CAPS.includes('admin'), 'un dispositivo puede administrar')
   assert.ok(!PAIRED_CAPS.includes('admin'), 'pero NO se recibe al emparejar: se concede después')
-  assert.deepEqual([...g.members[0].caps], [...PAIRED_CAPS], 'la génesis nace sin admin explícita')
+  // La génesis nace con lo de un aparato MÁS `sella`: es quien funda la cuenta, así que
+  // es el primer sellador — y ahora eso es un permiso, no un campo aparte.
+  assert.deepEqual([...g.members[0].caps], [...PAIRED_CAPS, 'sealer'], 'nace sin admin, y sellando')
+  assert.ok(!g.members[0].caps.includes('admin'), 'admin no se hereda del génesis')
 
   const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'admin'] } }], a)
   assert.ok(memberCan(dos, b.pub, 'admin'))

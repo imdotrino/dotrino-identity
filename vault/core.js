@@ -540,7 +540,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   const saveRenounces = (l) => kv.setItem(RENOUNCE_STORAGE, JSON.stringify(l))
 
   /** ¿Es ESTE dispositivo el master (el único que puede sellar)? */
-  const amMaster = () => loadActa()?.sealer === publickeyJwkStr
+  /**
+   * ¿PUEDO SELLAR? Antes era «¿soy el master?» y miraba un campo. Con sellar convertido en
+   * permiso, la pregunta correcta es esta — y su respuesta puede ser «sí» en más de un
+   * aparato a la vez, que es justo el punto del multivault.
+   */
+  const amMaster = () => Acta.canSeal(loadActa(), publickeyJwkStr, loadRenounces())
 
   /**
    * Quien sella SOBRES (la bóveda) pone aquí una función que estrena una llave de sellado
@@ -571,7 +576,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const sealed = await seal(next)
     pushHistory(acta) // la que deja de ser vigente entra en la ventana de retención
     saveActa(sealed)
-    emitVault({ phase: 'acta', seq: sealed.seq, sealer: sealed.sealer })
+    emitVault({ phase: 'acta', seq: sealed.seq, sealedBy: sealed.sealedBy })
     return sealed
   }
 
@@ -697,7 +702,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // retener; guardarla aquí solo mezclaría dos cuentas en la misma ventana (§1.3).
     kv.setItem(ACTA_HISTORY_STORAGE, '[]')
     clearPendingJoin()
-    emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, joined: true })
+    emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, joined: true })
     return { joined: true, profileId: candidate.profileId, seq: candidate.seq }
   }
 
@@ -763,7 +768,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const r = await Acta.canAdopt({ candidate, current })
     if (!r.adopt) return { adopted: false, reason: r.reason, seq: current?.seq ?? null }
     saveActa(candidate)
-    emitVault({ phase: 'acta', seq: candidate.seq, sealer: candidate.sealer, adopted: r.reason })
+    emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, adopted: r.reason })
     const sigoDentro = (candidate.members || []).some((m) => m?.pub === publickeyJwkStr)
     if (!sigoDentro) {
       console.warn('[identity] the new record no longer lists this device: removing the account')
@@ -1025,7 +1030,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   async function askIfStillAMember () {
     try {
       const acta = loadActa()
-      if (!acta || acta.sealer === publickeyJwkStr) return          // no hay cuenta ajena que confirmar: mando yo
+      if (!acta || Acta.canSeal(acta, publickeyJwkStr)) return       // sello yo: no hay cuenta ajena que confirmar
       // El acta que ya tengo no me nombra: no hace falta preguntar nada, el acta manda y va
       // firmada. (Normalmente esto lo resuelve `adoptActa` al recibirla.)
       if (!(acta.members || []).some((m) => m?.pub === publickeyJwkStr)) {
@@ -1035,7 +1040,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert()
       if (v?.cert && loadVaultDevice()) return                      // con papel, ya lo comprueba el camino normal
       const r = await remoteCheck({
-        master: acta.sealer,
+        master: Acta.sealersOf(acta)[0] || null,
         proxy: v?.proxy || 'wss://proxy.dotrino.com',
         device: { publickey: publickeyJwkStr, privateKey: keypair.privateKey },
         onRevoked: wipeVaultLink
@@ -1493,7 +1498,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
     async profileMembers () {
       const acta = loadActa()
-      if (!acta) return { members: [], profileId: null, seq: 0, sealer: null }
+      if (!acta) return { members: [], profileId: null, seq: 0, sealers: [] }
       const pend = loadRenounces()
       const members = await Promise.all(acta.members.map(async (m) => ({
         pub: m.pub,
@@ -1504,7 +1509,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         caps: Acta.effectiveCaps(acta, m.pub, pend),
         addedAt: m.addedAt || null,
         isMe: m.pub === publickeyJwkStr,
-        isMaster: m.pub === acta.sealer,
+        isMaster: Acta.canSeal(acta, m.pub),
         // La llave de CIFRADO del miembro y, derivado, si se le puede envolver algo.
         // Sale en la proyección porque sin ella ninguna interfaz (CLI, TUI, consola)
         // puede decir «a este aparato no se le puede escribir», y ese silencio es
@@ -1512,7 +1517,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         encPub: m.encPub || null,
         canSeal: !!m.encPub
       })))
-      return { members, profileId: acta.profileId, seq: acta.seq, sealer: acta.sealer, updatedAt: acta.updatedAt }
+      return { members, profileId: acta.profileId, seq: acta.seq, sealers: Acta.sealersOf(acta), updatedAt: acta.updatedAt }
     },
 
     async myMembership () {
@@ -1523,7 +1528,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         inProfile: !!m,
         profileId: acta.profileId,
         seq: acta.seq,
-        isMaster: acta.sealer === publickeyJwkStr,
+        isMaster: Acta.canSeal(acta, publickeyJwkStr),
         caps: Acta.effectiveCaps(acta, publickeyJwkStr, loadRenounces()),
         id: m ? await Acta.memberId(m.pub) : null
       }
@@ -1590,12 +1595,24 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * sellador tiene que ser miembro para poder serlo, y así no hay ventana intermedia.
      * Cubre igual dispositivo → bóveda y bóveda → bóveda (mudarse de PC).
      */
+    /**
+     * CEDER EL MANDO = CONCEDER `sella`. Ya no hay traspaso: sellar es un permiso, así que
+     * «pasarle el mando a otro» es dárselo, y punto. Lo que ANTES hacía esto —dejar de
+     * poder sellar uno mismo, en el mismo acto— ya no se puede: nadie se quita el sello a
+     * sí mismo (dejaría un acta que él firma sin poder firmarla). Si quieres salir, se lo
+     * pides al otro cuando ya pueda sellar.
+     */
     async handoverMaster ({ to, member = null } = {}) {
       const changes = []
-      if (member) changes.push({ op: 'admit', member: { ...member, pub: to } })
-      changes.push({ op: 'handover', to })
+      const acta0 = loadActa()
+      if (member) changes.push({ op: 'admit', member: { ...member, pub: to, caps: [...(member.caps || []), 'sealer'] } })
+      else {
+        const m = (acta0?.members || []).find((x) => x.pub === to)
+        if (!m) throw new Error('handover: the new sealer must be a member (admit them in the same change)')
+        changes.push({ op: 'caps', pub: to, caps: [...new Set([...(m.caps || []), 'sealer'])] })
+      }
       const acta = await sealChanges(changes)
-      return { ok: true, seq: acta.seq, sealer: acta.sealer }
+      return { ok: true, seq: acta.seq, sealers: Acta.sealersOf(acta) }
     },
 
     /**
@@ -1606,6 +1623,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     async renounceCaps ({ caps } = {}) {
       const acta = loadActa()
       if (!acta) throw new Error('this profile has no record yet')
+      // SELLAR NO SE RENUNCIA. Es la misma auto-amputación que el acta ya impide, por otra
+      // puerta: la renuncia es unilateral y no pasa por nadie, así que sin esto un
+      // sellador podría dejarse —o dejar a la cuenta— sin nadie que pueda volver a sellar,
+      // y eso no tiene marcha atrás. Que te lo quite otro sellador, que sí puede.
+      if ((Array.isArray(caps) ? caps : [caps]).includes('sealer')) {
+        throw new Error('sealing cannot be renounced: ask another sealer to take it from you')
+      }
       const record = await Acta.makeRenounce({ member: publickeyJwkStr, caps, privateKey: keypair.privateKey })
       const pend = loadRenounces().filter((r) => r.member !== publickeyJwkStr)
       pend.push(record)
@@ -1735,7 +1759,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       // hasta ella: en los dos casos, mandarla es tirar cientos de KB por el transporte.
       if (!mine) return { chain: [], window: ACTA_WINDOW }
       // Puede dar el salto él solo: el sellador no cambió.
-      if (cur.sealedBy === mine.sealer) return { chain: [], window: ACTA_WINDOW }
+      // Si quien selló la última YA podía sellar en el acta que tiene el otro, el salto lo
+      // da él solo: no hace falta mandarle los eslabones. Antes esto comparaba contra el
+      // campo `sealer`; ahora se le pregunta al permiso, que es lo mismo con un solo
+      // sellador y lo correcto con varios.
+      if (Acta.canSeal(mine, cur.sealedBy)) return { chain: [], window: ACTA_WINDOW }
       const all = [...hist.filter((a) => a.seq > sinceSeq), cur]
       return { chain: all.sort((a, b) => a.seq - b.seq), window: ACTA_WINDOW }
     },

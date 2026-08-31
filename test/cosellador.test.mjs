@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, isHandover, memberCanSign, memberCanScope
+  checkShape, actaHash, memberCanSign, memberCanScope
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
 
@@ -48,8 +48,9 @@ test('un cosellador queda nombrado, y el acta sigue siendo válida', async () =>
   assert.ok((await verifyActa({ acta })).ok)
   assert.deepEqual(sealersOf(acta).sort(), [A.publickey, B.publickey].sort())
   assert.ok(canSeal(acta, B.publickey))
-  assert.equal(acta.sealer, A.publickey, 'nombrar un cosellador NO es un traspaso')
-  assert.equal(isHandover(acta), false)
+  // Ya no hay campo que mirar: los dos sellan porque los dos tienen el permiso, y no hay
+  // ninguno «más master» que el otro (dueño, 2026-08-31: «SEAL es el nuevo master»).
+  assert.equal(acta.sealer, undefined, 'el campo no existe: sellar es un permiso')
 })
 
 test('la bóveda B ya puede sellar: es lo que resuelve perder la A', async () => {

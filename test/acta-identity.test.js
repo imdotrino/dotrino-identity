@@ -11,22 +11,22 @@ import { Identity, makeDeviceKey } from '../src/node.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'acta-'))
 
-test('el acta nace sola con el perfil: un miembro, master, todas las capacidades', async () => {
+test('el acta nace sola con el perfil: un miembro que puede todo lo suyo y SELLA', async () => {
   const dir = tmp()
   const id = await Identity.connect({ dir })
   const mine = await id.myMembership()
 
   assert.equal(mine.inProfile, true)
   assert.equal(mine.isMaster, true)
-  assert.deepEqual(mine.caps.sort(), ['read', 'sign', 'store'])
+  assert.deepEqual(mine.caps.sort(), ['read', 'sealer', 'sign', 'store'], 'quien funda la cuenta es su primer sellador')
   assert.equal(mine.profileId, id.me.publickey, 'el perfil se llama como esta llave')
   assert.equal(mine.seq, 1)
   assert.match(mine.id, /^[0-9A-F]{4}-[0-9A-F]{4}$/)
 
-  const { members, sealer } = await id.profileMembers()
+  const { members, sealers } = await id.profileMembers()
   assert.equal(members.length, 1)
   assert.equal(members[0].isMe, true)
-  assert.equal(sealer, id.me.publickey)
+  assert.deepEqual(sealers, [id.me.publickey], 'y la lista de selladores es él')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -45,22 +45,29 @@ test('persiste entre arranques', async () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('traspaso del master: quien lo cede deja de poder cambiar el acta', async () => {
+/**
+ * NO HAY TRASPASO: sellar es un permiso, así que ceder el mando es CONCEDERLO. Y quien lo
+ * cede no deja de tenerlo en el mismo acto — nadie se quita el sello a sí mismo, porque
+ * eso deja un acta que uno firma sin poder firmarla y no tiene vuelta atrás.
+ */
+test('ceder el mando es conceder `sella`: a partir de ahí mandan los dos', async () => {
   const dir = tmp()
   const id = await Identity.connect({ dir })
   const vault = await makeDeviceKey({ label: 'Bóveda' })
 
-  // Admitir y nombrar master, en el mismo seq.
   const r = await id.handoverMaster(vault.publickey, { label: 'Bóveda', caps: ['sign', 'store', 'read'] })
-  assert.equal(r.sealer, vault.publickey)
+  assert.deepEqual(r.sealers.sort(), [id.me.publickey, vault.publickey].sort())
 
-  assert.equal(await id.isMaster(), false)
+  assert.equal(await id.isMaster(), true, 'sigue pudiendo sellar: cederlo no es perderlo')
   const mine = await id.myMembership()
-  assert.equal(mine.isMaster, false)
-  assert.equal(mine.inProfile, true, 'sigue siendo miembro, solo que ya no manda')
+  assert.equal(mine.isMaster, true)
+  assert.equal(mine.inProfile, true)
 
+  // Y puede seguir admitiendo, claro. Quitarle el sello es cosa de la bóveda, no suya.
   const tercero = await makeDeviceKey({ label: 'Otro' })
-  await assert.rejects(() => id.admitMember({ pub: tercero.publickey }), /not the master/)
+  await id.admitMember({ pub: tercero.publickey })
+  const { members } = await id.profileMembers()
+  assert.equal(members.length, 3)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -71,11 +78,14 @@ test('renuncia: el dispositivo se quita `sign` y el acta lo refleja', async () =
   await id.admitMember({ pub: otro.publickey, label: 'Bóveda', caps: ['sign', 'store', 'read'] })
 
   const res = await id.renounceCaps(['sign'])
-  assert.deepEqual(res.caps.sort(), ['read', 'store'], 'ya no firma')
+  assert.deepEqual(res.caps.sort(), ['read', 'sealer', 'store'], 'ya no firma, pero sigue sellando')
   assert.equal(res.record.member, id.me.publickey)
 
   const mine = await id.myMembership()
-  assert.deepEqual(mine.caps.sort(), ['read', 'store'])
+  assert.deepEqual(mine.caps.sort(), ['read', 'sealer', 'store'])
+
+  // Y sellar NO se renuncia: es la auto-amputación que el acta impide, por otra puerta.
+  await assert.rejects(() => id.renounceCaps(['sealer']), /cannot be renounced/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

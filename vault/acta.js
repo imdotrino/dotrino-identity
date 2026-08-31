@@ -47,11 +47,21 @@ export const ACTA_V = 3
  * La única diferencia es la llave de sellado (§8.9), que en una v1 simplemente no hay.
  */
 /**
- * v3 quita `acta.sealer` (dueño, 2026-08-31: «SEAL es el nuevo master»). Las anteriores
- * NO se leen: tenían una segunda forma implícita de ser sellador —serlo por el campo, sin
- * el permiso— y aceptarlas sería seguir arrastrando justo lo que se quitó.
+ * v3 quita `acta.sealer` (dueño, 2026-08-31: «SEAL es el nuevo master»): sellar es un
+ * permiso y nada más.
+ *
+ * Las anteriores SE SIGUEN LEYENDO, y no por nostalgia: dejar de hacerlo dejaría sin abrir
+ * TODAS las cuentas que existen hoy —cada una tendría que rehacerse aparato por aparato—
+ * cuando lo único que hace falta es traducir el campo a un permiso al leerlas. Un acta
+ * vieja no se puede reescribir (está firmada), así que se lee tal cual y `canSeal` la
+ * entiende; la PRIMERA vez que esa cuenta cambie algo, la nueva sale ya en v3 y el campo
+ * desaparece solo.
  */
-const ACTA_LEIBLES = Object.freeze([3])
+const ACTA_LEIBLES = Object.freeze([1, 2, 3])
+/** Desde esta versión, sellar es solo un permiso y no hay campo `sealer`. */
+const V_SIN_CAMPO_SELLADOR = 3
+/** ¿Este acta es de las viejas, con el campo? */
+const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
 
 /**
  * Lista CERRADA de capacidades.
@@ -187,14 +197,20 @@ export async function memberId (pub) {
  */
 export const sealersOf = (acta, renounces = []) => {
   if (!acta) return []
-  return (acta.members || [])
+  const porPermiso = (acta.members || [])
     .filter((m) => memberCan(acta, m.pub, 'sealer', renounces))
     .map((m) => m.pub)
+  // Acta vieja: el que estaba en el campo sellaba SIN tener el permiso. Se traduce al
+  // leerla, que es la única forma —está firmada y no se puede reescribir—.
+  if (conCampoSellador(acta) && acta.sealer && !porPermiso.includes(acta.sealer)) {
+    return [acta.sealer, ...porPermiso]
+  }
+  return porPermiso
 }
 
 /** ¿Puede `pub` sellar la siguiente acta de este perfil? */
 export const canSeal = (acta, pub, renounces = []) =>
-  !!acta && memberCan(acta, pub, 'sealer', renounces)
+  !!acta && (memberCan(acta, pub, 'sealer', renounces) || (conCampoSellador(acta) && pub === acta.sealer))
 
 /**
  * Acta de génesis: un perfil recién nacido tiene UN miembro (esta llave), que además es el
@@ -232,6 +248,9 @@ export function checkShape (acta) {
   if (!acta || typeof acta !== 'object') return 'no-acta'
   if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
   if (!isPub(acta.profileId) || !isPub(acta.sealedBy)) return 'shape'
+  // El campo solo existe —y solo se exige— en las viejas.
+  if (conCampoSellador(acta) && !isPub(acta.sealer)) return 'shape'
+  if (!conCampoSellador(acta) && acta.sealer != null) return 'sealer-no-va-en-v3'
   if (!Number.isInteger(acta.seq) || acta.seq < 1) return 'seq'
   if (acta.seq > 1 && typeof acta.prev !== 'string') return 'prev'
   if (!Array.isArray(acta.members) || acta.members.length === 0) return 'members'
@@ -481,6 +500,15 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   // Reglas de cierre: sin firmante no se puede operar, y sin sellador no se puede cambiar.
   if (!next.members.some((m) => m.caps.includes('sign'))) {
     throw new Error('the change would leave the profile with no member able to sign')
+  }
+  // ASCENDER DE UNA VIEJA: el que sellaba por el CAMPO pasa a sellar por el PERMISO. Es
+  // toda la migración, y va aquí porque este es el momento en que la cuenta escribe su
+  // primera v3 — el acta vieja no se puede tocar, está firmada.
+  if (conCampoSellador(acta) && acta.sealer) {
+    const m = next.members.find((x) => x.pub === acta.sealer)
+    if (m && !m.caps.includes('sealer')) m.caps = cleanCaps([...m.caps, 'sealer'])
+    // Y el campo se va con la vieja: la nueva es v3 y en v3 no existe.
+    delete next.sealer
   }
   if (!sealersOf(next).length) {
     throw new Error('the change would leave the record with nobody able to seal it')

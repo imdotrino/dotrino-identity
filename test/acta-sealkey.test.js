@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { genesisActa, sealActa, verifyActa, applyChanges, sealKeyAt, checkShape, ACTA_V } from '../vault/acta.js'
+import { genesisActa, sealActa, verifyActa, applyChanges, sealKeyAt, checkShape, canSeal, ACTA_V } from '../vault/acta.js'
 
 async function key () {
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
@@ -58,22 +58,31 @@ test('rotar: la llave nueva manda desde su acta, y la vieja sigue verificando su
   assert.equal((await verifyActa({ acta })).ok, true)
 })
 
-test('un acta v1 se lee y ASCIENDE a v2 al sellar la siguiente', async () => {
+/**
+ * LA MIGRACIÓN, que es lo que evita que todas las cuentas que existen hoy se queden sin
+ * abrir. Un acta vieja tenía el campo `sealer` y su dueño sellaba SIN tener el permiso.
+ * No se puede reescribir —está firmada—, así que se lee tal cual y se traduce; la primera
+ * vez que esa cuenta cambie algo, la nueva sale ya en v3 y el campo desaparece solo.
+ */
+test('un acta vieja se lee, su campo `sealer` vale como permiso, y asciende a v3', async () => {
   const a = await key(); const s = await key()
-  const v1 = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
-  // Un acta tal como quedó escrita ANTES de que existiera la llave de sellado.
-  delete v1.sealPub; delete v1.sealSince; delete v1.sealKeys
-  v1.v = 1
-  const revieja = await sealActa({ acta: v1, privateJwk: a.privateJwk })
+  const base = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  // Un acta tal como quedó ESCRITA antes: con el campo, sin la llave de sellado, y sin
+  // el permiso `sealer` en el miembro (entonces no hacía falta).
+  const vieja = { ...base, v: 1, sealer: a.pub, members: base.members.map((m) => ({ ...m, caps: m.caps.filter((c) => c !== 'sealer') })) }
+  delete vieja.sealPub; delete vieja.sealSince; delete vieja.sealKeys
+  const revieja = await sealActa({ acta: vieja, privateJwk: a.privateJwk })
 
-  assert.equal(checkShape(revieja), null, 'una v1 se sigue leyendo: dentro están tus aparatos')
+  assert.equal(checkShape(revieja), null, 'se sigue leyendo: dentro están tus aparatos')
   assert.equal((await verifyActa({ acta: revieja })).ok, true)
+  assert.equal(canSeal(revieja, a.pub), true, 'el campo se traduce a permiso al leerla')
 
   const next = await step(revieja, [{ op: 'label', pub: a.pub, label: 'PC' }], a, { sealPub: s.pub })
-  assert.equal(next.v, 2)
+  assert.equal(next.v, 3, 'la siguiente ya nace sin campo')
+  assert.equal(next.sealer, undefined)
+  assert.equal(canSeal(next, a.pub), true, 'y el que sellaba sigue sellando, ahora por permiso')
   assert.equal(next.sealPub, s.pub)
   assert.equal(next.sealSince, 2)
-  assert.deepEqual(next.sealKeys, [], 'no había llave anterior que guardar')
 })
 
 test('forma: una llave de sellado sin decir desde cuándo NO es un acta válida', async () => {
