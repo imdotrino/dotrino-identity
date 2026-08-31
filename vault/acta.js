@@ -62,6 +62,18 @@ const ACTA_LEIBLES = Object.freeze([1, 2, 3, 4])
 const V_CON_CADENA = 4
 /** ¿Esta acta lleva el eslabón? Las anteriores se leen igual; no pueden encadenar. */
 const conCadena = (acta) => Number(acta?.v) >= V_CON_CADENA
+/**
+ * Solo `https`, y sin excepción para localhost: esta dirección la va a abrir un TERCERO
+ * que no te conoce, y mandarlo por texto plano es dejar que cualquiera en el camino le
+ * conteste otra cosa. Que no lleve `#` ni credenciales: no es un enlace para una persona.
+ */
+const isChainUrl = (u) => {
+  if (typeof u !== 'string' || u.length > 300) return false
+  try {
+    const x = new URL(u)
+    return x.protocol === 'https:' && !x.hash && !x.username && !x.password
+  } catch (_) { return false }
+}
 /** Desde esta versión, sellar es solo un permiso y no hay campo `sealer`. */
 const V_SIN_CAMPO_SELLADOR = 3
 /** ¿Este acta es de las viejas, con el campo? */
@@ -221,12 +233,30 @@ export const canSeal = (acta, pub, renounces = []) =>
  * sellador, con todas las capacidades. `profileId` = su pubkey → el nombre del perfil es
  * estable para siempre y coincide con la identidad que el usuario ya tenía (cero migración).
  */
-export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', now = Date.now() }) {
+export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', chainUrl = null, now = Date.now() }) {
   if (!isPub(pub)) throw new Error('genesisActa: missing genesis pubkey')
+  if (chainUrl != null && !isChainUrl(chainUrl)) throw new Error('genesisActa: chainUrl must be https')
   return {
     v: ACTA_V,
     profileId: pub,
     sealedBy: pub,
+    /**
+     * DÓNDE PREGUNTAR SI ESTA CADENA SIGUE VIGENTE. Va en el GÉNESIS y en ningún otro
+     * sitio, y esa es toda la idea.
+     *
+     * La cadena que te llega prueba quién puede sellar, pero no que no haya algo más
+     * nuevo — si retiraste una bóveda, quien tenga la cadena vieja la sigue aceptando.
+     * Para enterarse hay que poder mirar a algún lado.
+     *
+     * Si la dirección viajara en la parte cambiable, el sellador expulsado la cambiaría
+     * a la suya y te mandaría a mirar su rama. En el génesis no puede: está autofirmada
+     * por la llave que da nombre al perfil, y cambiarla exige esa llave.
+     *
+     * `null` es lo normal y no es un defecto: una cuenta de una sola bóveda no tiene nada
+     * que pueda quedar obsoleto —su conjunto de selladores no puede cambiar— así que no
+     * hay a dónde preguntar ni falta que hace.
+     */
+    chainUrl: chainUrl || null,
     seq: 1,
     prev: null,
     // LA CADENA DE SELLADORES. El génesis es el ancla: está autofirmado por la llave que
@@ -258,6 +288,7 @@ export function checkShape (acta) {
   if (!acta || typeof acta !== 'object') return 'no-acta'
   if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
   if (!isPub(acta.profileId) || !isPub(acta.sealedBy)) return 'shape'
+  if (acta.chainUrl != null && !isChainUrl(acta.chainUrl)) return 'chainurl'
   // El campo solo existe —y solo se exige— en las viejas.
   if (conCampoSellador(acta) && !isPub(acta.sealer)) return 'shape'
   if (!conCampoSellador(acta) && acta.sealer != null) return 'sealer-no-va-en-v3'

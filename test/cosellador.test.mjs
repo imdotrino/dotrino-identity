@@ -314,3 +314,37 @@ test('la poda respeta los eslabones de la cadena, por muchas actas que pasen', a
   const r = await verifySealerChain([...eslabones, acta], { expectedProfileId: historia[0].profileId })
   assert.equal(r.ok, true, r.reason)
 })
+
+/**
+ * DÓNDE PREGUNTAR, y por qué va en el génesis.
+ *
+ * La cadena prueba quién puede sellar, no que no haya algo más nuevo. Para enterarse de
+ * una revocación hay que poder mirar a algún lado — y si esa dirección viajara en la parte
+ * cambiable, el sellador expulsado la cambiaría a la suya y te mandaría a su rama.
+ */
+test('la dirección de la cadena vive en el génesis y no se puede redirigir', async () => {
+  const A = await makeDeviceKey()
+  const B = await makeDeviceKey()
+  const url = 'https://cadena.ejemplo.com/6f3a.json'
+
+  const genesis = await sellar(genesisActa({ pub: A.publickey, label: 'A', chainUrl: url }), A)
+  assert.equal(genesis.chainUrl, url)
+  assert.equal(checkShape(genesis), null)
+
+  // Un acta posterior no la lleva: la dirección es del génesis y solo de él.
+  let dos = await applyChanges(genesis, [{ op: 'admit', member: { pub: B.publickey, label: 'B', caps: ['sign', 'sealer'] } }], { by: A.publickey })
+  dos = await sellar(dos, A)
+  const r = await verifySealerChain([genesis, dos], { expectedProfileId: genesis.profileId })
+  assert.equal(r.ok, true, r.reason)
+  assert.equal(genesis.chainUrl, url, 'quien verifica la lee del PRIMER eslabón, que nadie puede rehacer')
+})
+
+test('la dirección tiene que ser https, y sin adornos', async () => {
+  const A = await makeDeviceKey()
+  const mala = ['http://x.com/c.json', 'https://x.com/c.json#frag', 'https://u:p@x.com/c.json', 'no-es-una-url']
+  for (const u of mala) {
+    assert.throws(() => genesisActa({ pub: A.publickey, chainUrl: u }), /chainUrl/, u)
+  }
+  // Y sin dirección es lo NORMAL: una cuenta de una sola bóveda no tiene nada que refrescar.
+  assert.equal(genesisActa({ pub: A.publickey }).chainUrl, null)
+})
