@@ -37,7 +37,7 @@
 import { canonicalStringify } from './core.js'
 import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
 
-export const ACTA_V = 2
+export const ACTA_V = 3
 
 /**
  * Versiones de acta que se ACEPTAN al leer. La 1 sigue entrando porque una v1 en el disco
@@ -46,7 +46,12 @@ export const ACTA_V = 2
  * asciende sola: el acta siguiente que selle la maestra ya sale v2 (ver `applyChanges`).
  * La única diferencia es la llave de sellado (§8.9), que en una v1 simplemente no hay.
  */
-const ACTA_LEIBLES = Object.freeze([1, 2])
+/**
+ * v3 quita `acta.sealer` (dueño, 2026-08-31: «SEAL es el nuevo master»). Las anteriores
+ * NO se leen: tenían una segunda forma implícita de ser sellador —serlo por el campo, sin
+ * el permiso— y aceptarlas sería seguir arrastrando justo lo que se quitó.
+ */
+const ACTA_LEIBLES = Object.freeze([3])
 
 /**
  * Lista CERRADA de capacidades.
@@ -182,26 +187,14 @@ export async function memberId (pub) {
  */
 export const sealersOf = (acta, renounces = []) => {
   if (!acta) return []
-  const extra = (acta.members || [])
-    .filter((m) => m.pub !== acta.sealer && memberCan(acta, m.pub, 'sealer', renounces))
+  return (acta.members || [])
+    .filter((m) => memberCan(acta, m.pub, 'sealer', renounces))
     .map((m) => m.pub)
-  return [acta.sealer, ...extra]
 }
 
 /** ¿Puede `pub` sellar la siguiente acta de este perfil? */
 export const canSeal = (acta, pub, renounces = []) =>
-  !!acta && (pub === acta.sealer || memberCan(acta, pub, 'sealer', renounces))
-
-/**
- * El acta la firmó alguien DISTINTO del sellador que ella misma nombra.
- *
- * ⚠️ Desde el multivault esto ya NO significa «es un traspaso», y confundirlo costó un
- * desempate mal resuelto: cuando sella la segunda bóveda, el acta sigue nombrando
- * sellador a la primera y la firma la segunda, así que esto da `true` sin que nadie
- * traspase nada. Es condición NECESARIA de un traspaso, no suficiente — lo que lo
- * distingue es que un traspaso CAMBIA a quién nombra (ver `canAdopt`).
- */
-export const isHandover = (acta) => !!acta && acta.sealer !== acta.sealedBy
+  !!acta && memberCan(acta, pub, 'sealer', renounces)
 
 /**
  * Acta de génesis: un perfil recién nacido tiene UN miembro (esta llave), que además es el
@@ -213,11 +206,10 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', n
   return {
     v: ACTA_V,
     profileId: pub,
-    sealer: pub,
     sealedBy: pub,
     seq: 1,
     prev: null,
-    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS], addedAt: now, cert: null }],
+    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS, 'sealer'], addedAt: now, cert: null }],
     revoked: [],
     renounced: [],
     // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA
@@ -239,7 +231,7 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', n
 export function checkShape (acta) {
   if (!acta || typeof acta !== 'object') return 'no-acta'
   if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
-  if (!isPub(acta.profileId) || !isPub(acta.sealer) || !isPub(acta.sealedBy)) return 'shape'
+  if (!isPub(acta.profileId) || !isPub(acta.sealedBy)) return 'shape'
   if (!Number.isInteger(acta.seq) || acta.seq < 1) return 'seq'
   if (acta.seq > 1 && typeof acta.prev !== 'string') return 'prev'
   if (!Array.isArray(acta.members) || acta.members.length === 0) return 'members'
@@ -279,7 +271,10 @@ export function checkShape (acta) {
   }
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
-  if (!acta.members.some((m) => m.pub === acta.sealer)) return 'sealer-no-es-miembro'
+  // SIN NADIE QUE SELLE, el acta está muerta: no habría forma de volver a cambiarla nunca.
+  // Es el hermano del cierre de `sign`, y sustituye a «el sellador tiene que ser miembro»
+  // ahora que sellar es solo un permiso y los permisos ya son de miembros por definición.
+  if (!sealersOf(acta).length) return 'sin-sellador'
   if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
   return null
 }
@@ -436,7 +431,6 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
       case 'remove': {
         const i = next.members.findIndex((m) => m.pub === ch.pub)
         if (i < 0) throw new Error('remove: that member is not in the record')
-        if (next.members[i].pub === next.sealer) throw new Error('remove: cannot remove the master; hand the sealing over first')
         // Quitar al miembro se lleva su permiso de sellar: no hay lista aparte que limpiar.
         const fuera = next.members.splice(i, 1)[0]
         // Sus envolturas se van con él: sin ellas no puede abrir ninguna generación. (El
@@ -445,11 +439,6 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           const { [fuera.pub]: _, ...resto } = g.wraps || {}
           return { ...g, wraps: resto }
         })
-        break
-      }
-      case 'handover': {
-        if (!find(ch.to)) throw new Error('handover: the new master must be a member (admit them in the same change)')
-        next.sealer = ch.to
         break
       }
       case 'keyring': {
@@ -493,8 +482,22 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   if (!next.members.some((m) => m.caps.includes('sign'))) {
     throw new Error('the change would leave the profile with no member able to sign')
   }
-  if (!next.members.some((m) => m.pub === next.sealer)) {
-    throw new Error('the change would leave the record with no master')
+  if (!sealersOf(next).length) {
+    throw new Error('the change would leave the record with nobody able to seal it')
+  }
+  // EL DOBLE FILTRO (dueño, 2026-08-31): un acta nueva tiene que pasar el filtro de la
+  // ANTERIOR —quién podía sellar, arriba— y también el de LA QUE SE VA A FIRMAR. Si no
+  // pasa los dos, no se firma.
+  //
+  // Lo que cierra: un sellador que se quita a sí mismo el permiso en la misma acta que
+  // firma. Es absurdo —se firma con una autoridad que uno acaba de retirarse— y no tiene
+  // vuelta atrás: deshacerlo requeriría sellar, que es justo lo que se acaba de perder.
+  //
+  // Y por qué aquí y no con una marca de «traspaso»: mirando el acta SOLA, ceder el mando
+  // y quitarse el permiso se ven igual. Con las dos actas delante no hay ambigüedad, y las
+  // dos veces que esto importa —construirla, y adoptar una ajena— se tienen las dos.
+  if (!canSeal(next, by)) {
+    throw new Error('the change would leave whoever seals it unable to seal: a record must pass the filter of the one it replaces AND its own')
   }
   return next
 }
@@ -761,21 +764,11 @@ export async function canAdopt ({ candidate, current }) {
     // exactamente lo que dice que las dos salieron de ella.
     const mismoFirmante = candidate.sealedBy === current.sealedBy
     if (!mismoFirmante && !canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'otro-sellador' }
-    // UN TRASPASO ES EL QUE CAMBIA A QUIÉN NOMBRA, no el que firma otro. Con una sola
-    // bóveda daba igual —solo un traspaso podía firmar sin ser el sellador—, pero con dos
-    // la segunda firma sin serlo cada vez que sella, y entonces TODA acta suya se leía
-    // como un traspaso y ganaba el desempate por la puerta de atrás.
-    //
-    // Las dos ramas salen del mismo padre, así que comparar a quién nombra cada una
-    // resuelve los tres casos: si nombran al mismo (dos coselladores trabajando), no hay
-    // traspaso y decide el hash; si una nombra a otro, esa es la que traspasa y gana; y
-    // si las dos traspasan a destinos distintos, vuelven a empatar y decide el hash,
-    // que es lo que §2.4.1 ya decía.
-    const mismoSellador = candidate.sealer === current.sealer
-    const canT = isHandover(candidate) && !mismoSellador
-    const curT = isHandover(current) && !mismoSellador
-    if (canT && !curT) return { adopt: true, reason: 'traspaso-gana' }
-    if (!canT && curT) return { adopt: false, reason: 'traspaso-gana' }
+    // SOLO QUEDA EL HASH. Antes había una regla más —«gana la que traspasa»— que existía
+    // para arbitrar el campo `sealer`: dos ramas que cedían el mando a destinos distintos.
+    // Ese campo ya no existe (dueño, 2026-08-31: «SEAL es el nuevo master»), y con él se
+    // va la regla y la ambigüedad que arrastraba: `sealer !== sealedBy` significaba
+    // «traspaso» con un solo master y dejó de significarlo con varios selladores.
     return hCan < hCur ? { adopt: true, reason: 'desempate-hash' } : { adopt: false, reason: 'desempate-hash' }
   }
 
@@ -783,7 +776,7 @@ export async function canAdopt ({ candidate, current }) {
 }
 
 export default {
-  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, isHandover,
+  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape,
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
