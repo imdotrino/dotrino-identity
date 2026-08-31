@@ -716,9 +716,9 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // firmado por ella misma: es el puente para que su reputación previa siga contando.
     // Solo si esta llave tenía vida propia. Una recién creada para adoptar (camino B) no
     // tiene pasado que salvar: mandarle un puente de continuidad sería puro ruido.
-    const mio = loadActa()
-    const continuity = (mio && mio.members.length === 1 && !isPendingJoin())
-      ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mio.profileId, privateKey: keypair.privateKey })
+    const mine = loadActa()
+    const continuity = (mine && mine.members.length === 1 && !isPendingJoin())
+      ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mine.profileId, privateKey: keypair.privateKey })
       : null
     const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
     kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
@@ -1022,7 +1022,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * maestra que dice la propia acta (`sealer`). Si sigue dentro, no pasa nada. Si no, la
    * bóveda contesta con el aviso FIRMADO y aquí se ejecuta el borrado.
    */
-  async function preguntarSiSigoDentro () {
+  async function askIfStillAMember () {
     try {
       const acta = loadActa()
       if (!acta || acta.sealer === publickeyJwkStr) return          // no hay cuenta ajena que confirmar: mando yo
@@ -1852,8 +1852,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * que manda hoy.
      */
     async vaultAdopt ({ qr, label = '' } = {}) {
-      const mio = loadActa()
-      if (!mio) throw new Error('this device has no account to hand over yet')
+      const mine = loadActa()
+      if (!mine) throw new Error('this device has no account to hand over yet')
       if (!amMaster()) throw new Error('not-the-master: another device or vault is in charge of this account; the handover is done from there')
 
       const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
@@ -1861,7 +1861,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         qr,
         device,
         intent: 'adopt',
-        profileId: mio.profileId,
+        profileId: mine.profileId,
         encPub: encPublickeyJwkStr,
         label: label || me?.nickname || '',
         onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }),
@@ -1890,7 +1890,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const ok = r.adopted || r.reason === 'misma-acta'
       emitVault({ phase: 'adopted', master: res.master, seq: res.acta?.seq, ok })
       if (!ok) throw new Error('the vault returned a record that does not fit: ' + r.reason)
-      return { ok: true, adopted: true, profileId: mio.profileId, seq: r.seq ?? res.acta?.seq, master: res.master, deviceId: res.deviceId }
+      return { ok: true, adopted: true, profileId: mine.profileId, seq: r.seq ?? res.acta?.seq, master: res.master, deviceId: res.deviceId }
     },
 
     /**
@@ -2320,7 +2320,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   pullProfileFromVault()
   // Y, si a este aparato no le queda papel con el que llamar, preguntar si sigue siendo de
   // la casa. Es lo único que le queda por hacer, y hasta ahora no lo hacía nadie.
-  preguntarSiSigoDentro()
+  askIfStillAMember()
 
   // Registrar el pubkey (y nombre) del perfil activo en su meta → para avatar/listado sin abrir cada perfil.
   {

@@ -87,7 +87,7 @@ async function identifyAsDevice (client, device, { cert = null, acta = null } = 
  * que esto no dice que sea TU bóveda — eso lo dice el código de 6 dígitos, que solo
  * aprende la bóveda donde tú lo tecleas.
  */
-async function verificarHola (p, sn) {
+async function verifyHello (p, sn) {
   const b = p?.body
   if (!b?.iss || b.sn !== sn) throw new Error('the vault answered a different pairing')
   if (!(await verifyDeviceSig({ publickey: b.iss, data: b, signature: p.signature }))) {
@@ -101,7 +101,7 @@ async function verificarHola (p, sn) {
  * Canjea la CITA del QR: devuelve la dirección real de la conexión de la bóveda. El
  * código se quema al usarse, así que esto va una sola vez por emparejamiento.
  */
-async function canjearCita (client, code) {
+async function redeemCode (client, code) {
   const r = await client.redeemPairingCode(code)
   if (!r?.ok || !r.instance) throw new Error(r?.error || 'that pairing code is no longer valid')
   return r.instance
@@ -109,15 +109,15 @@ async function canjearCita (client, code) {
 
 /** «¿Quién eres?» del QR corto: devuelve `{ iss, proxy, acct, m }` de la bóveda. */
 async function askVault (client, qr) {
-  const destino = await canjearCita(client, qr.conn)
+  const target = await redeemCode(client, qr.conn)
   return new Promise((resolve, reject) => {
     const off = client.on('message', (_from, p) => {
-      if (p?.type === MSG.HELLO_OK) { fin(); verificarHola(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
-      else if (p?.type === MSG.ERROR) { fin(); reject(new Error(p.error)) }
+      if (p?.type === MSG.HELLO_OK) { done(); verifyHello(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
+      else if (p?.type === MSG.ERROR) { done(); reject(new Error(p.error)) }
     })
-    const t = setTimeout(() => { fin(); reject(new Error('the vault did not answer: that code may have expired')) }, 15000)
-    const fin = () => { off(); clearTimeout(t) }
-    try { client.send(destino, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { fin(); reject(e) }
+    const t = setTimeout(() => { done(); reject(new Error('the vault did not answer: that code may have expired')) }, 15000)
+    const done = () => { off(); clearTimeout(t) }
+    try { client.send(target, { type: MSG.HELLO, sn: qr.sn }) } catch (e) { done(); reject(e) }
   })
 }
 
@@ -309,20 +309,20 @@ export async function checkMembership ({ master, proxy, device, onRevoked, timeo
     const data = { op: 'check', publickey: device.publickey, ts: Date.now() }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
     const res = await new Promise((resolve) => {
-      let hecho = false
-      const fin = (v) => { if (!hecho) { hecho = true; cleanup(); resolve(v) } }
+      let settled = false
+      const done = (v) => { if (!settled) { settled = true; cleanup(); resolve(v) } }
       const off = client.on('message', (_f, p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.REVOKED) {
           isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey, currentNonce: null })
-            .then((ok) => { if (ok) { try { onRevoked?.() } catch (_) {} ; fin({ in: false, wiped: true }) } })
+            .then((ok) => { if (ok) { try { onRevoked?.() } catch (_) {} ; done({ in: false, wiped: true }) } })
             .catch(() => {})
           return
         }
-        if (p.type === MSG.CHECKED) fin({ in: !!p.in })
-        else if (p.type === MSG.ERROR) fin({ error: p.error })
+        if (p.type === MSG.CHECKED) done({ in: !!p.in })
+        else if (p.type === MSG.ERROR) done({ error: p.error })
       })
-      const t = setTimeout(() => fin({ error: 'the vault did not reply' }), timeoutMs)
+      const t = setTimeout(() => done({ error: 'the vault did not reply' }), timeoutMs)
       const cleanup = () => { off(); clearTimeout(t) }
       client.sendByPubkey(master, { type: MSG.CHECK, data, signature })
     })
