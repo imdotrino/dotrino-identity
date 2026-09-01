@@ -273,9 +273,22 @@ test('admin: un miembro con cajón solo administra si el master se lo da, como c
   const tres = await step(dos, [{ op: 'caps', pub: x.pub, caps: ['secrets', 'admin'] }], a)
   assert.deepEqual([...effectiveCaps(tres, x.pub)].sort(), ['admin', 'secrets'])
 
-  // Lo que NO pasa la forma es una capacidad que no existe.
-  const rara = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['secrets', 'vuela'], addedAt: Date.now() }] }
-  assert.equal((await verifyActa({ acta: rara })).reason, 'cap-desconocida')
+  // UN PERMISO DESCONOCIDO NO INVALIDA EL ACTA: se ignora (dueño, 2026-09-01). Antes se
+  // rechazaba entera, y eso convertía cada permiso nuevo en una rotura de toda la flota —
+  // al añadir `unattended`, los aparatos con un pilar anterior se quedaron sin
+  // configuración con un acta que estaba perfectamente firmada.
+  //
+  // Se mete `vuela` en una copia y se vuelve a sellar, porque tocar un acta ya firmada
+  // rompe la FIRMA y entonces esto no probaría nada.
+  const conRara = await sealActa({
+    acta: { ...dos, seq: dos.seq + 1, prev: await actaHash(dos), sealedBy: a.pub,
+      members: dos.members.map((m) => (m.pub === x.pub ? { ...m, caps: [...m.caps, 'vuela'] } : m)) },
+    privateJwk: a.privateJwk
+  })
+  assert.equal((await verifyActa({ acta: conRara })).ok, true, 'el acta sigue siendo válida')
+  // Y lo desconocido NO CONCEDE NADA: es lo único que hace seguro ignorarlo.
+  assert.deepEqual([...effectiveCaps(conRara, x.pub)].sort(), ['secrets'], 'no se cuenta como capacidad')
+  assert.equal(memberCan(conRara, x.pub, 'vuela'), false)
 })
 
 test('admin: se puede renunciar (solo quita) y quitar desde el master', async () => {

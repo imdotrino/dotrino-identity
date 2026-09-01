@@ -436,7 +436,31 @@ export function checkShape (acta) {
   if (!Array.isArray(acta.members) || acta.members.length === 0) return 'members'
   for (const m of acta.members) {
     if (!isPub(m?.pub) || !Array.isArray(m?.caps)) return 'member'
-    if (m.caps.some((c) => !CAPS.includes(c))) return 'cap-desconocida'
+    // UN PERMISO DESCONOCIDO SE IGNORA, NO INVALIDA EL ACTA (dueño, 2026-09-01).
+    //
+    // Aquí ponía `if (m.caps.some((c) => !CAPS.includes(c))) return 'cap-desconocida'`, y
+    // eso convertía CADA permiso nuevo en una rotura de toda la flota: al añadir
+    // `unattended`, los aparatos con un pilar anterior empezaron a contestar «the record
+    // does not verify» y se quedaron sin configuración. El acta estaba perfectamente
+    // firmada; lo que fallaba era el lector, que la tiraba al suelo por ver una palabra
+    // que no conocía.
+    //
+    // Y el acta VIAJA — a otros aparatos, a otras bóvedas, al proxio —, así que un
+    // documento firmado tiene que poder leerlo alguien que no está al día. La firma cubre
+    // el documento tal cual, de modo que un permiso desconocido no la rompe: rechazarlo era
+    // una decisión del validador, y la equivocada.
+    //
+    // POR QUÉ IGNORARLO ES SEGURO, que es lo único que hace válido este cambio: todas las
+    // comprobaciones preguntan por un permiso CONCRETO (`memberCan(acta, pub, 'sign')`), así
+    // que una palabra que el lector no conoce no puede satisfacer ninguna — no concede nada.
+    // Ignorar cae siempre del lado estricto.
+    //
+    // ⚠️ La regla que hay que respetar al añadir permisos futuros: **un permiso nuevo
+    // CONCEDE, nunca restringe**. Si algún día se inventa uno cuya AUSENCIA sea lo
+    // permisivo, un lector viejo lo ignoraría y actuaría de más — y entonces sí habría que
+    // subir `ACTA_V` y negarse a leer las versiones que no se entienden. `unattended`
+    // cumple la regla: sin él se pide aprobación.
+    if (m.caps.some((c) => typeof c !== 'string' || !c)) return 'member'
     // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
     // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
     // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
@@ -909,11 +933,14 @@ export async function verifyRenounce (record) {
 export function effectiveCaps (acta, pub, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m) return []
+  // Lo que este lector no conoce no es una capacidad PARA ÉL: no la puede juzgar, así que
+  // no la enseña ni la cuenta. Sigue en el acta —la firma la cubre— y un lector al día sí
+  // la ve. Ver `checkShape` para por qué no se rechaza el acta entera.
   const quitadas = new Set()
   for (const r of [...(acta.renounced || []), ...extraRenounces]) {
     if (r?.member === pub) for (const c of (r.caps || [])) quitadas.add(c)
   }
-  return m.caps.filter((c) => !quitadas.has(c))
+  return m.caps.filter((c) => CAPS.includes(c) && !quitadas.has(c))
 }
 
 /**
