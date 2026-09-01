@@ -693,4 +693,4 @@ export class Identity {
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), reutilizables
 // por apps/bridges sin cargar el iframe del vault.
-export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri } from '../vault/capabilities.js'

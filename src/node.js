@@ -302,4 +302,4 @@ export default Identity
 
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), para que
 // un bridge/bot Node pueda crear su clave, firmar acciones y verificar cadenas D←P.
-export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from '../vault/capabilities.js'
+export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri } from '../vault/capabilities.js'

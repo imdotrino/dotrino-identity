@@ -10,7 +10,7 @@
  *   - El vault firma un CERTIFICADO: «la clave D puede `scope` para la identidad P,
  *     mientras el ACTA lo diga», con un `nonce` que es el mango de revocación.
  *   - El dispositivo firma cada acción con `D` y adjunta el cert. Cualquiera
- *     verifica la CADENA `D ← P` + scope + expiración + revocación, offline.
+ *     verifica la CADENA `D ← P` + scope + lo que diga el ACTA + revocación, offline.
  *
  * Garantía: robar el dispositivo solo permite lo del `scope` (p.ej. publicar
  * ubicación) mientras el acta lo diga, y se puede revocar. La clave maestra queda intacta.
@@ -26,11 +26,6 @@ import { pubkeyId, keyLabel } from './keyid.js'
 const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' }
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
-
-/** Tope DURO de vida de una delegación (aunque pidan más). */
-export const MAX_DELEGATION_MS = 30 * 24 * 60 * 60 * 1000   // 30 días
-/** Vida por defecto si no se especifica ttl/exp. */
-export const DEFAULT_DELEGATION_MS = 24 * 60 * 60 * 1000    // 24 h
 
 const enc = (s) => new TextEncoder().encode(s)
 
@@ -208,24 +203,6 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data 
  *   5) `nonce` no revocado (`revoked`: fn(nonce)→bool, Set o mapa).
  * @returns {{ok:boolean, reason?:string, iss?, sub?, scope?, iat?, seq?, nonce?}}
  */
-/**
- * MARGEN DE RELOJ ENTRE DOS APARATOS. Sin esto, emparejar es una lotería.
- *
- * La bóveda sella el certificado con SU reloj (`iat`) y el aparato lo valida con el suyo.
- * Con tolerancia cero, un aparato que vaya un pelo por detrás rechaza un certificado
- * perfectamente bueno con `not-yet-valid` — y el usuario no ve un problema de hora, ve un
- * emparejamiento que no funciona. Pasó de verdad (2026-08-31): un teléfono **850 ms** por
- * detrás, medido, no podía enrolarse en ninguna bóveda.
- *
- * Dos minutos es generoso para un reloj a la deriva y no significa nada frente a un
- * certificado que vale 30 días: aceptarlo dos minutos antes de tiempo no le abre la puerta
- * a nadie, porque lo que autoriza es la FIRMA, no la hora.
- *
- * Es para comparar aparatos DISTINTOS. Donde el mismo operador controla los dos relojes
- * —un servicio validando en la máquina que emite— el estricto sigue siendo lo correcto, y
- * por eso el default de `verifyDelegation` no cambia.
- */
-export const PEER_SKEW_MS = 120_000
 
 export async function verifyDelegation ({ cert, expectedScope, expectedSub, actaSeq = null, sealers = null, revoked } = {}) {
   if (!cert || typeof cert !== 'object') return { ok: false, reason: 'no-cert' }
