@@ -158,7 +158,7 @@ function sanitizeProfilePatch (patch = {}) {
   return out
 }
 
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true }) {
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
@@ -240,16 +240,75 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const raw = kv.getItem(storageKey)
     if (raw) {
       try {
-        const { privateJwk, publicJwk } = JSON.parse(raw)
-        const privateKey = await crypto.subtle.importKey('jwk', privateJwk, algo, true, privUses)
+        const guardado = JSON.parse(raw)
+        const { publicJwk } = guardado
+        // BAJO CANDADO. La mitad PRIVADA viaja sellada con una llave que no está en este
+        // disco (la deriva la contraseña del dueño); la PÚBLICA se queda en claro, que es
+        // lo que es. Cerrado se devuelve la identidad SIN con qué firmar: se sabe quién
+        // eres, no se puede hablar por ti.
+        //
+        // Y lo que NO se hace, que es el fallo que se paga caro: **no se genera otra**.
+        // Un `catch` que cae a `generateKey` con la llave delante, sellada, le cambiaría
+        // la identidad a la cuenta y la dejaría fuera de su propio perfil para siempre.
+        if (guardado.sealed) {
+          const abierto = keyLock?.open ? await keyLock.open(guardado.sealed) : null
+          if (!abierto) return { privateKey: null, publicKey: await importPub(publicJwk), publicJwk, locked: true }
+          const privateKey = await crypto.subtle.importKey('jwk', JSON.parse(abierto), algo, true, privUses)
+          return { privateKey, publicKey: await importPub(publicJwk), publicJwk }
+        }
+        const privateKey = await crypto.subtle.importKey('jwk', guardado.privateJwk, algo, true, privUses)
         return { privateKey, publicKey: await importPub(publicJwk), publicJwk }
-      } catch (_) {}
+      } catch (e) {
+        // Solo se sigue de largo si NO había nada que abrir. Con una llave sellada
+        // delante, un error es un error: se propaga en vez de fabricar otra identidad.
+        if (String(raw).includes('"sealed"')) throw e
+      }
     }
     const pair = await crypto.subtle.generateKey(algo, true, pairUses)
     const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
     const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
-    kv.setItem(storageKey, JSON.stringify({ privateJwk, publicJwk }))
+    await guardarPar(storageKey, privateJwk, publicJwk)
     return { privateKey: pair.privateKey, publicKey: pair.publicKey, publicJwk }
+  }
+
+  /**
+   * Escribe un par. Si hay candado ABIERTO, la privada va sellada; si no, en claro bajo el
+   * cifrado en reposo de siempre. Un perfil sin contraseña se queda como estaba.
+   */
+  async function guardarPar (storageKey, privateJwk, publicJwk) {
+    if (keyLock?.seal) {
+      const sealed = await keyLock.seal(JSON.stringify(privateJwk))
+      if (sealed) return kv.setItem(storageKey, JSON.stringify({ sealed, publicJwk }))
+    }
+    kv.setItem(storageKey, JSON.stringify({ privateJwk, publicJwk }))
+  }
+
+  /**
+   * ECHAR EL CANDADO A LA MAESTRA QUE YA EXISTE: se llama al abrir el perfil, cuando la
+   * llave de la contraseña está en la mano. Idempotente.
+   */
+  async function sealMasterKey () {
+    const raw = kv.getItem(KEY_STORAGE)
+    if (!raw || !keyLock?.seal) return { ok: false, reason: 'sin-candado' }
+    const guardado = JSON.parse(raw)
+    if (guardado.sealed) return { ok: true, already: true }
+    await guardarPar(KEY_STORAGE, guardado.privateJwk, guardado.publicJwk)
+    return { ok: true, sealed: true }
+  }
+
+  /**
+   * LA LLAVE PARA FIRMAR, o un error con nombre.
+   *
+   * Todo lo que firme con la maestra pasa por aquí. Cerrada, `keypair.privateKey` es
+   * `null` y sin esto reventaría con un `TypeError` a diez marcos de profundidad —
+   * ilegible para quien lo recibe e indistinguible de un fallo de red. El código va
+   * aparte del texto porque el texto se traduce (ver el contrato de errores).
+   */
+  function masterKey () {
+    if (!keypair?.privateKey) {
+      throw Object.assign(new Error('vault locked: the master key is sealed; unlock the profile to sign'), { code: 'vault-locked' })
+    }
+    return keypair.privateKey
   }
 
   const loadOrCreateKeypair = () => loadOrCreatePair('sign', KEY_STORAGE)
@@ -503,14 +562,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       // Marcador nuevo (o JWK legado que ES la llave del perfil): usar la CryptoKey
       // no extractable del perfil para firmar; nada de privadas en claro.
       if (d.useIdentityKey || (d.publickey === publickeyJwkStr && !d.privateJwk)) {
-        return { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+        return { publickey: publickeyJwkStr, privateKey: masterKey() }
       }
       // MIGRACIÓN: el emparejamiento viejo persistía la privada del perfil en
       // claro aquí. Si es la misma llave del perfil, reemplazar por el marcador
       // (borra el último JWK plano) y firmar con la CryptoKey.
       if (d.privateJwk && d.publickey === publickeyJwkStr) {
         kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
-        return { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+        return { publickey: publickeyJwkStr, privateKey: masterKey() }
       }
       return d // legado real (dispositivo con llave propia distinta)
     } catch (_) { return null }
@@ -591,7 +650,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   let sealKeyProvider = null
 
   /** Sella con la llave del perfil (CryptoKey, puede ser no extractable). */
-  const seal = (acta) => Acta.sealActa({ acta, privateKey: keypair.privateKey })
+  const seal = (acta) => Acta.sealActa({ acta, privateKey: masterKey() })
 
   /**
    * Aplica cambios, sella y guarda. Solo funciona si este dispositivo es el master: es la
@@ -759,14 +818,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
     // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
     // y NO se persiste ningún JWK del dispositivo (marcador useIdentityKey).
-    const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+    const device = { publickey: publickeyJwkStr, privateKey: masterKey() }
     // Si esta identidad ya existía por su cuenta, se lleva un certificado de continuidad
     // firmado por ella misma: es el puente para que su reputación previa siga contando.
     // Solo si esta llave tenía vida propia. Una recién creada para adoptar (camino B) no
     // tiene pasado que salvar: mandarle un puente de continuidad sería puro ruido.
     const mine = loadActa()
     const continuity = (mine && mine.members.length === 1 && !isPendingJoin())
-      ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mine.profileId, privateKey: keypair.privateKey })
+      ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mine.profileId, privateKey: masterKey() })
       : null
     const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
     kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
@@ -1085,7 +1144,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const r = await remoteCheck({
         master: Acta.sealersOf(acta)[0] || null,
         proxy: v?.proxy || 'wss://proxy.dotrino.com',
-        device: { publickey: publickeyJwkStr, privateKey: keypair.privateKey },
+        device: { publickey: publickeyJwkStr, privateKey: masterKey() },
         onRevoked: wipeVaultLink
       })
       if (r?.error) console.warn('[identity] could not confirm membership with the vault:', r.error)
@@ -1209,7 +1268,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     async signChallenge ({ nonce }) {
       if (!nonce || typeof nonce !== 'string') throw new Error('nonce required')
       const bytes = new TextEncoder().encode(nonce)
-      const signature = await signBytes(keypair.privateKey, bytes)
+      const signature = await signBytes(masterKey(), bytes)
       return { nonce, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, signature }
     },
 
@@ -1240,7 +1299,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const issuedAt = Date.now()
       const envelope = { subject: publickey, rating: r, notes: safeNotes, ratedBy: publickeyJwkStr, issuedAt }
       const sigBytes = new TextEncoder().encode(canonicalStringify(envelope))
-      const signature = await signBytes(keypair.privateKey, sigBytes)
+      const signature = await signBytes(masterKey(), sigBytes)
       const myRating = { ...envelope, signature }
       return upsertPeer(publickey, { myRating, rating: r, notes: safeNotes })
     },
@@ -1359,7 +1418,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         const bytes = new TextEncoder().encode(canonicalStringify(data))
         const acta = loadActa()
         return {
-          signature: await signBytes(keypair.privateKey, bytes),
+          signature: await signBytes(masterKey(), bytes),
           publickey: publickeyJwkStr,
           // A NOMBRE DE QUIÉN VA. `publickey` es la llave de ESTE aparato, y las apps la
           // venían guardando como si fuera la identidad: publicar desde el teléfono y
@@ -1398,7 +1457,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const want = typeof exp === 'number' ? exp : iat + (Number(ttlMs) || DEFAULT_DELEGATION_MS)
       const cappedExp = Math.min(want, iat + MAX_DELEGATION_MS)   // tope duro de vida
       // `iss` se FUERZA a la propia maestra: el usuario no puede emitir cert para otro emisor.
-      const cert = await signDelegationWith(keypair.privateKey, publickeyJwkStr, { sub, scope, iat, exp: cappedExp, nonce: nonce || crypto.randomUUID() })
+      const cert = await signDelegationWith(masterKey(), publickeyJwkStr, { sub, scope, iat, exp: cappedExp, nonce: nonce || crypto.randomUUID() })
       const store = loadDelegations()
       store[cert.nonce] = { nonce: cert.nonce, sub, scope, iat, exp: cappedExp, label: typeof label === 'string' ? label.slice(0, 60) : '' }
       saveDelegations(store)
@@ -1702,7 +1761,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if ((Array.isArray(caps) ? caps : [caps]).includes('sealer')) {
         throw new Error('sealing cannot be renounced: ask another sealer to take it from you')
       }
-      const record = await Acta.makeRenounce({ member: publickeyJwkStr, caps, privateKey: keypair.privateKey })
+      const record = await Acta.makeRenounce({ member: publickeyJwkStr, caps, privateKey: masterKey() })
       const pend = loadRenounces().filter((r) => r.member !== publickeyJwkStr)
       pend.push(record)
       saveRenounces(pend)
@@ -1956,7 +2015,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (!mine) throw new Error('this device has no account to hand over yet')
       if (!amMaster()) throw new Error('not-the-master: another device or vault is in charge of this account; the handover is done from there')
 
-      const device = { publickey: publickeyJwkStr, privateKey: keypair.privateKey }
+      const device = { publickey: publickeyJwkStr, privateKey: masterKey() }
       const res = await remoteEnroll({
         qr,
         device,
@@ -2456,6 +2515,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   return {
     handlers,
     get me () { return me },
+    /** ¿Está la maestra bajo llave? Cerrada, esta identidad NO puede firmar nada. */
+    get masterLocked () { return !keypair?.privateKey },
+    /** Echa el candado a la maestra que ya existía (al abrir el perfil). Idempotente. */
+    sealMasterKey,
+    /** Recarga el par tras abrir el candado, sin reabrir la identidad entera. */
+    async reloadMasterKey () {
+      keypair = await loadOrCreateKeypair()
+      publickeyJwkStr = JSON.stringify(keypair.publicJwk)
+      return { locked: !keypair?.privateKey }
+    },
     sync,
     onSyncStatus (fn) { if (sync) sync.onStatus(fn) },
     onVaultEvent (fn) { vaultListeners.add(fn); return () => vaultListeners.delete(fn) }
