@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { Identity, makeDeviceKey, signWithDevice, verifyDelegation, verifyChain } from '../src/node.js'
+import { LEGACY_CERTS_UNTIL } from '../vault/capabilities.js'
 import { sealersOf } from '../vault/acta.js'
 
 /**
@@ -233,3 +234,47 @@ test('quitar el DISPOSITIVO retira todos sus certificados, no solo uno', async (
 // detrás no podía enrolarse porque el cert recién sellado se leía como futuro. Se van con
 // el reloj: un papel atado al `seq` del acta no tiene ventana temporal que ajustar, así que
 // el problema que resolvían ya no puede ocurrir.
+
+/**
+ * EL REPLIEGUE DE MIGRACIÓN, y sus dos frenos.
+ *
+ * Un repliegue sin fecha es un agujero (`CLAUDE.md`), así que este tiene una escrita
+ * —`LEGACY_CERTS_UNTIL`, 2026-10-01— y estas pruebas están para que se note cuando toque
+ * quitarlo: el día que caduque, la primera se pondrá roja sola.
+ */
+test('MIGRACIÓN: un papel del modelo viejo pasa, pero solo hasta su propio vencimiento', async () => {
+  // Se arma a mano una bóveda vieja: una llave que el acta nombra selladora, firmando un
+  // cuerpo CON `exp` y SIN `seq`, que es exactamente lo que emitían las bóvedas < 0.73.
+  const boveda = await makeDeviceKey()
+  const D = await makeDeviceKey()
+  const acta = { actaSeq: 12, sealers: [boveda.publickey] }
+  const viejo = async (exp) => {
+    const c = { v: 1, iss: boveda.publickey, sub: D.publickey, scope: ['vault:sign'], iat: Date.now() - 1000, exp, nonce: 'n-' + exp }
+    const { signature } = await signWithDevice({ privateJwk: boveda.privateJwk, publickey: boveda.publickey, data: c })
+    return { ...c, sig: signature }
+  }
+
+  const vivo = await verifyDelegation({ cert: await viejo(Date.now() + 86400000), ...acta, expectedSub: D.publickey })
+  assert.equal(vivo.ok, true, vivo.reason)
+  assert.equal(vivo.legacy, true, 'se marca como del modelo viejo, no se confunde con uno nuevo')
+  assert.equal(vivo.seq, null, 'no nombra ninguna acta, y no se inventa una')
+
+  // Su vencimiento SIGUE valiendo: el repliegue no le regala ni un día.
+  const muerto = await verifyDelegation({ cert: await viejo(Date.now() - 1000), ...acta })
+  assert.equal(muerto.reason, 'expired')
+
+  assert.equal(Date.now() < LEGACY_CERTS_UNTIL, true,
+    'llegó 2026-10-01: toca BORRAR el repliegue de `verifyDelegation` y estas dos pruebas')
+})
+
+test('MIGRACIÓN: el papel viejo no relaja nada más que la forma', async () => {
+  // Lo que el repliegue NO toca: quien emite tiene que seguir pudiendo sellar. Un papel
+  // viejo de una llave que el acta no nombra selladora se rechaza igual que uno nuevo.
+  const P = await freshMaster()
+  const Otro = await freshMaster()
+  const D = await makeDeviceKey()
+  const viejo = { v: 1, iss: Otro.me.publickey, sub: D.publickey, scope: ['vault:sign'], iat: Date.now() - 1000, exp: Date.now() + 86400000, nonce: 'n-x', sig: 'x' }
+  const r = await verifyDelegation({ cert: viejo, ...(await conActa(P)) })
+  assert.equal(r.ok, false)
+  assert.ok(['bad-signature', 'untrusted-issuer'].includes(r.reason), r.reason)
+})
