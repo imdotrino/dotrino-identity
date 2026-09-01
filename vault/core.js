@@ -18,7 +18,7 @@
  * vault, compartida por todos los runtimes.
  */
 
-import { signDelegationWith, MAX_DELEGATION_MS, DEFAULT_DELEGATION_MS } from './capabilities.js'
+import { signDelegationWith } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
@@ -336,40 +336,30 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
 
   function loadJson (key) { try { return JSON.parse(kv.getItem(key) || '{}') || {} } catch (_) { return {} } }
 
-  // PODA (los dos registros crecían para siempre): la renovación automática firma un cert
-  // nuevo cada 30 días, así que sin podar cada dispositivo dejaba 12 entradas muertas al año.
-  // Se tira lo que YA NO PUEDE SERVIR, nunca lo vivo:
-  //   · delegación → cuando su `exp` ya pasó (un cert vencido no autoriza nada).
-  //     OJO: no se poda «la anterior del mismo dispositivo» al renovar, porque el cert
-  //     viejo SIGUE VIGENTE hasta su exp y hay que poder revocarlo si te roban el aparato.
-  //   · revocación → 30 días después de revocar: para entonces el cert al que apunta está
-  //     vencido seguro (el tope duro de vida es `MAX_DELEGATION_MS`, y exp ≤ iat + 30 días
-  //     ≤ revokedAt + 30 días), y un cert vencido ya falla por `expired` sin mirar la lista.
-  const DELEGATION_MAX_LIFE_MS = 30 * 24 * 60 * 60 * 1000 // espejo de MAX_DELEGATION_MS (capabilities.js)
-
-  function loadDelegations () {
-    const o = loadJson(DELEGATIONS_STORAGE)
-    const now = Date.now()
-    let changed = false
-    for (const k of Object.keys(o)) {
-      const exp = o[k]?.exp
-      if (typeof exp === 'number' && exp < now) { delete o[k]; changed = true }
-    }
-    if (changed) kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
-    return o
-  }
+  // YA NO SE PODA NADA, y el motivo es que la poda existía por el reloj.
+  //
+  // Antes se tiraba lo VENCIDO, porque la renovación automática firmaba un papel nuevo cada
+  // 30 días y sin podar cada aparato dejaba doce entradas muertas al año. Con el papel atado
+  // al acta esa renovación desaparece: solo se emite uno nuevo cuando el acta cambia lo que
+  // ese aparato puede, y ahí `revokePriorCertsFor` ya retira el anterior. O sea que el
+  // registro crece con los CAMBIOS DE POLÍTICA, no con el calendario.
+  //
+  // Se probó podar «lo que el acta ya no nombra» y se descartó: borra en silencio, y un
+  // registro que se borra solo es justo lo que no quieres tener delante cuando estás
+  // averiguando qué pasó. Las revocaciones, por lo mismo, son PARA SIEMPRE: se podaban a
+  // los 30 días porque para entonces el papel estaba vencido seguro, y sin vencimiento
+  // olvidar una revocación lo resucita.
+  const loadDelegations = () => loadJson(DELEGATIONS_STORAGE)
   const saveDelegations = (o) => kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
 
+  /**
+   * Las revocaciones NO se podan por tiempo. Se podaban a los 30 días porque para entonces
+   * el papel al que apuntaban estaba vencido seguro; sin vencimiento ese razonamiento se
+   * cae, y olvidar una revocación **resucita el papel**. Se quedan mientras el aparato siga
+   * en el acta; cuando se le echa, se van con él (`loadDelegations` hace lo mismo).
+   */
   function loadRevocations () {
-    const o = loadJson(REVOCATIONS_STORAGE)
-    const now = Date.now()
-    let changed = false
-    for (const k of Object.keys(o)) {
-      const at = o[k]
-      if (typeof at === 'number' && now - at > DELEGATION_MAX_LIFE_MS) { delete o[k]; changed = true }
-    }
-    if (changed) kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
-    return o
+    return loadJson(REVOCATIONS_STORAGE)
   }
   const saveRevocations = (o) => kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
 
@@ -834,7 +824,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
     emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
     pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
-    return { ok: true, deviceId: res.deviceId, master: res.master, exp: res.cert.exp, scope: res.cert.scope, join: unido }
+    return { ok: true, deviceId: res.deviceId, master: res.master, seq: res.cert.seq, scope: res.cert.scope, join: unido }
   }
 
   /**
@@ -885,7 +875,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // segundo plano un `vault.renew`: el vault firma un cert fresco (30 días) para la
   // misma sub-clave y scope. Mientras uses el ecosistema ~1 vez al mes, nunca vence.
   // Un cert YA vencido o revocado no puede renovarse (ahí sí, re-emparejar).
-  const RENEW_WINDOW_MS = 15 * 24 * 60 * 60 * 1000
+  // Ya no hay ventana de caducidad: el papel no vence. Lo único que obliga a pedir uno
+  // nuevo es que el ACTA diga algo distinto de lo que lleva escrito.
   const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
   let renewLastTry = 0
   /**
@@ -911,10 +902,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) return
       const now = Date.now()
-      // Se renueva por dos motivos: porque el cert se acerca a su fin, o porque el acta
-      // dice que este aparato puede algo distinto de lo que lleva escrito el cert.
-      const porCaducar = v.cert.exp > now && v.cert.exp - now <= RENEW_WINDOW_MS
-      if (v.cert.exp <= now || (!porCaducar && !certDesfasadoDelActa())) return
+      // UN SOLO MOTIVO: que el acta diga algo distinto de lo que lleva el papel. El otro
+      // —«se acerca su fin»— era el que obligaba a la bóveda a firmar sola cada mes, y con
+      // él se va la última razón por la que la maestra tenía que estar disponible sin nadie
+      // delante. Renovar pasa a ocurrir justo cuando ya hay una selladora abierta, porque
+      // cambiar el acta ES tenerla abierta.
+      if (!certDesfasadoDelActa()) return
       if (now - renewLastTry < RENEW_RETRY_MS) return
       renovarCert().catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
     } catch (_) {}
@@ -927,7 +920,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     renewLastTry = Date.now()
     const { cert } = await remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
     kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
-    emitVault({ phase: 'renewed', exp: cert.exp })
+    emitVault({ phase: 'renewed', seq: cert.seq })
     return cert
   }
 
@@ -1109,7 +1102,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   let profilePushTimer = null
   function pushProfileToVault () {
     const v = loadVaultCert(); const device = loadVaultDevice()
-    if (!v?.cert || !device || v.cert.exp <= Date.now()) return
+    if (!v?.cert || !device) return
     clearTimeout(profilePushTimer)
     profilePushTimer = setTimeout(() => {
       const { publickey, encryptionPubkey, ...content } = me || {}
@@ -1450,16 +1443,26 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // de dispositivo `sub`, acotado por `scope` y `exp`, revocable por `nonce`.
     // Es la ÚNICA forma en que la autoridad sale de la clave maestra, y va limitada.
 
-    async signDelegation ({ sub, scope, ttlMs, exp, nonce, label, supersede }) {
+    /**
+     * EL PAPEL NO CADUCA POR RELOJ: lleva el `seq` del acta con el que se emitió.
+     *
+     * `ttlMs`/`exp` se aceptan y se IGNORAN a propósito, para no romper a quien todavía los
+     * pasa (el daemon, `enroll.js`). Reventar ahí dejaría sin emparejar a media cadena por
+     * un parámetro que ya no significa nada.
+     */
+    async signDelegation ({ sub, scope, nonce, label, supersede }) {
       if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
       if (!scope || (typeof scope !== 'string' && !Array.isArray(scope))) throw new Error('scope required')
       const iat = Date.now()
-      const want = typeof exp === 'number' ? exp : iat + (Number(ttlMs) || DEFAULT_DELEGATION_MS)
-      const cappedExp = Math.min(want, iat + MAX_DELEGATION_MS)   // tope duro de vida
+      // El acta con la que se emite. Sin acta no hay papel: el certificado dice «una
+      // selladora de ESTE perfil, mirando ESTA acta, avaló esta llave», y sin acta no se
+      // puede decir ninguna de las dos cosas.
+      const acta = loadActa()
+      if (!acta) throw Object.assign(new Error('this profile has no record to issue against'), { code: 'sin-acta' })
       // `iss` se FUERZA a la propia maestra: el usuario no puede emitir cert para otro emisor.
-      const cert = await signDelegationWith(masterKey(), publickeyJwkStr, { sub, scope, iat, exp: cappedExp, nonce: nonce || crypto.randomUUID() })
+      const cert = await signDelegationWith(masterKey(), publickeyJwkStr, { sub, scope, iat, seq: acta.seq, nonce: nonce || crypto.randomUUID() })
       const store = loadDelegations()
-      store[cert.nonce] = { nonce: cert.nonce, sub, scope, iat, exp: cappedExp, label: typeof label === 'string' ? label.slice(0, 60) : '' }
+      store[cert.nonce] = { nonce: cert.nonce, sub, scope, iat, seq: acta.seq, label: typeof label === 'string' ? label.slice(0, 60) : '' }
       saveDelegations(store)
       // UNA LLAVE, UN CERTIFICADO VIGENTE. Renovar emitía uno nuevo y dejaba vivo el
       // anterior: el mismo aparato salía dos veces en la lista (parecían dos máquinas) y,
@@ -2070,7 +2073,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert()
       if (!v?.cert) return { paired: false }
       maybeRenewVaultCert()
-      return { paired: true, deviceId: v.deviceId, master: v.master, proxy: v.proxy, scope: v.cert.scope, exp: v.cert.exp, pairedAt: v.pairedAt }
+      return { paired: true, deviceId: v.deviceId, master: v.master, proxy: v.proxy, scope: v.cert.scope, seq: v.cert.seq, pairedAt: v.pairedAt }
     },
 
     async vaultUnpair () {

@@ -8,12 +8,12 @@
  * Solución (subkeys / capabilities, estilo certs SSH / OAuth device tokens):
  *   - El dispositivo genera SU PROPIA clave `D` (la maestra nunca la ve).
  *   - El vault firma un CERTIFICADO: «la clave D puede `scope` para la identidad P,
- *     hasta `exp`», con un `nonce` que es el mango de revocación.
+ *     mientras el ACTA lo diga», con un `nonce` que es el mango de revocación.
  *   - El dispositivo firma cada acción con `D` y adjunta el cert. Cualquiera
  *     verifica la CADENA `D ← P` + scope + expiración + revocación, offline.
  *
  * Garantía: robar el dispositivo solo permite lo del `scope` (p.ej. publicar
- * ubicación), hasta `exp`, y se puede revocar. La clave maestra queda intacta.
+ * ubicación) mientras el acta lo diga, y se puede revocar. La clave maestra queda intacta.
  *
  * Cripto IDÉNTICA al resto del ecosistema: ECDSA P-256 + SHA-256 sobre
  * `canonicalStringify`, firma en base64 de los 64 bytes crudos (r||s). Módulo
@@ -174,7 +174,7 @@ export async function importDeviceEncKey (encPrivateJwk) {
 /**
  * Firma un certificado de delegación con una `privateKey` (CryptoKey) cuyo pubkey
  * es `iss`. Lo usa el handler del vault (con la clave maestra). Devuelve el cert
- * completo `{ v, iss, sub, scope, iat, exp, nonce, sig }`.
+ * completo `{ v, iss, sub, scope, iat, seq, nonce, sig }`.
  */
 export async function signDelegationWith (privateKey, iss, { sub, scope, iat, seq, nonce }) {
   const body = { v: 1, iss, sub, scope, iat, seq, nonce }
@@ -202,11 +202,11 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data 
 /**
  * Verifica un CERTIFICADO de delegación (offline; no requiere la clave maestra):
  *   1) firma de la maestra (`iss`) sobre el cuerpo canónico,
- *   2) ventana temporal `iat ≤ now ≤ exp`,
+ *   2) el acta: quien lo emitió puede sellar, y el papel no es de un acta más nueva que la mía,
  *   3) `scope` incluye `expectedScope` (si se pide),
  *   4) `sub` === `expectedSub` (si se pide),
  *   5) `nonce` no revocado (`revoked`: fn(nonce)→bool, Set o mapa).
- * @returns {{ok:boolean, reason?:string, iss?, sub?, scope?, iat?, exp?, nonce?}}
+ * @returns {{ok:boolean, reason?:string, iss?, sub?, scope?, iat?, seq?, nonce?}}
  */
 /**
  * MARGEN DE RELOJ ENTRE DOS APARATOS. Sin esto, emparejar es una lotería.
@@ -233,19 +233,31 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   if (v !== 1 || typeof iss !== 'string' || typeof sub !== 'string' || typeof sig !== 'string') return { ok: false, reason: 'shape' }
   if (typeof iat !== 'number' || typeof seq !== 'number' || (typeof scope !== 'string' && !Array.isArray(scope))) return { ok: false, reason: 'shape' }
   if (!(await rawVerify(iss, enc(canonicalStringify(delegationBody(cert))), sig))) return { ok: false, reason: 'bad-signature' }
-  // EL ACTA ES EL VENCIMIENTO (dueño, 2026-08-31). No hay reloj: un papel vale mientras
-  // sea el del acta vigente, y deja de valer en cuanto el acta sube de `seq`.
+  // EL ACTA MANDA, Y NO HAY RELOJ (dueño, 2026-08-31). El papel no vence: dice «una
+  // selladora de este perfil, mirando el acta nº `seq`, avaló esta llave». Lo que puede
+  // hacer HOY lo dice el acta de hoy, y eso lo cruza cada mostrador (`memberCanScope`).
   //
   // Llegan el `seq` y la LISTA DE SELLADORES, no el acta entera, y no por capricho: este
   // módulo no sabe de actas —`acta.js` importa de aquí, así que mirar para allá sería un
-  // ciclo— y la regla de quién sella tiene que seguir viviendo en el acta, en un solo
-  // sitio. Quien verifica saca la lista con `sealersOf` y la pasa.
+  // ciclo— y la regla de quién sella vive en el acta, en un solo sitio. Quien verifica saca
+  // la lista con `sealersOf` y la pasa.
   //
   // Sin esos datos no se puede juzgar, y se dice en vez de contestar «vale» a solas:
   // devolver `ok` sin haber comprobado nada es exactamente cómo un papel viejo seguía
   // entrando.
   if (typeof actaSeq !== 'number' || !Array.isArray(sealers)) return { ok: false, reason: 'no-acta' }
-  if (seq !== actaSeq) return { ok: false, reason: 'stale-acta' }
+  // SOLO SE RECHAZA EL PAPEL DEL FUTURO. Si el cert nombra un acta MÁS NUEVA que la que
+  // tengo, no puedo juzgarlo: mi política está atrasada y decir que sí sería fiarme de algo
+  // que no he visto. Al revés no: un papel viejo es normal —el aparato estuvo apagado— y lo
+  // que puede hacer ya lo decide mi acta, que es más nueva.
+  //
+  // La alternativa era exigir `seq === actaSeq`, o sea que cada cambio del acta invalidara
+  // TODOS los papeles a la vez. Consigue lo mismo (quitar un permiso surte efecto al
+  // instante, porque eso lo hace el cruce con el acta) y además deja tirado al aparato que
+  // estaba apagado: vuelve, su papel ya no vale, y renovarlo exige una selladora ABIERTA.
+  // O sea que un cambio de acta te obligaría a abrir la bóveda para que tus aparatos
+  // volvieran — justo lo que se acaba de quitar de en medio.
+  if (seq > actaSeq) return { ok: false, reason: 'acta-vieja' }
   // Y QUIEN LO EMITIÓ TIENE QUE PODER SELLAR. No se compara contra «la maestra»: cualquiera
   // que el acta nombre sellador emite papeles válidos — si no, la segunda bóveda podría
   // invalidar todos los certificados al sellar y luego no poder dar los nuevos.
@@ -257,14 +269,14 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
       : (revoked instanceof Set ? revoked.has(nonce) : !!revoked[nonce])
     if (isRev) return { ok: false, reason: 'revoked' }
   }
-  return { ok: true, iss, sub, scope, iat, exp, nonce }
+  return { ok: true, iss, sub, scope, iat, seq, nonce }
 }
 
 /**
  * Verificación de CADENA de una acción/pin delegado (lo único que llama el bridge):
  *   1) el dispositivo `D` (= `data.publickey`) firmó `data`,
  *   2) el cert delega a ESTE dispositivo (`cert.sub === data.publickey`),
- *   3) el cert es válido (firma de `P`, scope, exp, revocación),
+ *   3) el cert es válido (firma de una selladora, scope, revocación),
  *   4) opcional: `cert.iss === trustedIssuer` (fija la identidad maestra esperada).
  * @returns {{ok:boolean, reason?:string, issuer?:string, device?:string}}
  */
