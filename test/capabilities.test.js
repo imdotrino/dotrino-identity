@@ -1,7 +1,12 @@
-// Tests de la DELEGACIÓN de capacidad: una sub-clave de dispositivo D recibe un
-// cert firmado por la maestra P (scope/exp/revocación), firma acciones, y un
-// verificador comprueba la cadena D←P OFFLINE. Garantía clave: robar el
-// dispositivo solo permite lo del scope, hasta exp, y se revoca; la maestra intacta.
+// Tests de la DELEGACIÓN de capacidad: una sub-clave de dispositivo D recibe un cert
+// firmado por una SELLADORA del perfil P (scope + revocación), firma acciones, y un
+// verificador comprueba la cadena D←P OFFLINE.
+//
+// EL PAPEL NO CADUCA POR RELOJ (dueño, 2026-08-31): lleva el `seq` del acta con el que se
+// emitió, y quien verifica pasa el acta que tiene (`actaSeq` + `sealers`). Lo que puede
+// hacer el aparato HOY lo dice el acta de hoy. Por eso aquí ya no hay tests de vencimiento
+// ni de margen de reloj: no son «tests que se cayeron», son conceptos que dejaron de
+// existir.
 //
 // Usa el adaptador headless de Node (sin iframe) + los helpers puros de capabilities.
 
@@ -10,8 +15,18 @@ import assert from 'node:assert'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
-import { Identity, makeDeviceKey, signWithDevice, verifyDelegation, verifyChain, MAX_DELEGATION_MS } from '../src/node.js'
-import { PEER_SKEW_MS } from '../vault/capabilities.js'
+import { Identity, makeDeviceKey, signWithDevice, verifyDelegation, verifyChain } from '../src/node.js'
+import { sealersOf } from '../vault/acta.js'
+
+/**
+ * El contexto con el que se juzga un papel: el acta que tiene QUIEN VERIFICA. No se pasa el
+ * acta entera porque `capabilities.js` no sabe de actas (`acta.js` importa de él, y mirar
+ * para allá sería un ciclo): se le pasa el número y la lista de selladores.
+ */
+async function conActa (P) {
+  const acta = (await P.profileActa()).acta
+  return { actaSeq: acta.seq, sealers: sealersOf(acta) }
+}
 
 let seq = 0
 async function freshMaster () {
@@ -33,7 +48,7 @@ test('round-trip: la maestra firma un cert y verifyDelegation lo acepta', async 
   assert.equal(cert.v, 1)
   assert.equal(cert.iss, P.me.publickey)          // iss = maestra
   assert.equal(cert.sub, D.publickey)             // sub = dispositivo
-  const r = await verifyDelegation({ cert, expectedScope: 'geo:publish', expectedSub: D.publickey })
+  const r = await verifyDelegation({ cert, ...(await conActa(P)), expectedScope: 'geo:publish', expectedSub: D.publickey })
   assert.equal(r.ok, true, r.reason)
 })
 
@@ -51,24 +66,9 @@ test('scope: rechaza un scope distinto; acepta si el array lo incluye', async ()
   const P = await freshMaster()
   const D = await makeDeviceKey()
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish')
-  assert.equal((await verifyDelegation({ cert, expectedScope: 'store:write' })).reason, 'scope')
+  assert.equal((await verifyDelegation({ cert, ...(await conActa(P)), expectedScope: 'store:write' })).reason, 'scope')
   const { cert: multi } = await P.signDelegation(D.publickey, ['geo:publish', 'geo:share:family'])
-  assert.equal((await verifyDelegation({ cert: multi, expectedScope: 'geo:share:family' })).ok, true)
-})
-
-test('expiración: vencido y aún-no-válido', async () => {
-  const P = await freshMaster()
-  const D = await makeDeviceKey()
-  const { cert } = await P.signDelegation(D.publickey, 'geo:publish', { ttlMs: 1000 })
-  assert.equal((await verifyDelegation({ cert, now: cert.exp + 1 })).reason, 'expired')
-  assert.equal((await verifyDelegation({ cert, now: cert.iat - 1 })).reason, 'not-yet-valid')
-})
-
-test('tope de vida MAX_DELEGATION_MS aunque pidan más', async () => {
-  const P = await freshMaster()
-  const D = await makeDeviceKey()
-  const { cert } = await P.signDelegation(D.publickey, 'geo:publish', { ttlMs: 365 * 24 * 3600 * 1000 })
-  assert.equal(cert.exp - cert.iat, MAX_DELEGATION_MS)
+  assert.equal((await verifyDelegation({ cert: multi, ...(await conActa(P)), expectedScope: 'geo:share:family' })).ok, true)
 })
 
 test('cadena feliz: D firma el pin, el cert prueba D←P, issuer fijado', async () => {
@@ -76,7 +76,7 @@ test('cadena feliz: D firma el pin, el cert prueba D←P, issuer fijado', async 
   const D = await makeDeviceKey()
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish', { ttlMs: 3600000 })
   const { data, signature } = await signedPin(D, cert)
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'geo:publish', trustedIssuer: P.me.publickey })
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish' })
   assert.equal(r.ok, true, r.reason)
   assert.equal(r.issuer, P.me.publickey)
   assert.equal(r.device, D.publickey)
@@ -88,7 +88,7 @@ test('dispositivo equivocado: cert.sub ≠ data.publickey', async () => {
   const D2 = await makeDeviceKey()
   const { cert } = await P.signDelegation(D1.publickey, 'geo:publish')   // cert para D1
   const { data, signature } = await signedPin(D2, cert)                  // pero firma D2
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'geo:publish' })
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish' })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'cert-device-mismatch')
 })
@@ -99,7 +99,7 @@ test('pin alterado: mutar data sin re-firmar rompe la cadena', async () => {
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish')
   const { data, signature } = await signedPin(D, cert)
   data.lat = 0   // tamper
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'geo:publish' })
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish' })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'bad-action-signature')
 })
@@ -109,12 +109,12 @@ test('revocación: revocar el nonce mata la cadena (aunque no haya vencido)', as
   const D = await makeDeviceKey()
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish', { ttlMs: 3600000 })
   const { data, signature } = await signedPin(D, cert)
-  assert.equal((await verifyChain({ data, signature, cert, expectedScope: 'geo:publish' })).ok, true)
+  assert.equal((await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish' })).ok, true)
   await P.revokeDelegation(cert.nonce)
   const { revoked } = await P.listDelegations()
   assert.ok(revoked.some(r => r.nonce === cert.nonce))
   const revFn = (nonce) => revoked.some(r => r.nonce === nonce)
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'geo:publish', revoked: revFn })
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish', revoked: revFn })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'revoked')
 })
@@ -125,20 +125,55 @@ test('radio de daño: un cert geo:publish NO sirve para otro scope', async () =>
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish')
   const { data, signature } = await signedPin(D, cert)
   // el dispositivo robado intenta usar el cert para escribir en el store
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'store:write' })
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'store:write' })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'scope')
 })
 
-test('issuer no confiable: un cert de OTRA maestra es rechazado por trustedIssuer', async () => {
+/**
+ * QUIEN EMITE TIENE QUE SER SELLADORA DE **ESTE** PERFIL.
+ *
+ * Esto se comprobaba contra UNA llave fija (`trustedIssuer`, la maestra), y por eso el
+ * multivault no podía existir: la segunda bóveda sellaba el acta y luego sus papeles los
+ * rechazaba todo el mundo. Ahora se compara contra la LISTA que dice el acta, así que
+ * cualquiera a quien el dueño haya dado `sella` emite papeles válidos… y nadie más.
+ */
+test('quien emite tiene que ser selladora de este perfil, no una llave cualquiera', async () => {
   const P = await freshMaster()
-  const Other = await freshMaster()
+  const Otro = await freshMaster()
   const D = await makeDeviceKey()
   const { cert } = await P.signDelegation(D.publickey, 'geo:publish')
   const { data, signature } = await signedPin(D, cert)
-  const r = await verifyChain({ data, signature, cert, expectedScope: 'geo:publish', trustedIssuer: Other.me.publickey })
+
+  // Con el acta de P: su maestra está en la lista de selladores, así que vale.
+  assert.equal((await verifyChain({ data, signature, cert, ...(await conActa(P)), expectedScope: 'geo:publish' })).ok, true)
+
+  // Con el acta de OTRO perfil: el mismo papel no vale, porque quien lo firmó no sella ahí.
+  const r = await verifyChain({ data, signature, cert, ...(await conActa(Otro)), expectedScope: 'geo:publish' })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'untrusted-issuer')
+})
+
+/**
+ * UN PAPEL DEL FUTURO NO SE JUZGA. Si el cert nombra un acta más nueva que la que tengo, mi
+ * política está atrasada y decir que sí sería fiarme de algo que no he visto. Al revés —un
+ * papel viejo— es lo NORMAL: el aparato estuvo apagado, y lo que puede hacer lo decide mi
+ * acta, que es más nueva. Exigir que coincidieran dejaría tirado a cualquiera que se
+ * hubiera perdido un cambio, y volver le exigiría una selladora abierta.
+ */
+test('un papel de un acta MÁS NUEVA no se juzga; uno viejo sí vale', async () => {
+  const P = await freshMaster()
+  const D = await makeDeviceKey()
+  const { cert } = await P.signDelegation(D.publickey, 'geo:publish')
+  const ctx = await conActa(P)
+
+  assert.equal((await verifyDelegation({ cert, ...ctx, expectedScope: 'geo:publish' })).ok, true)
+  // Mi acta va por detrás de la que nombra el papel.
+  const atras = await verifyDelegation({ cert, ...ctx, actaSeq: cert.seq - 1, expectedScope: 'geo:publish' })
+  assert.equal(atras.ok, false)
+  assert.equal(atras.reason, 'acta-vieja')
+  // Mi acta va por delante: normal, y el papel sigue sirviendo.
+  assert.equal((await verifyDelegation({ cert, ...ctx, actaSeq: cert.seq + 5, expectedScope: 'geo:publish' })).ok, true)
 })
 
 test('listDelegations muestra las caps emitidas (para el gestor de dispositivos)', async () => {
@@ -194,27 +229,7 @@ test('quitar el DISPOSITIVO retira todos sus certificados, no solo uno', async (
   assert.ok([a, b].every(x => x.cert.nonce), 'los dos certs existieron')
 })
 
-/**
- * EL MARGEN DE RELOJ, que es lo que hace que emparejar funcione en el mundo real.
- * Un teléfono 850 ms por detrás —medido en uno de verdad— no podía enrolarse en ninguna
- * bóveda: el cert acababa de sellarse con el reloj de ella y aquí se leía como futuro.
- */
-test('un aparato que va un poco por detrás acepta el cert recién emitido', async () => {
-  const P = await freshMaster()
-  const D = await makeDeviceKey()
-  const { cert } = await P.signDelegation(D.publickey, 'vault:sign')
-  const atrasado = cert.iat - 850   // el reloj del teléfono, tal cual se midió
-
-  assert.equal((await verifyDelegation({ cert, now: atrasado })).reason, 'not-yet-valid',
-    'sin margen se rechaza, que es el fallo que hubo')
-  assert.equal((await verifyDelegation({ cert, now: atrasado, skewMs: PEER_SKEW_MS })).ok, true,
-    'con el margen entre aparatos, se acepta')
-})
-
-test('el margen no resucita un cert de verdad vencido', async () => {
-  const P = await freshMaster()
-  const D = await makeDeviceKey()
-  const { cert } = await P.signDelegation(D.publickey, 'vault:sign', { ttlMs: 1000 })
-  const muyDespues = cert.exp + PEER_SKEW_MS + 1000
-  assert.equal((await verifyDelegation({ cert, now: muyDespues, skewMs: PEER_SKEW_MS })).reason, 'expired')
-})
+// Aquí vivían los dos tests del MARGEN DE RELOJ (`PEER_SKEW_MS`): un teléfono 850 ms por
+// detrás no podía enrolarse porque el cert recién sellado se leía como futuro. Se van con
+// el reloj: un papel atado al `seq` del acta no tiene ventana temporal que ajustar, así que
+// el problema que resolvían ya no puede ocurrir.

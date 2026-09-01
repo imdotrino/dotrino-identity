@@ -13,7 +13,8 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId, PEER_SKEW_MS } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
+import { sealersOf } from './acta.js'
 
 const MSG = {
   HELLO: 'vault.hello',
@@ -208,11 +209,22 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     }
 
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
-    // `PEER_SKEW_MS`: el cert lo acaba de sellar la bóveda con SU reloj y lo valida ESTE
-    // aparato con el suyo. Sin margen, ir 850 ms por detrás bastaba para no poder enrolarse.
-    const v = await verifyDelegation({ cert: res.cert, expectedSub: dev.publickey, skewMs: PEER_SKEW_MS })
+    //
+    // EL ACTA VIAJA CON EL PAPEL y hace falta para juzgarlo: el cert lleva el `seq` del acta
+    // con el que se emitió, y quien lo emitió tiene que ser SELLADORA de ese acta. Lo que se
+    // fija ya no es la LLAVE que firma —con varias selladoras puede ser otra del mismo
+    // perfil— sino el PERFIL: el del QR, que es el que el usuario vio.
+    //
+    // (Aquí vivía el margen de reloj: el cert lo sellaba la bóveda con SU reloj y lo validaba
+    // este aparato con el suyo, y 850 ms de diferencia bastaban para no poder enrolarse. Sin
+    // vencimiento no hay ventana que ajustar y el problema no puede volver.)
+    if (!res.acta) throw new Error('the vault did not send its record: cannot check who signed this cert')
+    if (res.acta.profileId !== qr.iss) throw new Error('the record is from a profile other than the one you saw')
+    const v = await verifyDelegation({
+      cert: res.cert, expectedSub: dev.publickey,
+      actaSeq: res.acta.seq, sealers: sealersOf(res.acta)
+    })
     if (!v.ok) throw new Error('invalid cert: ' + v.reason)
-    if (res.cert.iss !== qr.iss) throw new Error('cert signed by a master key different from the one you saw')
     if (res.cert.sub !== dev.publickey) throw new Error('cert issued for a different device')
     return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
   } finally { try { client.close() } catch (_) {} }

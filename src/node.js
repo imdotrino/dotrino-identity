@@ -102,6 +102,10 @@ export class Identity {
   constructor (options = {}) {
     this._dir = options.dir || DEFAULT_DIR
     this._atRest = options.atRest || null
+    // CANDADO DE LA MAESTRA: `{ seal(jwkStr), open(blob) }`. Quien lo provee (el daemon
+    // del vault) es el único que tiene la llave que sale de la contraseña. Sin candado,
+    // la maestra se guarda como siempre — un perfil sin contraseña no cambia.
+    this._keyLock = options.keyLock || null
     this._core = null
     this._listeners = new Map()
   }
@@ -121,6 +125,7 @@ export class Identity {
     if (this._core) return this
     this._core = await createIdentityCore({
       kv: fileKv(path.join(this._dir, 'identity.json'), this._atRest),
+      keyLock: this._keyLock,
       peers: filePeers(path.join(this._dir, 'peers.json')),
       makeSync: null,
       // Aquí las cuentas las lleva quien hospeda (el daemon del vault tiene su propio
@@ -136,6 +141,14 @@ export class Identity {
   destroy () { this._core = null }
 
   get me () { return this._core?.me || null }
+
+  // ----- candado de la maestra -----
+  /** `true` si la maestra está sellada: esta identidad NO puede firmar nada. */
+  get masterLocked () { return !!this._core?.masterLocked }
+  /** Sella la maestra que ya existe (se llama al abrir el perfil, con la llave en la mano). */
+  sealMasterKey () { return this._core?.sealMasterKey?.() }
+  /** Vuelve a cargar el par tras abrir el candado, sin reabrir la identidad. */
+  reloadMasterKey () { return this._core?.reloadMasterKey?.() }
 
   _h (method, params = {}) {
     if (!this._core) throw new Error('Identity not ready — call ready()/connect() first')
