@@ -139,7 +139,12 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   assert.equal(await verifyRenounce(r), true)
   // `sealer` entra en la lista desde 2026-08-30: sellar es un permiso de aparato, y este
   // miembro los tiene todos. De paso queda probado que una bóveda puede RENUNCIAR a sellar.
-  assert.deepEqual(effectiveCaps(dos, b.pub, [r]), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store'], 'se honra sin tocar el acta')
+  // `sealer` entra desde 2026-08-30 y `unattended` desde 2026-09-01: los dos son permisos
+  // de aparato, y este miembro los tiene TODOS (se admitió con `...CAPS`). Se listan a mano
+  // —y no como `CAPS.filter(...)`— para que añadir un permiso nuevo ponga esta prueba en
+  // rojo: que la lista crezca sin que nadie lo mire es justo lo que no se quiere.
+  assert.deepEqual(effectiveCaps(dos, b.pub, [r]),
+    ['admin', 'approve', 'passwords', 'read', 'sealer', 'store', 'unattended'], 'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -147,7 +152,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store'])
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store', 'unattended'])
   assert.equal(tres.renounced.length, 1)
 })
 

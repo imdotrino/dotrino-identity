@@ -103,7 +103,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer', 'unattended'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -116,8 +116,22 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * dominio; nunca lista la bóveda. Va aquí y no en una lista aparte porque quién puede
  * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
  * de lo mismo obliga a acordarse de los dos al quitar un aparato.
+ *
+ * `unattended` es RECIBIR CLAVES PRIVADAS SIN QUE NADIE APRUEBE. Sin él, la bóveda no
+ * entrega nada hasta que un aparato con `approve` lo firme — una vez por arranque del
+ * servicio, no por petición.
+ *
+ * El defecto es al revés que antes, y esa es la gracia (dueño, 2026-09-01): antes había
+ * que marcar a mano quién NECESITA aprobación, así que un aparato nuevo nacía pudiendo
+ * llevarse las claves y nadie se enteraba de que esa era la elección. Ahora hay que
+ * conceder a propósito quién puede llevárselas SOLO — y si el dato falta, se pide permiso,
+ * que es lo que hay que hacer cuando no se sabe.
+ *
+ * Y va EN EL ACTA, no en una marca local de una máquina: así lo respeta cualquier bóveda
+ * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
+ * sin acordarse de un segundo registro escondido.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
