@@ -366,8 +366,12 @@ export async function requestDevices ({ master, proxy, device, cert, sinceSeq, o
  */
 export async function requestRenew ({ master, proxy, device, cert, onRevoked } = {}) {
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
-  if (!res.cert || res.cert.sub !== device.publickey || res.cert.iss !== master) throw new Error('invalid renewed cert')
-  return { cert: res.cert }
+  if (!res.cert || res.cert.sub !== device.publickey) throw new Error('invalid renewed cert')
+  // EL ACTA VIAJA CON EL PAPEL y hay que dejarla pasar: quien lo recibe la necesita para
+  // comprobar que lo firmó una SELLADORA de este perfil. Aquí se comparaba `cert.iss` con
+  // la maestra y se tiraba el acta, así que arriba no había con qué juzgar y la renovación
+  // fallaba con «the vault did not send its record» — con el papel correcto en la mano.
+  return { cert: res.cert, acta: res.acta || null }
 }
 
 /**
