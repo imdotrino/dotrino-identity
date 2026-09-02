@@ -343,6 +343,15 @@ export class Identity {
   async openContent (envelope) { return this._call('openContent', { envelope }) }
   /** Rota la clave de contenido (corta el acceso al contenido FUTURO de quien ya no está). */
   async rotateContentKey () { return this._call('rotateContentKey') }
+  /**
+   * Abre un sobre de un CAJÓN DE SECRETOS con la envoltura dirigida a este aparato.
+   *
+   * Distinto de `openContent`, que usa el llavero del perfil: aquí la envoltura llega suelta
+   * y la privada de cifrado de este dispositivo —que nunca sale del iframe— la abre. Es lo
+   * que le permite a quien administra LEER una variable pública sin teclear ninguna
+   * contraseña, y solo las que la bóveda le haya envuelto.
+   */
+  async openSealedValue ({ wrap, envelope } = {}) { return this._call('openSealedValue', { wrap, envelope }) }
 
   // ----- Emparejar ESTE navegador/dispositivo con el vault del usuario (Fase 1) -----
 
