@@ -489,7 +489,14 @@ export class Identity {
   // Podés tener varios perfiles (identidades) en el mismo navegador, cada uno conectado o no
   // a su propio vault. Crear/cambiar setea el perfil activo; la app RECARGA la página y toma
   // el nuevo (no reactivo: las apps abiertas conservan el perfil con el que cargaron).
-  /** Lista de perfiles: [{ id, name, pubkey, current }]. */
+  /**
+   * Lista de perfiles: `[{ id, name, pubkey, avatar, current, pendingJoin, vault, approve }]`.
+   *
+   * `vault` = ese perfil está conectado a una bóveda · `approve` = además su certificado
+   * le deja aprobar pedidos. Los dos salen de leer el cert guardado de cada perfil, sin
+   * cambiar el activo ni firmar nada — es lo que necesita la pantalla de Pedidos para
+   * saber a QUÉ perfil pertenece lo que timbró el teléfono.
+   */
   async listProfiles () { return this._call('listProfiles') }
   /** El perfil activo: { id, name, pubkey }. */
   async currentProfile () { return this._call('currentProfile') }

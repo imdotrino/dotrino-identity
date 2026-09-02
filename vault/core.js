@@ -1524,9 +1524,24 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
           const m = raw ? JSON.parse(raw) : null
           if (m && typeof m.avatar === 'string') avatar = m.avatar
         } catch (_) {}
-        // `pendingJoin`: nació para adoptar la cuenta de una bóveda y todavía no se unió.
-        // La consola lo usa para no ofrecerlo como una cuenta normal a medio hacer.
-        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid, pendingJoin: !!p.pendingJoin }
+        // QUÉ PERFIL ESTÁ CONECTADO A UNA BÓVEDA, Y CUÁL APRUEBA.
+        //
+        // Con varios perfiles en el mismo aparato, el pedido que timbra el teléfono es de
+        // UNO de ellos, y puede no ser el activo. Sin esto la pantalla de Pedidos abría con
+        // el que hubiera y decía «este aparato no aprueba pedidos» — falso: el que aprueba
+        // era otro perfil, y no había forma de saber cuál.
+        //
+        // Se lee el CERT de cada perfil, que está en claro en el kv (no es un secreto: dice
+        // qué puede hacer este aparato, no cómo). Es solo lectura y no hace falta la llave
+        // del otro perfil, así que no se cambia el activo ni se firma nada.
+        let vault = false; let approve = false
+        try {
+          const raw = p.id === currentPid ? kv.getItem(VAULT_CERT_STORAGE) : rawKv.getItem(`dotrino.identity.p.${p.id}.vault.cert`)
+          const v = raw ? JSON.parse(raw) : null
+          vault = !!v?.cert
+          approve = vault && (v.cert.scope || []).includes('vault:approve')
+        } catch (_) {}
+        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid, pendingJoin: !!p.pendingJoin, vault, approve }
       })
     },
     async currentProfile () {
