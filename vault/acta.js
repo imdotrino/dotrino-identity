@@ -103,7 +103,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer', 'unattended'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -116,6 +116,15 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * dominio; nunca lista la bóveda. Va aquí y no en una lista aparte porque quién puede
  * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
  * de lo mismo obliga a acordarse de los dos al quitar un aparato.
+ *
+ * `replica` es REPARTIR, NO DECIDIR. Un replicador no tiene maestra: guarda el acta y los
+ * sobres —que ya vienen sellados a su destinatario, así que tampoco puede abrirlos— y los
+ * entrega cuando la bóveda no está. Firma su respuesta con su propia llave de aparato, y
+ * es este permiso el que hace que un cliente la acepte como respondedor.
+ *
+ * Lo que NO le concede, y por eso es estrecho: no sella actas, no emite certificados, no
+ * abre nada. Un replicador comprometido cuesta disponibilidad, no confidencialidad.
+ * Diseño: `dotrino-vault/docs/replicas.md` §8.bis.
  *
  * `unattended` es RECIBIR CLAVES PRIVADAS SIN QUE NADIE APRUEBE. Sin él, la bóveda no
  * entrega nada hasta que un aparato con `approve` lo firme — una vez por arranque del
@@ -131,7 +140,7 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
  * sin acordarse de un segundo registro escondido.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se
@@ -158,19 +167,16 @@ export const isValidCn = (cn) => typeof cn === 'string' && /^[a-z0-9-]{1,32}$/.t
  * scope de secretos «de todos».
  */
 export function capScope (cap, cn = null) {
-  if (cap === 'sign') return 'vault:sign'
-  if (cap === 'store') return 'vault:store'
-  if (cap === 'read') return 'vault:read'
-  if (cap === 'admin') return 'vault:admin'
-  if (cap === 'approve') return 'vault:approve'
-  if (cap === 'passwords') return 'vault:passwords'
-  if (cap === 'sealer') return 'vault:sealer'
+  // SALE DE `CAP_SCOPE`, no de una cadena de `if` escrita a mano. Esto era lo segundo: la
+  // lista de arriba y esta se escribían por separado, así que un permiso nuevo entraba en
+  // una y no en la otra y se quedaba sin scope en silencio. Ya pasó con `sealer`,
+  // `unattended` y `secrets`; con `replica` se cortó aquí.
   if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
-  return null
+  return CAP_SCOPE[cap] || null
 }
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
-export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords', sealer: 'vault:sealer' })
+export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords', sealer: 'vault:sealer', replica: 'vault:replica' })
 
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')

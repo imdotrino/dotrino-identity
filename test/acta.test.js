@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, canSeal,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
-  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape
+  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape,
+  CAP_SCOPE, sealersOf
 } from '../vault/acta.js'
 
 /** Una llave de miembro (extractable, para poder firmar en el test con privateJwk). */
@@ -139,12 +140,14 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   assert.equal(await verifyRenounce(r), true)
   // `sealer` entra en la lista desde 2026-08-30: sellar es un permiso de aparato, y este
   // miembro los tiene todos. De paso queda probado que una bóveda puede RENUNCIAR a sellar.
-  // `sealer` entra desde 2026-08-30 y `unattended` desde 2026-09-01: los dos son permisos
-  // de aparato, y este miembro los tiene TODOS (se admitió con `...CAPS`). Se listan a mano
-  // —y no como `CAPS.filter(...)`— para que añadir un permiso nuevo ponga esta prueba en
-  // rojo: que la lista crezca sin que nadie lo mire es justo lo que no se quiere.
+  // `sealer` entra desde 2026-08-30, `unattended` desde 2026-09-01 y `replica` desde
+  // 2026-09-02: los tres son permisos de aparato, y este miembro los tiene TODOS (se
+  // admitió con `...CAPS`). Se listan a mano —y no como `CAPS.filter(...)`— para que
+  // añadir un permiso nuevo ponga esta prueba en rojo: que la lista crezca sin que nadie
+  // lo mire es justo lo que no se quiere. Y funcionó: `replica` la puso en rojo.
   assert.deepEqual(effectiveCaps(dos, b.pub, [r]),
-    ['admin', 'approve', 'passwords', 'read', 'sealer', 'store', 'unattended'], 'se honra sin tocar el acta')
+    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'],
+    'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
   const falsa = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: a.privateJwk })
@@ -152,7 +155,8 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
 
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
-  assert.deepEqual(effectiveCaps(tres, b.pub), ['admin', 'approve', 'passwords', 'read', 'sealer', 'store', 'unattended'])
+  assert.deepEqual(effectiveCaps(tres, b.pub),
+    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'])
   assert.equal(tres.renounced.length, 1)
 })
 
@@ -435,4 +439,58 @@ test('remote: los pedidos de aprobación viajan por vault.secrets (la tabla loca
   const { VAULT_MSG } = await import('../vault/remote.js')
   assert.equal(VAULT_MSG.SECRETS, 'vault.secrets')
   assert.equal(VAULT_MSG.SECRETS_RESULT, 'vault.secrets.result')
+})
+
+/**
+ * EL PERMISO `replica`: REPARTIR SIN DECIDIR, y sobre todo SIN LEER.
+ *
+ * Un replicador guarda el acta y los sobres y los entrega cuando la bóveda no está. Dos
+ * reglas del dueño (2026-09-02) y ninguna se negocia:
+ *
+ *   1. se enrola en el acta como cualquier aparato — es un permiso más;
+ *   2. **recibe todos los sobres que se generen, y ninguno sellado PARA él.**
+ *
+ * La segunda es la que hace que repartir no sea leer, igual que con la llave de sellado
+ * (`dotrino-vault/test/llave-de-transporte-sin-sobres.test.mjs`). Si algún día se le
+ * envolviera una CEK, repartir la capacidad de servir repartiría la de leer y todo el
+ * reparto de roles se caería sin que nadie lo notara.
+ */
+test('replica: reparte, y no puede nada de lo que decide', async () => {
+  const master = await key()
+  const repl = await key()
+  const g = genesisActa({ pub: master.pub, sealPub: master.pub })
+  const acta = await step(g, [{ op: 'admit', member: { pub: repl.pub, caps: ['replica'], label: 'replicador' } }], master)
+
+  assert.equal(memberCan(acta, repl.pub, 'replica'), true)
+  for (const cap of ['sealer', 'admin', 'sign', 'read', 'store', 'secrets', 'approve', 'passwords', 'unattended']) {
+    assert.equal(memberCan(acta, repl.pub, cap), false, `un replicador no puede «${cap}»`)
+  }
+  // Lo que lo separa de una SEGUNDA BÓVEDA, que es la otra pieza y se conserva.
+  assert.equal(sealersOf(acta).includes(repl.pub), false, 'un replicador NO es sellador')
+})
+
+/**
+ * SIN `encPub` NO HAY A DÓNDE ENVOLVER, y esa es la garantía: es estructural, no una
+ * comprobación que alguien pueda olvidarse de hacer. Un replicador entra al acta sin llave
+ * de cifrado, así que no existe camino por el que le llegue un sobre abierto.
+ */
+test('a un replicador no se le puede envolver nada: entra sin llave de cifrado', async () => {
+  const master = await key()
+  const repl = await key()
+  const g = genesisActa({ pub: master.pub, sealPub: master.pub })
+  const acta = await step(g, [{ op: 'admit', member: { pub: repl.pub, caps: ['replica'], label: 'replicador' } }], master)
+
+  const m = acta.members.find((x) => x.pub === repl.pub)
+  assert.equal(m.encPub, null, 'sin `encPub` no hay destinatario posible')
+  // Y no lee secretos de ningún cajón, ni con `cn`: no tiene `secrets`.
+  assert.equal(memberCanReadSecrets(acta, repl.pub, 'proxy'), false)
+})
+
+test('replica está en las listas de permisos, o la pantalla no lo enseña', () => {
+  // La TUI dibuja los permisos desde una lista escrita a mano y ya dejó invisibles a
+  // `sealer`, `unattended` y `secrets` durante semanas. Esto ata la lista al pilar.
+  assert.ok(CAPS.includes('replica'))
+  assert.ok(DEVICE_CAPS.includes('replica'))
+  assert.equal(CAP_SCOPE.replica, 'vault:replica')
+  assert.equal(capScope('replica'), 'vault:replica')
 })
