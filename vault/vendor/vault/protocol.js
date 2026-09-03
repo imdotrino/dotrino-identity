@@ -86,6 +86,10 @@ export const MSG = Object.freeze({
   // contrapartida de administrar a distancia: sin esto, un enrolamiento remoto sería
   // invisible para el resto de tus dispositivos.
   ADMIN_EVENT: 'vault.admin.event',           // vault → todos: { body:{ev,deviceId,by,ts}, signature }
+  // RÉPLICAS: la principal empuja lo que hay que servir (el acta y los sobres, que van
+  // firmados de antes y no se pueden falsificar) y la réplica acusa hasta qué `seq` tiene.
+  REPLICA_PUSH: 'vault.replica.push',         // master → réplica: { body:{seq,acta,secrets,ts}, signature }
+  REPLICA_ACK: 'vault.replica.ack',           // réplica → master: { body:{seq,ts}, signature }
   ERROR: 'vault.error'                        // vault → dispositivo: { error }
 })
 
@@ -98,7 +102,15 @@ export const SCOPE = Object.freeze({
   // NO incluye cambiar permisos, traspasar el mando ni conceder `admin`: eso es el rol
   // de master y sigue siendo local. No se empareja — se concede desde el PC.
   ADMIN: 'vault:admin',
-  APPROVE: 'vault:approve' // aprobar pedidos de secretos (cajones con `approval`); se concede a mano, como admin
+  APPROVE: 'vault:approve', // aprobar pedidos de secretos (cajones con `approval`); se concede a mano, como admin
+  // El gestor de contraseñas: pedir credenciales de la bóveda, de a una y por dominio.
+  // Nunca lista la bóveda entera. Este SÍ se empareja (`pair --scope contrasenas`): es
+  // lo primero que hace la extensión, y no tendría sentido obligar a un segundo paso.
+  PASSWORDS: 'vault:passwords',
+  // SELLAR EL ACTA: la OTRA bóveda de esta cuenta. Con esto puede admitir aparatos y
+  // cambiar permisos si la principal se pierde — que es todo el punto del multivault. Como
+  // `admin`, no se empareja: se concede a mano (`caps <ID> +sella`).
+  SEALER: 'vault:sealer'
 })
 
 /**

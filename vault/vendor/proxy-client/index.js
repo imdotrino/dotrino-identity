@@ -1,6 +1,10 @@
 export { WebSocketProxyClient } from './client.js'
 export { canonicalStringify } from './canonical.js'
-export { getPublicKeyJwk, signData, buildSignedChannel } from './signature.js'
+export { getPublicKeyJwk, signData, buildSignedChannel, setKeypairStore } from './signature.js'
+export {
+  seal, open, isSealed, makeEncKeypair, importEncPrivate, exportEncPrivate,
+  setSealingPrimitives,
+} from './sealing.js'
 
 import { WebSocketProxyClient } from './client.js'
 

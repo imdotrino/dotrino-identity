@@ -30,7 +30,7 @@
  * `docs/pairing-protocol.md`).
  */
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
-import { verifyContinuity } from '@dotrino/identity/acta'
+import { verifyContinuity, canSeal } from '@dotrino/identity/acta'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -52,7 +52,7 @@ export const MSG_REVOKED = 'vault.revoked'
 export const MSG_ERROR = 'vault.error'
 
 /** Los scopes del cert se corresponden 1:1 con las capacidades del acta (§D7). */
-const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read', 'vault:admin': 'admin' }
+const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read', 'vault:admin': 'admin', 'vault:passwords': 'passwords' }
 export const scopeToCaps = (scope) =>
   (Array.isArray(scope) ? scope : [scope]).map((s) => SCOPE_TO_CAP[s]).filter(Boolean)
 
@@ -277,7 +277,12 @@ export function createEnrollDesk ({
       pend.continuity = (okC && d.continuity.member === d.dpub) ? d.continuity : null
     }
     pend.from = from // la bóveda NO conoce el código: lo aprende cuando lo tipeas
-    if (d.label) pend.label = String(d.label).slice(0, 60)
+    // EL NOMBRE QUE PUSISTE AQUÍ MANDA. El aparato manda el suyo al enrolarse, y hasta
+    // ahora pisaba siempre al de la bóveda — como el aparato usa por defecto el apodo del
+    // PERFIL, acababas con varios dispositivos llamados igual que tú y sin forma de saber
+    // cuál era cuál. Si en `pair` le diste un nombre, ese es el nombre; el del aparato
+    // sigue valiendo como propuesta cuando no dijiste nada.
+    if (d.label && !pend.label) pend.label = String(d.label).slice(0, 60)
     // Camino A: de qué cuenta estamos hablando. Se guarda para poder comprobar, cuando
     // llegue el acta sellada, que es la que este dispositivo dijo que iba a entregar.
     if (intent === 'adopt' && typeof d.profileId === 'string') pend.profileId = d.profileId
@@ -359,7 +364,7 @@ export function createEnrollDesk ({
     pend.state = 'DONE'
     pending.delete(pend.token)
     fire(onPendingChange)
-    log('[vault] device approved: %s', pend.deviceId)
+    log(`[vault] device approved: ${pend.deviceId}`)
     return { ok: true, deviceId: pend.deviceId, cert }
   }
 
@@ -383,9 +388,12 @@ export function createEnrollDesk ({
     const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && (x.from === from || x.dpub))
     if (!pend) return reply(from, { type: MSG_ERROR, error: 'no adoption awaiting a record' })
     if (!record || typeof record !== 'object') return reply(from, { type: MSG_ERROR, error: 'record missing or unreadable' })
-    if (record.sealer !== iss) {
+    // Ya no hay campo `sealer`: se le pregunta al PERMISO. Es la misma comprobación —«¿me
+    // nombra a mí la que me mandan?»— dicha en el idioma nuevo, y con varios selladores la
+    // respuesta puede ser que sí para más de uno, que es lo correcto.
+    if (!canSeal(record, iss)) {
       audit('rejected', { what: 'adopt', reason: 'not-sealer' })
-      return reply(from, { type: MSG_ERROR, error: 'that record does not name this vault as the sealer' })
+      return reply(from, { type: MSG_ERROR, error: 'that record does not let this vault seal it' })
     }
     if (record.sealedBy !== pend.dpub) {
       audit('rejected', { what: 'adopt', reason: 'sealed-by-other' })

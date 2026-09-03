@@ -26,13 +26,13 @@
  * No reimplementa nada del ecosistema.
  */
 import { verifyChain, verifyDeviceSig } from '@dotrino/identity/capabilities'
+import { memberCanScope, sealersOf, memberScopes } from '@dotrino/identity/acta'
 import { createEnrollDesk, deviceIdOf, DEVICE_TTL_MS, FRESH_WINDOW_MS } from './enroll.js'
 // Las constantes del protocolo salen del MISMO módulo que usa el daemon: si la lista
 // local se queda corta, el dispositivo deja de handle mensajes sin que nadie lo note.
 import { MSG, SCOPE } from './protocol.js'
 
 const SIGN_SCOPE = SCOPE.SIGN
-const SELFCERT_TTL_MS = 24 * 60 * 60 * 1000    // el self-cert P←P se regenera cada 24 h
 const RENEW_TTL_MS = DEVICE_TTL_MS             // la renovación extiende la misma ventana (30 días)
 
 /** deviceId legible (p. ej. `C440-AC0E`) desde una pubkey JWK. */
@@ -57,10 +57,24 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
 
   // ----- self-cert P ← P (para que este dispositivo pueda además actuar de cliente
   // de sus propias máquinas: lo firma la propia P y verifyChain lo acepta) -----
+  /**
+   * Con qué se juzga un papel: el acta que tiene esta bóveda. Sustituye a `trustedIssuer`,
+   * que fijaba UNA llave y por eso los papeles de una segunda selladora no valían.
+   * Sin acta van nulos y `verifyDelegation` contesta `no-acta`: no hay con qué decidir, así
+   * que no se decide que sí.
+   */
+  async function contextoActa () {
+    const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+    if (!acta) return { actaSeq: null, sealers: null }
+    return { actaSeq: acta.seq, sealers: sealersOf(acta) }
+  }
+
   let _selfCert = null
   const getSelfCert = async () => {
-    if (_selfCert && _selfCert.exp > Date.now() + 60_000) return _selfCert
-    const { cert } = await identity.signDelegation(iss, SIGN_SCOPE, { ttlMs: SELFCERT_TTL_MS })
+    // Se rehace cuando el acta cambia, no cuando pasa el tiempo: el papel ya no caduca.
+    const { actaSeq } = await contextoActa()
+    if (_selfCert && _selfCert.seq === actaSeq) return _selfCert
+    const { cert } = await identity.signDelegation(iss, SIGN_SCOPE)
     _selfCert = cert
     return cert
   }
@@ -137,13 +151,20 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
       return send(from, { type: MSG.ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
     }
-    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, trustedIssuer: iss, revoked: await revocationSet() })
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await contextoActa()), revoked: await revocationSet() })
     if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
     // Reusar el label del cert original (si sigue registrado en delegations).
     const { issued } = await identity.listDelegations()
     const prev = (issued || []).find((x) => x.nonce === p.cert.nonce)
-    const { cert } = await identity.signDelegation(p.cert.sub, p.cert.scope, { ttlMs: RENEW_TTL_MS, label: prev?.label || '' })
-    send(from, { type: MSG.RENEWED, cert })
+    // EL SCOPE SALE DEL ACTA, no del papel viejo: el papel dice a qué se comprometió esta
+    // bóveda al conectar el aparato; el acta, lo que puede HOY.
+    const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+    if (!acta) return send(from, { type: MSG.ERROR, error: 'unauthorized: this vault has no record to decide with' })
+    const scope = memberScopes(acta, p.cert.sub)
+    if (!scope.length) return send(from, { type: MSG.ERROR, error: 'unauthorized: the record no longer lists this device' })
+    const { cert } = await identity.signDelegation(p.cert.sub, scope, { label: prev?.label || '' })
+    // El acta viaja con el papel: sin ella quien lo recibe no puede comprobar quién lo firmó.
+    send(from, { type: MSG.RENEWED, cert, acta })
   }
 
   // Consulta de revocaciones (igual que `vault.devices` del daemon): responde la lista
@@ -153,12 +174,12 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     const d = p?.data
     if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'invalid request' })
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) return
-    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, trustedIssuer: iss })
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await contextoActa()) })
     if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
     const { issued, revoked, revokedCerts } = await identity.listDelegations()
     const devices = await Promise.all((issued || []).map(async (x) => ({
       deviceId: x.sub ? await deviceIdOf(x.sub) : null, sub: x.sub || null,
-      label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce
+      label: x.label || '', scope: x.scope, seq: x.seq, nonce: x.nonce
     })))
     send(from, { type: MSG.DEVICES_RESULT, devices, revoked: (revoked || []).map((r) => r.nonce || r) })
     // ¿el que consulta es una máquina revocada que reapareció? → re-emite el REVOKED firmado.
@@ -188,11 +209,22 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     const chk = await verifyChain({
       data: d, signature: p.signature, cert: p.cert,
       ...(expectedScope ? { expectedScope } : {}),
-      trustedIssuer: iss, revoked: await revocationSet(),
+      ...(await contextoActa()), revoked: await revocationSet(),
     })
     if (!chk.ok) {
       send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
       return null
+    }
+    // EL ACTA MANDA, EL PAPEL SOLO ACOMPAÑA. Aquí y no en cada mostrador: el certificado
+    // dice a qué se comprometió esta bóveda al conectar el aparato, y el acta lo que puede
+    // HOY. Quitarle un permiso sella el acta pero no le retira el papel, que vive hasta 30
+    // días, así que sin esto seguiría entrando hasta que lo renovara.
+    if (expectedScope) {
+      const record = (await identity.profileActa?.().catch(() => null))?.acta || null
+      if (record && !memberCanScope(record, chk.device, expectedScope)) {
+        send(from, { type: MSG.ERROR, error: 'unauthorized: acta — this member no longer has that permission' })
+        return null
+      }
     }
     return chk
   }
@@ -302,13 +334,14 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
    */
   async function listMachines () {
     const { issued } = await identity.listDelegations()
-    const now = Date.now()
     const bySub = new Map()
     for (const x of (issued || [])) {
-      if (!x.sub || x.revokedAt || (x.exp && x.exp <= now)) continue // revocada = fuera de la lista
+      if (!x.sub || x.revokedAt) continue                       // revocada = fuera de la lista
       if (!Array.isArray(x.scope) || !x.scope.includes(SIGN_SCOPE)) continue
       if (!x.label || x.label === 'cli') continue
-      if (!bySub.has(x.sub) || (x.exp || 0) > (bySub.get(x.sub).exp || 0)) bySub.set(x.sub, x)
+      // Se queda el papel del acta MÁS NUEVA de esa llave: ya no hay «el que vence más
+      // tarde», porque ninguno vence.
+      if (!bySub.has(x.sub) || (x.seq || 0) > (bySub.get(x.sub).seq || 0)) bySub.set(x.sub, x)
     }
     return Promise.all([...bySub.values()].map(async (x) => ({ ...x, deviceId: await deviceIdOf(x.sub) })))
   }

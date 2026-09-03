@@ -39,6 +39,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "vendor": "node vendor.mjs",
     "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\"",
     "type-check": "tsc --noEmit"
   },

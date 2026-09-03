@@ -1,6 +1,5 @@
-Copia vendorizada de @dotrino/vault@0.34.0 (lib/src/{index,enroll,protocol}.js, sin dependencias).
-El iframe de identity se sirve estatico (vanilla, sin build); asi startDeviceVault
-resuelve en el navegador sin bundler. index.js importa ./enroll.js y ./protocol.js
-(relativos, se vendorizan tambien) y @dotrino/identity/capabilities (=../../capabilities.js)
-y @dotrino/proxy-client (=../proxy-client/), ambos via el import map de index.html.
-Re-vendorizar LOS TRES archivos al subir @dotrino/vault.
+Copia vendorizada de @dotrino/vault@0.52.0 (dotrino-vault/lib/src/{index,enroll,protocol}.js).
+NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
+index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),
+@dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y
+@dotrino/proxy-client (= ../proxy-client/), todos por el import map de index.html.
