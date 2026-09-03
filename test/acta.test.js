@@ -494,3 +494,34 @@ test('replica está en las listas de permisos, o la pantalla no lo enseña', () 
   assert.equal(CAP_SCOPE.replica, 'vault:replica')
   assert.equal(capScope('replica'), 'vault:replica')
 })
+
+/**
+ * QUÉ ES PÚBLICO Y QUÉ ES PRIVADO EN EL PERFIL (`dotrino-vault/docs/datos-del-perfil.md`).
+ *
+ * La regla no es nueva: es la que ya decidía `publicMe()` —lo que marcaste visible es lo
+ * que ve quien pregunta desde fuera—. Lo que cambia es que ahora esa marca decide **cómo se
+ * guarda**: en claro o en sobre. Por eso vale la pena atarla con una prueba: si alguien la
+ * toca, un dato sensible podría pasar a guardarse legible sin que nadie lo note.
+ */
+test('lo sensible es privado por defecto y lo demás público, como siempre', async () => {
+  const { profileFieldClasses } = await import('../vault/core.js')
+  const clases = profileFieldClasses({
+    nickname: 'seyacat',
+    nombres: 'Santiago',
+    telefono: '+593999',
+    direccion: 'una calle',
+    email: 'a@b.c'
+  })
+  assert.equal(clases.nickname, 'public', 'el apodo es de la tarjeta')
+  assert.equal(clases.nombres, 'public')
+  assert.equal(clases.email, 'public')
+  // Sensibles: OCULTOS salvo que su marca diga que sí, explícitamente.
+  assert.equal(clases.telefono, 'private', 'el teléfono no se enseña salvo que tú lo digas')
+  assert.equal(clases.direccion, 'private')
+
+  const conTelefono = profileFieldClasses({ telefono: '+593999', telefonoVisible: true })
+  assert.equal(conTelefono.telefono, 'public', 'y si lo dices, se enseña')
+
+  const sinNombre = profileFieldClasses({ nombres: 'Santiago', nombresVisible: false })
+  assert.equal(sinNombre.nombres, 'private', 'lo normal se puede esconder')
+})

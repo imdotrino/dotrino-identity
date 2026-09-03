@@ -52,7 +52,18 @@ export const MSG_REVOKED = 'vault.revoked'
 export const MSG_ERROR = 'vault.error'
 
 /** Los scopes del cert se corresponden 1:1 con las capacidades del acta (§D7). */
-const SCOPE_TO_CAP = { 'vault:sign': 'sign', 'vault:store': 'store', 'vault:read': 'read', 'vault:admin': 'admin', 'vault:passwords': 'passwords' }
+const SCOPE_TO_CAP = {
+  'vault:sign': 'sign',
+  'vault:store': 'store',
+  'vault:read': 'read',
+  'vault:admin': 'admin',
+  'vault:passwords': 'passwords',
+  // `replica` SÍ se empareja, al revés que `sealer` y `admin`. La razón es la misma que
+  // hace estrecho al permiso: un replicador reparte sobres que no puede abrir y no cambia
+  // nada. Y se despliega sin teclado —un contenedor, una máquina ajena—, que es justo
+  // donde obligar a un segundo paso a mano es el paso que nadie da.
+  'vault:replica': 'replica'
+}
 export const scopeToCaps = (scope) =>
   (Array.isArray(scope) ? scope : [scope]).map((s) => SCOPE_TO_CAP[s]).filter(Boolean)
 

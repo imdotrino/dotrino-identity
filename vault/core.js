@@ -124,6 +124,30 @@ const STD_FIELD_CAPS = [
 // (los demás campos estándar se comparten salvo que su flag sea false).
 const STD_FIELDS_SENSITIVE = new Set(['telefono', 'direccion'])
 
+/**
+ * QUÉ CLASE ES CADA DATO DEL PERFIL: `public` o `private`
+ * (`dotrino-vault/docs/datos-del-perfil.md` §2).
+ *
+ * La regla no es nueva —es la que ya decidía `publicMe()`: lo que marcaste visible es lo
+ * que ve quien pregunta desde fuera—. Lo que cambia es que ahora decide **cómo se guarda**:
+ * en claro o en sobre. Por eso vive aquí, exportada y a nivel de módulo, en vez de escondida
+ * dentro de una función: es política y hay que poder mirarla y probarla.
+ *
+ * Sensibles (teléfono, dirección) OCULTOS salvo que su marca diga que sí, explícitamente.
+ * El resto se comparte salvo que digas que no.
+ */
+export function profileFieldClasses (m = {}) {
+  const out = {}
+  const clase = (esPublico) => (esPublico ? 'public' : 'private')
+  if (m.nickname) out.nickname = clase(true)
+  if (m.avatar) out.avatar = clase(m.avatarVisible !== false)
+  for (const [k] of STD_FIELD_CAPS) {
+    if (!m[k]) continue
+    out[k] = clase(STD_FIELDS_SENSITIVE.has(k) ? (m[k + 'Visible'] === true) : (m[k + 'Visible'] !== false))
+  }
+  return out
+}
+
 // Sanea un patch de perfil (avatar/links/fields/nickname + campos estándar). Cada link/field
 // lleva `visible` (oculto = no se comparte). Caps de tamaño para no inflar el `me`. Los ids los pone la UI.
 function sanitizeProfilePatch (patch = {}) {
@@ -1099,15 +1123,114 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // store). Al editar aquí se EMPUJA; al arrancar se JALA y gana el más nuevo
   // (updatedAt). Las llaves (publickey/encryptionPubkey) son POR dispositivo y
   // nunca se sincronizan. Todo best-effort: sin vault encendido no molesta.
+  /**
+   * QUÉ ES PÚBLICO Y QUÉ ES PRIVADO, en un solo sitio.
+   *
+   * Es la misma regla que ya decidía `publicMe()`: lo que marcaste visible es lo que ve
+   * quien pregunta desde fuera. Lo que cambia es que ahora esa marca decide **cómo se
+   * guarda** —en claro o en sobre— y no solo qué se enseña (`docs/datos-del-perfil.md` §2).
+   *
+   * @returns {Array<{key:string, value:string, cls:'public'|'private'}>}
+   */
+  function profileFields (m) {
+    const out = []
+    const add = (key, value, esPublico) => {
+      if (typeof value !== 'string' || !value) return
+      out.push({ key, value, cls: esPublico ? 'public' : 'private' })
+    }
+    // La clase la decide `profileFieldClasses`, que está exportada y probada: tener la
+    // regla en dos sitios es como acaban divergiendo lo que se enseña y lo que se guarda.
+    const clases = profileFieldClasses(m)
+    for (const [k, cls] of Object.entries(clases)) add(k, m[k], cls === 'public')
+    // Enlaces y campos libres viajan como UN dato cada lista: son arrays y partirlos por
+    // elemento haría que reordenarlos pareciera media docena de cambios.
+    const visibles = (arr) => (arr || []).filter((x) => x.visible !== false).map(({ visible, ...r }) => r)
+    const ocultos = (arr) => (arr || []).filter((x) => x.visible === false)
+    if (Array.isArray(m.links)) {
+      const v = visibles(m.links); if (v.length) add('links', JSON.stringify(v), true)
+      const o = ocultos(m.links); if (o.length) add('links_private', JSON.stringify(o), false)
+    }
+    if (Array.isArray(m.fields)) {
+      const v = visibles(m.fields); if (v.length) add('fields', JSON.stringify(v), true)
+      const o = ocultos(m.fields); if (o.length) add('fields_private', JSON.stringify(o), false)
+    }
+    return out
+  }
+
+  /**
+   * EMPUJAR EL PERFIL, DATO A DATO Y EN SOBRES (`docs/datos-del-perfil.md`).
+   *
+   * Antes se mandaba el `me` entero por `profileSet`, y eso exigía la bóveda ABIERTA —era
+   * ella quien decidía guardarlo, porque lo veía en claro—. Ahora cada dato viaja como un
+   * sobre que la bóveda no puede leer ni fabricar, así que aceptarlo no es decisión suya y
+   * el candado deja de estorbar. Los públicos van en claro porque no hay a quién sellarlos.
+   *
+   * Solo se manda LO QUE CAMBIÓ: cada escritura estrena generación, y reescribir un dato
+   * que no cambió llenaría el llavero y el histórico de ruido.
+   */
+  async function pushProfileFields (v, device) {
+    const campos = profileFields(me || {})
+    const pendientes = campos.filter((c) => lastPushedFields[c.key] !== c.cls + '\u0000' + c.value)
+    if (!pendientes.length) return
+
+    const privados = pendientes.filter((c) => c.cls === 'private')
+    let destinatarios = null
+    if (privados.length) {
+      destinatarios = await remoteStore({
+        master: v.master, proxy: v.proxy, device, cert: v.cert,
+        method: 'profileRecipients', args: {}, onRevoked: wipeVaultLink
+      })
+      if (!destinatarios?.recoveryPub) {
+        throw new Error('the vault did not say who to seal the profile for')
+      }
+    }
+
+    for (const c of pendientes) {
+      const args = { key: c.key, cls: c.cls }
+      if (c.cls === 'public') {
+        args.value = c.value
+      } else {
+        // Envolver solo necesita PÚBLICAS: por eso esto se puede hacer aquí, en el
+        // navegador, sin que ninguna privada ande suelta.
+        const cek = await Content.makeContentKey()
+        const e = await Content.encryptWithCek({ cek, gen: 0, plaintext: c.value })
+        const wraps = { '#recovery': await Content.wrapForMember({ cek, memberEncPub: destinatarios.recoveryPub }) }
+        for (const m of destinatarios.members || []) {
+          if (m.encPub) wraps[m.pub] = await Content.wrapForMember({ cek, memberEncPub: m.encPub })
+        }
+        args.sobre = { e, wraps }
+      }
+      await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profilePut', args, onRevoked: wipeVaultLink })
+      lastPushedFields[c.key] = c.cls + '\u0000' + c.value
+    }
+  }
+
+  /** Lo último que se consiguió empujar de cada dato, para no reescribir lo que no cambió. */
+  const lastPushedFields = Object.create(null)
+
   let profilePushTimer = null
+  /**
+   * CÓMO FUE EL ÚLTIMO EMPUJÓN. Se guarda para que la UI pueda decir «esto no se guardó»
+   * en vez de enseñar un perfil que solo existe en este aparato. Sin esto, el usuario ve
+   * su cambio en pantalla y cree que está hecho.
+   */
+  let lastProfilePush = { ok: true, at: 0, error: null }
   function pushProfileToVault () {
     const v = loadVaultCert(); const device = loadVaultDevice()
     if (!v?.cert || !device) return
     clearTimeout(profilePushTimer)
     profilePushTimer = setTimeout(() => {
-      const { publickey, encryptionPubkey, ...content } = me || {}
-      remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileSet', args: { me: content }, onRevoked: wipeVaultLink })
-        .catch(() => {}) // el vault puede estar apagado; se reintenta en la próxima edición
+      pushProfileFields(v, device)
+        .then(() => { lastProfilePush = { ok: true, at: Date.now(), error: null } })
+        .catch((e) => {
+          // EL FALLO SE VE. Aquí había un `.catch(() => {})` con un comentario que decía
+          // «se reintenta en la próxima edición», y era falso de dos maneras: la próxima
+          // edición se encontraba la bóveda cerrada otra vez, y mientras tanto el aparato
+          // se quedaba con datos que nadie más tenía. Es exactamente lo que produjo el
+          // «edito y no funciona, y cada dispositivo ve algo distinto».
+          lastProfilePush = { ok: false, at: Date.now(), error: e?.message || String(e) }
+          try { console.warn('[identity] the profile change did NOT reach the vault:', lastProfilePush.error) } catch (_) {}
+        })
     }, 800) // debounce: ediciones seguidas = un solo push
   }
   /**
@@ -1152,6 +1275,41 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * quedaba enseñando un perfil del que ya no era, para siempre, sin que nadie pulsara
    * nada porque no había nada que pulsar.
    */
+  /**
+   * COMPONE EL `me` CON LO QUE SE PUDO ABRIR. Devuelve si cambió algo, para no avisar de
+   * una sincronización que no movió nada.
+   *
+   * `links`/`fields` viajan como UN dato cada lista (y su gemelo privado), así que aquí se
+   * vuelven a juntar con su marca de visibilidad — que es de dónde salió la separación.
+   */
+  function applyPulledProfile (content) {
+    const antes = JSON.stringify(me || {})
+    const next = { ...(me || {}) }
+    const lista = (json, visible) => {
+      try { return (JSON.parse(json) || []).map((x) => ({ ...x, visible })) } catch (_) { return [] }
+    }
+    for (const [k, v] of Object.entries(content)) {
+      if (k === 'links' || k === 'fields' || k === 'links_private' || k === 'fields_private') continue
+      next[k] = v
+    }
+    if (content.links != null || content.links_private != null) {
+      next.links = [...lista(content.links, true), ...lista(content.links_private, false)]
+    }
+    if (content.fields != null || content.fields_private != null) {
+      next.fields = [...lista(content.fields, true), ...lista(content.fields_private, false)]
+    }
+    next.publickey = publickeyJwkStr
+    next.encryptionPubkey = encPublickeyJwkStr
+    if (JSON.stringify(next) === antes) return false
+    me = next
+    saveMe(me)
+    if (typeof next.nickname === 'string') {
+      const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
+      if (e && e.name !== next.nickname) { e.name = next.nickname; saveProfiles(list) }
+    }
+    return true
+  }
+
   async function pullProfileFromVault () {
     try {
       const v = loadVaultCert(); const device = loadVaultDevice()
@@ -1161,23 +1319,31 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       // lo habían echado. La bóveda contesta «vencido» y no pasa nada; y si además ya no
       // está en el acta, contesta con el aviso firmado y aquí se le borra la cuenta.
       if (!v?.cert || !device) return
-      const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileGet', args: {}, onRevoked: wipeVaultLink })
-      const remoteMe = res?.me
-      if (!remoteMe) {
-        // el vault aún no tiene perfil: sembrar con el local (si tiene contenido)
+      // EL PAQUETE LO ARMA ESTE APARATO (dueño, 2026-09-03). La bóveda entrega los sobres
+      // que tiene; aquí se abren los que nos tocan y se compone el perfil.
+      const b = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileBundle', args: {}, onRevoked: wipeVaultLink })
+      const entries = b?.entries || {}
+      if (!Object.keys(entries).length) {
+        // La bóveda aún no tiene perfil: sembrar con el local (si tiene contenido).
         if (me?.nickname || me?.avatar) pushProfileToVault()
         return
       }
-      if ((remoteMe.updatedAt || 0) > (me?.updatedAt || 0)) {
-        const { publickey, encryptionPubkey, ...content } = remoteMe
-        me = { ...(me || {}), ...content, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
-        saveMe(me)
-        if (typeof content.nickname === 'string') {
-          const list = loadProfiles(); const e = list.find((p) => p.id === currentPid)
-          if (e && e.name !== content.nickname) { e.name = content.nickname; saveProfiles(list) }
+      const keyring = (b.wraps || []).map((w) => ({ gen: w.gen, wraps: { [publickeyJwkStr]: w.wrap } }))
+      const content = {}
+      for (const [key, e] of Object.entries(entries)) {
+        try {
+          if (e.cls === 'public') { content[key] = e.pubv; continue }
+          content[key] = await Content.decryptWithKeyring({
+            envelope: e.e, keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
+          })
+        } catch (_) {
+          // SIN ENVOLTURA NO SE INVENTA NADA. Un aparato que entró después de escribirse un
+          // dato no tiene su llave hasta que el dueño abra la bóveda; dejarlo fuera es
+          // correcto, y poner un valor por defecto sería fabricar un perfil falso.
         }
-        emitVault({ phase: 'profile-sync', updatedAt: remoteMe.updatedAt })
       }
+      if (!applyPulledProfile(content)) return
+      emitVault({ phase: 'profile-sync' })
     } catch (_) { /* vault apagado: el perfil local sigue mandando */ }
   }
 
@@ -2275,6 +2441,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { me: applyMeUpdate(patch || {}) }
     },
     async getMe () { return me },
+    /**
+     * CÓMO FUE EL ÚLTIMO EMPUJÓN del perfil a la bóveda. Existe para que la interfaz pueda
+     * decir «esto no se guardó» en vez de enseñar tan tranquila un perfil que solo vive en
+     * este aparato — que es lo que pasaba cuando el fallo se tragaba.
+     * `{ ok, at, error }`.
+     */
+    async profilePushState () { return lastProfilePush },
     // Subconjunto PÚBLICO del perfil (solo lo marcado visible) — para compartir/publicar.
     async publicMe () {
       const m = me || {}
