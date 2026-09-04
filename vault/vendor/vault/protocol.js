@@ -128,3 +128,18 @@ export const isValidSecretsNs = (ns) => typeof ns === 'string' && /^[a-z0-9-]{1,
  * remota y el lector de `.env`, y tres copias de una regla son tres reglas.
  */
 export const isValidVarKey = (key) => typeof key === 'string' && /^[A-Z0-9_]{1,64}$/.test(key)
+
+/**
+ * LA VERSIÓN DEL CABLE (CONVENCIONES §14, `@dotrino/compat`).
+ *
+ * Sube **solo cuando cambia el protocolo**, no con cada release: es lo que decide *si dos
+ * piezas pueden hablar*. La `version` del paquete decide otra cosa —si esa build concreta
+ * está rota— y por eso hacen falta las dos.
+ *
+ * Empieza en 1 hoy, con todo lo anterior sin declarar nada: a quien calla se le atiende
+ * hasta que cierre la ventana de migración del pilar, y después no.
+ */
+export const VAULT_PROTOCOL = 1
+
+/** Los protocolos que esta build entiende. Al añadir el 2, aquí van `[1, 2]`. */
+export const VAULT_SPEAKS = [1]

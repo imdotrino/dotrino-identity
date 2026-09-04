@@ -278,3 +278,98 @@ test('MIGRACIÓN: el papel viejo no relaja nada más que la forma', async () => 
   assert.equal(r.ok, false)
   assert.ok(['bad-signature', 'untrusted-issuer'].includes(r.reason), r.reason)
 })
+
+/**
+ * UNA RENUNCIA VALE ANTES DE QUE EL MASTER LA SELLE.
+ *
+ * Es la razón de ser de la renuncia y estaba a medias: `effectiveCaps` aceptaba
+ * `extraRenounces` —«renuncias sueltas ya verificadas que todavía no absorbió el master»—
+ * y los mostradores que de verdad deciden no lo pasaban ni podían: `memberCanScope`,
+ * `memberCanReadSecrets` y `memberCanSign` NO tenían ese parámetro.
+ *
+ * O sea que entre que un aparato renuncia y que alguien abre la bóveda con su contraseña
+ * —sellar es de la maestra—, ese aparato conservaba TODOS sus permisos. Justo el caso que
+ * la renuncia existe para cubrir: te roban el teléfono y el ladrón sigue siendo admin.
+ *
+ * Honrarla sin la maestra es seguro por lo mismo que ya estaba escrito: una renuncia
+ * **solo puede quitar**, así que no puede conceder nada a nadie.
+ */
+import { test as testR } from 'node:test'
+import assertR from 'node:assert/strict'
+import {
+  genesisActa as genR, sealActa as sealR, applyChanges as applyR, makeRenounce,
+  memberCan as canR, memberCanScope as canScopeR, memberCanReadSecrets as canSecretsR,
+  memberCanSign as canSignR, memberScopes as scopesR
+} from '../vault/acta.js'
+
+const parR = async () => {
+  const k = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  return {
+    pub: JSON.stringify(await crypto.subtle.exportKey('jwk', k.publicKey)),
+    privateJwk: await crypto.subtle.exportKey('jwk', k.privateKey)
+  }
+}
+
+testR('una renuncia sin sellar ya quita el permiso en TODOS los mostradores', async () => {
+  const master = await parR()
+  const tel = await parR()
+  const svc = await parR()
+  const g = genR({ pub: master.pub, sealPub: master.pub })
+  const conMiembros = await applyR(g, [
+    { op: 'admit', member: { pub: tel.pub, caps: ['sign', 'admin'], label: 'teléfono' } },
+    { op: 'admit', member: { pub: svc.pub, caps: ['secrets'], cn: 'proxy', label: 'proxio' } }
+  ], { by: master.pub })
+  const acta = await sealR({ acta: conMiembros, privateJwk: master.privateJwk })
+
+  // Antes de renunciar, el teléfono puede todo lo suyo.
+  assertR.equal(canR(acta, tel.pub, 'admin'), true)
+  assertR.equal(canScopeR(acta, tel.pub, 'vault:admin'), true)
+  assertR.equal(canSignR(acta, tel.pub), true)
+  assertR.ok(scopesR(acta, tel.pub).length > 0)
+
+  // Renuncia a TODO, firmado por él mismo. El master NO la ha sellado.
+  const r = await makeRenounce({ member: tel.pub, caps: ['sign', 'admin'], privateJwk: tel.privateJwk })
+  const sueltas = [r]
+
+  assertR.equal(canR(acta, tel.pub, 'admin', sueltas), false)
+  assertR.equal(canScopeR(acta, tel.pub, 'vault:admin', sueltas), false, 'el mostrador por scope tampoco')
+  assertR.equal(canSignR(acta, tel.pub, null, sueltas), false, 'ni el de firmar')
+  assertR.deepEqual(scopesR(acta, tel.pub, sueltas), [], 'y no le queda ni un scope que renovar')
+
+  // Y el acta sin tocar sigue diciendo que sí: lo que cambia es quien la lee CON la
+  // renuncia en la mano. Absorberla es lo que lo hace permanente.
+  assertR.equal(canR(acta, tel.pub, 'admin'), true, 'el acta no se ha modificado')
+})
+
+testR('un servicio que renuncia deja de leer su cajón antes del sellado', async () => {
+  const master = await parR()
+  const svc = await parR()
+  const g = genR({ pub: master.pub, sealPub: master.pub })
+  const conSvc = await applyR(g, [
+    { op: 'admit', member: { pub: svc.pub, caps: ['secrets'], cn: 'proxy', label: 'proxio' } }
+  ], { by: master.pub })
+  const acta = await sealR({ acta: conSvc, privateJwk: master.privateJwk })
+
+  assertR.equal(canSecretsR(acta, svc.pub, 'proxy'), true)
+  const r = await makeRenounce({ member: svc.pub, caps: ['secrets'], privateJwk: svc.privateJwk })
+  assertR.equal(canSecretsR(acta, svc.pub, 'proxy', [r]), false)
+  assertR.equal(canScopeR(acta, svc.pub, 'vault:secrets:proxy', [r]), false, 'y por el scope del cert también')
+})
+
+testR('una renuncia AJENA no quita nada: la firma tiene que ser del propio miembro', async () => {
+  const master = await parR()
+  const tel = await parR()
+  const otro = await parR()
+  const g = genR({ pub: master.pub, sealPub: master.pub })
+  const conTel = await applyR(g, [
+    { op: 'admit', member: { pub: tel.pub, caps: ['sign', 'admin'], label: 'teléfono' } }
+  ], { by: master.pub })
+  const acta = await sealR({ acta: conTel, privateJwk: master.privateJwk })
+
+  // Firmada por OTRO pero nombrando al teléfono. `effectiveCaps` no verifica firmas —eso
+  // lo hace quien la recibe, con `verifyRenounce`— así que lo que se fija aquí es que la
+  // lista que se le pasa tiene que venir YA verificada, y que una renuncia de otro miembro
+  // no toca al teléfono.
+  const suya = await makeRenounce({ member: otro.pub, caps: ['admin'], privateJwk: otro.privateJwk })
+  assertR.equal(canR(acta, tel.pub, 'admin', [suya]), true, 'la de otro no le quita nada a este')
+})

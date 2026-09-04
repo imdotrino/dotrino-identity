@@ -968,8 +968,8 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
  * `ns` es opcional y es para lo que va atado a un cajón: un servicio (miembro con `cn`)
  * solo firma dentro del suyo. Sin `ns`, se pregunta por la capacidad a secas.
  */
-export function memberCanSign (acta, pub, ns = null) {
-  if (!memberCan(acta, pub, 'sign')) return false
+export function memberCanSign (acta, pub, ns = null, extraRenounces = []) {
+  if (!memberCan(acta, pub, 'sign', extraRenounces)) return false
   const m = (acta?.members || []).find((x) => x.pub === pub)
   // SIN `cn` = un aparato TUYO: firma como tú, y no hay nada que preguntarle a nadie.
   if (!m?.cn) return true
@@ -996,19 +996,19 @@ export function memberCanSign (acta, pub, ns = null) {
  * Devuelve `false` ante un scope que no reconoce: si aparece uno nuevo, lo que toca es
  * añadirlo aquí, no que se cuele por no estar en la lista.
  */
-export function memberCanScope (acta, pub, scope) {
+export function memberCanScope (acta, pub, scope, extraRenounces = []) {
   if (!acta || typeof scope !== 'string') return false
   const secretos = /^vault:secrets:([a-z0-9-]{1,32})$/.exec(scope)
-  if (secretos) return memberCanReadSecrets(acta, pub, secretos[1])
-  if (scope === 'vault:sign') return memberCanSign(acta, pub)
+  if (secretos) return memberCanReadSecrets(acta, pub, secretos[1], extraRenounces)
+  if (scope === 'vault:sign') return memberCanSign(acta, pub, null, extraRenounces)
   const cap = Object.keys(CAP_SCOPE).find((c) => CAP_SCOPE[c] === scope)
-  return cap ? memberCan(acta, pub, cap) : false
+  return cap ? memberCan(acta, pub, cap, extraRenounces) : false
 }
 
-export function memberCanReadSecrets (acta, pub, ns) {
+export function memberCanReadSecrets (acta, pub, ns, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m || !m.cn) return false
-  return m.cn === ns && effectiveCaps(acta, pub).includes('secrets')
+  return m.cn === ns && effectiveCaps(acta, pub, extraRenounces).includes('secrets')
 }
 
 /** Los scopes de cert que le corresponden a un miembro según el acta. */
