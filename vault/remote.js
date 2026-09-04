@@ -258,6 +258,21 @@ const REVOKE_GRACE_MS = 1500
  * dispositivo estaba apagado la bóveda emitió un `vault.revoked` firmado, llega aquí y se
  * ejecuta el autoborrado (`onRevoked`) tras verificar la firma contra la maestra pineada.
  */
+/**
+ * EL ERROR DE LA BÓVEDA, CON LO QUE TRAE. Se rechazaba con `new Error(p.error)` a secas y
+ * se perdían el `code` y —desde que se puede abrir a distancia— el freno: cuántos intentos
+ * van y cuánto hay que esperar. Sin eso, quien llama solo puede emparejar por el TEXTO, que
+ * es justo lo que rompe en silencio cuando alguien lo traduce («los errores son un
+ * contrato»), y el admin reintenta contra una puerta que ya no responde sin saber por qué.
+ */
+function vaultError (p) {
+  const e = new Error(p?.error || 'vault error')
+  if (p?.code) e.code = p.code
+  if (p?.tries != null) e.tries = p.tries
+  if (p?.waitSec != null) e.waitSec = p.waitSec
+  return e
+}
+
 async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('missing pairing data')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
@@ -285,10 +300,10 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
           // antes que el segundo, y entonces el aparato se quedaba con la cuenta puesta
           // hasta vaya a saber cuándo. Se le da un respiro corto para recogerlo.
           if (/\brevoked\b/.test(p.error || '') && !graceTimer) {
-            graceTimer = setTimeout(() => { cleanup(); reject(new Error(p.error)) }, REVOKE_GRACE_MS)
+            graceTimer = setTimeout(() => { cleanup(); reject(vaultError(p)) }, REVOKE_GRACE_MS)
             return
           }
-          cleanup(); reject(new Error(p.error))
+          cleanup(); reject(vaultError(p))
         }
       })
       const t = setTimeout(() => { cleanup(); reject(new Error('the vault did not reply (is it running?)')) }, timeoutMs)
@@ -406,9 +421,15 @@ export async function requestRenounce ({ master, proxy, device, cert, record, on
  * El `nonce` de un solo uso va en cada petición porque `approve` y `revoke` cambian
  * estado, y para eso la ventana de frescura de ±5 min no alcanza.
  */
-export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked, ...rest } = {}) {
-  const nonce = [...crypto.getRandomValues(new Uint8Array(16))]
-    .map((b) => b.toString(16).padStart(2, '0')).join('')
+export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked, nonce: dado, ...rest } = {}) {
+  // EL NONCE SE PUEDE DAR, y hace falta para abrir la bóveda a distancia: ahí va también
+  // DENTRO del sobre sellado, y quien lo sella tiene que conocerlo antes de llamar. Si se
+  // generara siempre aquí, el de fuera y el de dentro no podrían coincidir — y el de
+  // dentro es el que impide que un sobre capturado se reenvíe con un nonce nuevo.
+  const nonce = typeof dado === 'string' && dado.length >= 16
+    ? dado
+    : [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((b) => b.toString(16).padStart(2, '0')).join('')
   const res = await vaultRpc({
     master, proxy, device, cert, onRevoked,
     sendType: MSG.ADMIN, okType: MSG.ADMIN_RESULT,
