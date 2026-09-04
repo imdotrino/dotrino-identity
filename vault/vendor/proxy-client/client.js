@@ -1,6 +1,6 @@
 import { buildSignedChannel, getPublicKeyJwk, signData } from './signature.js'
 import { seal, open, isSealed } from './sealing.js'
-import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS } from './webrtc.js'
+import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection } from './webrtc.js'
 
 /**
  * Error con un `code` estable.
@@ -96,14 +96,38 @@ export class WebSocketProxyClient {
       getSelfToken: () => this.token,
       signalSend: (to, payload) => this._proxySendOne(to, payload),
       deliverMessage: (from, parsed, meta) => this._deliver(from, parsed, meta),
-      emit: (event, ...args) => this._emit(event, ...args),
+      emit: (event, ...args) => {
+        // UN CANAL QUE SE CAE SE VUELVE A INTENTAR. Sin esto, el «un intento y no más» de
+        // `_upgradeDirect` sería para siempre: una desconexión momentánea condenaría a ese
+        // destinatario a ir por el proxio el resto de la vida del proceso.
+        if (event === 'webrtc_close') this._rtcTried?.delete(args[0])
+        this._emit(event, ...args)
+      },
       config: this.iceServers ? { iceServers: this.iceServers } : null
     }) : null
+    // QUIÉN PUEDE HACERTE NEGOCIAR UN CANAL DIRECTO. Sin política, cualquiera que sepa
+    // alcanzarte por el proxio — y negociar arranca DTLS/ICE/SCTP, o sea código que parsea
+    // red no confiable. En un navegador se vive con ello; en un proceso que guarda llaves,
+    // no. Quien monta el cliente lo acota (`acceptDirectFrom`).
+    if (this._rtc && typeof options.acceptDirectFrom === 'function') {
+      this._rtc.acceptFrom = options.acceptDirectFrom
+    }
   }
 
   // ---------- public API ----------
 
   get isConnected () { return this._connected }
+
+  /**
+   * WEBRTC EN NODE, si hay con qué. Se busca UNA vez al conectar y no en medio de una
+   * negociación: importar un paquete es asíncrono y hacerlo tarde metería una espera justo
+   * donde no puede haberla. Si no hay implementación, no pasa nada — se sigue por el
+   * proxio, que es el escalón que siempre funciona.
+   */
+  async _prepareWebRTC () {
+    if (!this._rtc || resolvePeerConnection()) return
+    await loadNodePeerConnection()
+  }
 
   connect () {
     return new Promise((resolve, reject) => {
@@ -198,6 +222,41 @@ export class WebSocketProxyClient {
     }
     if (proxyTokens.length) {
       this._sendRaw({ to: proxyTokens, message: messageStr })
+      // Y SE INTENTA IR DIRECTO PARA LA PRÓXIMA, sin esperar a nadie.
+      this._upgradeDirect(proxyTokens)
+    }
+  }
+
+  /**
+   * SIEMPRE EL CAMINO MÁS DIRECTO (dueño, 2026-09-03), pero sin pagar por ello.
+   *
+   * Hablarle a alguien por primera vez sale por el proxio, que es lo que hay AHORA. En
+   * paralelo se abre un canal directo, y desde el segundo mensaje `trySend` ya lo prefiere
+   * solo — eso no hay que cambiarlo, ya estaba.
+   *
+   * **No se espera a la negociación.** Bloquear el primer mensaje hasta tener canal directo
+   * haría más lento justo el arranque, que es lo que se quiere arreglar: se manda por donde
+   * se pueda y la conexión mejora por debajo.
+   *
+   * Un intento por destinatario y no más: si no salió, casi siempre es que no se puede
+   * (dos NAT que no se dejan, un navegador sin permisos) y reintentar en cada mensaje sería
+   * quemar CPU y señalización para nada. Si el canal se cae, `webrtc_close` lo desapunta y
+   * el siguiente mensaje vuelve a intentarlo.
+   */
+  _upgradeDirect (tokens) {
+    if (!this._rtc) return
+    this._rtcTried = this._rtcTried || new Set()
+    for (const t of tokens) {
+      if (this._rtcTried.has(t) || this._rtc.isOpen(t)) continue
+      this._rtcTried.add(t)
+      // La implementación se busca AQUÍ, justo antes de negociar, y no al conectar: esto ya
+      // corre desatendido, así que la espera no se la come nadie. Lanzarlo desde `connect`
+      // metía un microtask de más y descuadraba los tiempos de otras cosas — lo cazaron
+      // las pruebas del protocolo, que fallaban solo al correr todas juntas.
+      Promise.resolve()
+        .then(() => this._prepareWebRTC())
+        .then(() => this._rtc.connect(t))
+        .catch(() => {})   // no poder ir directo no es un fallo: es el caso normal en internet
     }
   }
 
@@ -415,14 +474,31 @@ export class WebSocketProxyClient {
    * (típicamente por el identity vault). Devuelve la respuesta del proxy con
    * `queued_delivered` (mensajes offline despachados al instante).
    */
-  identify ({ data, signature, cert, acta }) {
+  /**
+   * @param {(data:any)=>Promise<any>} [opts.sign] Con qué firmar. Solo se usa para encender
+   *   TURN, y por eso es opcional: quien no lo pase se queda como estaba.
+   *
+   *   TURN NO ES UN CANAL APARTE: es lo que WebRTC usa cuando no consigue ir directo. Pero
+   *   un canal por TURN sigue siendo mejor que el proxio, y no por velocidad — **el relevo
+   *   no puede leer lo que reenvía** (va cifrado extremo a extremo) y el proxio sí. Por eso
+   *   el orden es: aquí mismo, directo, por TURN, y el proxio el último (dueño, 2026-09-03).
+   *
+   *   Se enciende SOLO y por detrás: encenderlo pide credenciales al proxio, y hacer
+   *   esperar a `identify` por eso retrasaría todo lo que viene después para ganar algo que
+   *   solo hace falta cuando se negocie el primer canal.
+   */
+  identify ({ data, signature, cert, acta, sign }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
     const msg = { type: 'identify', data, signature }
     if (cert) msg.cert = cert // "una identidad": el proxy bindea este token también bajo tu maestra M
     // Acta de perfil: el proxy la verifica (va firmada) y bindea también el `profileId`, así
     // escribirle a la PERSONA llega a cualquiera de sus dispositivos. Ver acta-de-perfil.md.
     if (acta) msg.acta = acta
-    return this._request(msg, 'identified')
+    const done = this._request(msg, 'identified')
+    if (this._rtc && typeof sign === 'function' && data.publickey) {
+      done.then(() => this.enableTurn({ publicKey: data.publickey, sign })).catch(() => {})
+    }
+    return done
   }
 
   /**

@@ -269,6 +269,8 @@ export class Identity {
   async updateMe (patch) { return this._h('updateMe', { patch }) }
   getMe () { return this._h('getMe') }
   publicMe () { return this._h('publicMe') }
+  /** Cómo fue el último empujón del perfil a la bóveda: `{ ok, at, error }`. */
+  profilePushState () { return this._h('profilePushState') }
   getEncryptionPubkey () { return this._h('getEncryptionPubkey') }
   encrypt (recipients, plaintext) { return this._h('encrypt', { recipients, plaintext }) }
   decrypt (senderEncryptionPubkey, myToken, envelope) {

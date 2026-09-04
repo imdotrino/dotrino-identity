@@ -1,4 +1,4 @@
-Copia vendorizada de @dotrino/proxy-client@0.13.1 (dotrino-proxy-client/src/{index,client,signature,canonical,sealing,webrtc}.js).
+Copia vendorizada de @dotrino/proxy-client@0.17.0 (dotrino-proxy-client/src/{index,client,signature,canonical,sealing,webrtc}.js).
 NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
 sealing.js resuelve @dotrino/identity/content de forma PEREZOSA (= ../../content.js
 por el import map): solo se carga si de verdad se sella algo.

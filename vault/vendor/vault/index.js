@@ -84,7 +84,10 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   const client = injectedClient || await (async () => {
     const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
     const c = new WebSocketProxyClient({
-      url: proxy, enableWebRTC: false, autoReconnect: true,
+  // WEBRTC SOLO DONDE EXISTE (ver `lib/src/service.js`): en Node no hay
+  // `RTCPeerConnection` y encenderlo reventaría al negociar; en un navegador es nativo y es
+  // el camino directo que hay que preferir. Se mira, en vez de apagarlo para siempre.
+      url: proxy, enableWebRTC: typeof globalThis.RTCPeerConnection === 'function', autoReconnect: true,
       maxReconnectAttempts: 100000, reconnectDelay: 4000
     })
     await c.connect()

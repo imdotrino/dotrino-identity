@@ -571,6 +571,14 @@ export class Identity {
   async getMe () { return this._call('getMe') }
   /** Subconjunto PÚBLICO de tu perfil (solo lo visible) — para compartir/publicar. */
   async publicMe () { return this._call('publicMe') }
+  /**
+   * CÓMO FUE EL ÚLTIMO EMPUJÓN del perfil a la bóveda: `{ ok, at, error }`.
+   *
+   * El núcleo lo lleva desde la fase 3 y aquí no estaba, así que una app no podía
+   * preguntarlo — que es justo para lo que se guardó: poder decir «esto no se guardó» en
+   * vez de enseñar tan tranquila un perfil que solo vive en este aparato.
+   */
+  async profilePushState () { return this._call('profilePushState') }
 
   /** Pubkey ECDH (JWK string) propio para encripción. */
   async getEncryptionPubkey () {

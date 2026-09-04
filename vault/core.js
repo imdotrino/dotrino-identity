@@ -1214,7 +1214,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * en vez de enseñar un perfil que solo existe en este aparato. Sin esto, el usuario ve
    * su cambio en pantalla y cree que está hecho.
    */
-  let lastProfilePush = { ok: true, at: 0, error: null }
+  // `ok: null` = TODAVÍA NO SE HA EMPUJADO NADA. Nacía en `true`, así que «nunca se
+  // intentó» y «salió bien» se veían igual — un valor por defecto que dice que sí, en la
+  // función que existe justamente para no tragarse el fallo. Quien pregunte tiene que
+  // poder distinguir las tres cosas, y por eso son tres valores y no dos.
+  let lastProfilePush = { ok: null, at: 0, error: null }
   function pushProfileToVault () {
     const v = loadVaultCert(); const device = loadVaultDevice()
     if (!v?.cert || !device) return

@@ -20,6 +20,60 @@ export const DEFAULT_ICE_SERVERS = [
 
 const RTC_TAG = '__cc_rtc__'
 
+/**
+ * DE DÓNDE SALE `RTCPeerConnection`, y por qué esto existe.
+ *
+ * En un navegador es nativo. En Node no hay ninguno, y por eso el ecosistema tenía WebRTC
+ * apagado a mano en todas partes: dos máquinas Node se hablaban por el proxio aunque
+ * estuvieran en la misma red, que es lo contrario de la regla («siempre el camino más
+ * directo», CLAUDE.md).
+ *
+ * Se resuelve en este orden:
+ *
+ *   1. el del entorno (navegador, o un Node que algún día lo traiga);
+ *   2. el que le inyecten (`setPeerConnection`), para no atarse a un paquete concreto;
+ *   3. **`@dotrino/webrtc`**, si está instalado — y si no, **`werift`**, del que aquél es
+ *      una poda. Los dos son WebRTC en JavaScript puro, sin binario nativo, y eso no es una
+ *      preferencia estética: la bóveda se distribuye como un ejecutable único (SEA) y un
+ *      `.node` no entra ahí. Se cargan PEREZOSO y ninguno es dependencia de este paquete:
+ *      quien lo quiera en Node lo instala.
+ *
+ *      La poda va primero porque es la mitad de paquetes y sin la pila de audio y vídeo,
+ *      que un canal de datos no toca. Se sigue aceptando el de arriba para no obligar a
+ *      nadie a cambiar, y porque son el mismo código.
+ *
+ * Si no hay ninguno, WebRTC queda apagado y se sigue por el proxio. Eso no es un fallo:
+ * es el escalón 4, que siempre funciona.
+ */
+let _PC = null
+let _PCBuscado = false
+
+export function setPeerConnection (impl) { _PC = impl; _PCBuscado = true }
+
+export function resolvePeerConnection () {
+  if (_PCBuscado) return _PC
+  _PCBuscado = true
+  if (typeof globalThis.RTCPeerConnection === 'function') { _PC = globalThis.RTCPeerConnection; return _PC }
+  return _PC
+}
+
+/**
+ * Busca una implementación para Node. Es ASÍNCRONO —importar un paquete lo es— así que se
+ * llama una vez al arrancar, no en medio de una negociación.
+ */
+export async function loadNodePeerConnection () {
+  if (_PCBuscado && _PC) return _PC
+  if (typeof globalThis.RTCPeerConnection === 'function') { _PC = globalThis.RTCPeerConnection; _PCBuscado = true; return _PC }
+  for (const nombre of ['@dotrino/webrtc', 'werift']) {
+    try {
+      const w = await import(nombre)
+      if (typeof w?.RTCPeerConnection === 'function') { _PC = w.RTCPeerConnection; _PCBuscado = true; return _PC }
+    } catch (_) { /* no está: se prueba el siguiente, y si no, el proxio (escalón 4) */ }
+  }
+  _PCBuscado = true
+  return _PC
+}
+
 export class WebRTCManager {
   /**
    * @param {object} opts
@@ -31,6 +85,7 @@ export class WebRTCManager {
    * @param {{iceServers?: any[]}} [opts.config]
    */
   constructor (opts) {
+    this.acceptFrom = null   // ver `handleIncoming`: lo pone quien monta el cliente
     this.getSelfToken = opts.getSelfToken
     this.signalSend = opts.signalSend
     this.deliverMessage = opts.deliverMessage
@@ -43,8 +98,19 @@ export class WebRTCManager {
    * True if this is a control envelope and was consumed.
    * Otherwise the caller should keep delivering it normally.
    */
+  /**
+   * QUIÉN PUEDE HACERTE NEGOCIAR. Antes: cualquiera que supiera alcanzarte por el proxio.
+   *
+   * Aceptar una señal arranca DTLS, ICE y SCTP — código que parsea red no confiable— así
+   * que quien decide si eso corre no puede ser el que llama a la puerta. En un navegador
+   * eso ya era así y se vivía con ello; en la bóveda es el proceso que tiene la maestra.
+   *
+   * `acceptFrom` lo decide quien monta el cliente: la bóveda solo acepta a MIEMBROS DE SU
+   * ACTA. Sin política se mantiene lo de antes, para no romper a quien ya dependía de ello.
+   */
   handleIncoming (from, parsed) {
     if (!parsed || typeof parsed !== 'object' || parsed.t !== RTC_TAG) return false
+    if (this.acceptFrom && !this.acceptFrom(from)) return false
     const peer = this._ensurePeer(from)
     this._handleSignal(peer, parsed).catch((e) => {
       this.emit('error', { type: 'webrtc_signal', error: e, peer: from })
@@ -135,7 +201,9 @@ export class WebRTCManager {
   }
 
   _createPC (peer) {
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers })
+    const PC = resolvePeerConnection()
+    if (!PC) throw new Error('no WebRTC here: install `werift` for Node, or run this in a browser')
+    const pc = new PC({ iceServers: this.iceServers })
     peer.pc = pc
     peer.polite = this._isPolite(peer.remote)
 
