@@ -585,7 +585,11 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
  * reciente». Si la cadena que te llega es vieja, sigue verificando — para eso está el
  * registro público, que es otra capa.
  */
-export async function verifySignedBy ({ data, signature, publickey, chain, expectedProfileId = null } = {}) {
+/**
+ * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], expectedProfileId?: string|null }} [args]
+ */
+export async function verifySignedBy (args = {}) {
+  const { data, signature, publickey, chain, expectedProfileId = null } = args
   if (!data || typeof signature !== 'string' || typeof publickey !== 'string') {
     return { ok: false, reason: 'shape' }
   }

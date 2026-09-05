@@ -174,6 +174,14 @@ export class Identity {
   removeContact (publickey) { return this._h('removeContact', { publickey }) }
   listContacts () { return this._h('listContacts') }
   signData (data) { return this._h('signData', { data }) }
+  /**
+   * Prueba firmada con destinatario y vigencia (ver `vault/assertion.js`). Un servicio en
+   * Node la pide igual que una app: `{ audience, nonce, scopes?, ttlMs? }`.
+   */
+  async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
+    const { assertion } = await this._h('requestAssertion', { audience, nonce, scopes, ttlMs })
+    return assertion
+  }
   // Delegación de capacidad (sub-clave de dispositivo con scope/exp/revocación)
   signDelegation (sub, scope, opts = {}) { return this._h('signDelegation', { sub, scope, ...opts }) }
   revokeDelegation (nonce) { return this._h('revokeDelegation', { nonce }) }

@@ -21,6 +21,7 @@
 import { signDelegationWith } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
+import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_TTL_MS } from './assertion.js'
 import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck } from './remote.js'
 
@@ -1605,8 +1606,69 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         throw new Error('profile-without-signer: this device no longer signs for you and is not connected to any vault that can')
       }
       maybeRenewVaultCert()
-      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink }) }
+      try {
+        const firmado = await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink })
+        // A NOMBRE DE QUIÉN, TAMBIÉN CUANDO FIRMA LA BÓVEDA. La respuesta del daemon trae
+        // `signature` y `publickey` y nada más, así que por este camino la firma salía sin
+        // identidad ni cadena: quien la recibía no podía ni verificarla (le falta el acta que
+        // dice que ese firmante es de este perfil) ni atribuirla a nadie. Se completa con lo
+        // que este aparato ya tiene: el `profileId` y la cadena son del PERFIL, no de quien
+        // firma, y los dos lados están en la misma.
+        //
+        // Si el acta de este aparato estuviera atrasada y la bóveda firmara con una llave
+        // admitida después, la cadena no la incluiría y el receptor lo rechazará por
+        // «firmante-no-autorizado» — ruidoso y correcto: lo que falta ahí es sincronizar el
+        // acta, no aflojar la comprobación.
+        return { ...firmado, profileId: acta?.profileId || publickeyJwkStr, chain: sealerChain() }
+      }
       catch (e) { return handleVaultError(e) }
+    },
+
+    /**
+     * UNA PRUEBA PARA ALGUIEN EN CONCRETO, Y POR UN RATO (`vault/assertion.js`).
+     *
+     * `signData` firma «esto lo firmé yo» y no dice para quién: el mismo sobre valía ante
+     * el proxio y ante geo. Esto firma «esto lo firmé yo, PARA `aud`, contestando a
+     * `nonce`, y vale hasta `exp`».
+     *
+     * Firma por el camino de siempre —`signData`—, y eso no es un atajo: así hereda el
+     * re-enrutado a la bóveda cuando este aparato ya no firma por ti, y la prueba sale
+     * igual desde el teléfono que desde el PC.
+     *
+     * QUÉ DATOS LLEVA. Solo los que el perfil YA comparte (`publicMe`), y nunca más de lo
+     * que dan los alcances pedidos. La pantalla de permiso —donde se podrá conceder algo
+     * oculto a un destinatario concreto— es la fase siguiente
+     * (`dotrino-vault/docs/inicio-de-sesion.md`); hasta entonces esto no entrega nada que
+     * no se entregue ya, que es la forma de no adelantar una decisión del usuario.
+     */
+    async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
+      if (typeof audience !== 'string' || !audience.trim()) throw new Error('audience required')
+      if (typeof nonce !== 'string' || !nonce) throw new Error('nonce required')
+      const acta = loadActa()
+      // A NOMBRE DE QUIÉN va: la identidad es el `profileId`, no la llave de este aparato.
+      const sub = acta?.profileId || publickeyJwkStr
+      const granted = cleanScopes(scopes)
+      const permitido = claimsAllowed(granted)
+      const claims = {}
+      if (permitido.size) {
+        const pub = await handlers.publicMe()
+        if (permitido.has('name')) {
+          const n = pub.nickname || [pub.nombres, pub.apellidos].filter(Boolean).join(' ').trim()
+          if (n) claims.name = n
+        }
+        if (permitido.has('avatar') && pub.avatar) claims.avatar = pub.avatar
+        if (permitido.has('email') && pub.email) claims.email = pub.email
+        if (permitido.has('links') && Array.isArray(pub.links) && pub.links.length) claims.links = pub.links
+      }
+      const ttl = Math.min(Math.max(Number(ttlMs) || ASSERTION_DEFAULT_TTL_MS, 1000), ASSERTION_MAX_TTL_MS)
+      const iat = Date.now()
+      const body = assertionBody({ sub, aud: audience, nonce, scopes: granted, claims, iat, exp: iat + ttl })
+      const { signature, publickey, profileId, chain } = await handlers.signData({ data: body })
+      // QUIEN FIRMÓ TIENE QUE SER DE ESTE PERFIL. Si `signData` se re-enrutó a una bóveda
+      // de otra cuenta, la prueba diría `sub` de una y firma de otra: no se arregla, se
+      // para. Verificarla fallaría igual, pero mucho más lejos y con otro nombre.
+      if (profileId !== sub) throw new Error('assertion: the signer belongs to another profile')
+      return { assertion: { ...body, signature, publickey, chain } }
     },
 
     // ----- delegación de capacidad: la maestra firma un cert para una sub-clave -----

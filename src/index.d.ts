@@ -123,6 +123,7 @@ export class Identity {
   removeContact (publickey: string): Promise<PeerInfo | null>
   listContacts (): Promise<PeerInfo[]>
   signData (data: any): Promise<{ signature: string; publickey: string }>
+  requestAssertion (args: { audience: string; nonce: string; scopes?: AssertionScope[]; ttlMs?: number }): Promise<Assertion>
   setMyNickname (nickname: string): Promise<{ me: Me }>
   getEncryptionPubkey (): Promise<string>
   encrypt (recipients: EncryptRecipient[], plaintext: string): Promise<EnvelopeV1>
@@ -224,3 +225,48 @@ export function verifyDelegation (args: { cert: CapabilityCert; expectedScope?: 
 /** Verifica la cadena de una acción/pin delegado: D firmó + cert prueba D←P + scope/exp/revocación. */
 export function verifyChain (args: { data: any; signature: string; cert: CapabilityCert; expectedScope?: string; trustedIssuer?: string; now?: number; revoked?: ((nonce: string) => boolean) | Set<string> | Record<string, any> }): Promise<{ ok: boolean; reason?: string; issuer?: string; device?: string }>
 
+// ----- Prueba firmada con destinatario y vigencia (`@dotrino/identity/assertion`) -----
+
+export type AssertionScope = 'id:whoami' | 'profile:name' | 'profile:avatar' | 'profile:email' | 'profile:social'
+
+export interface AssertionClaims { name?: string; avatar?: string; email?: string; links?: ProfileLink[] }
+
+export interface Assertion {
+  v: 1
+  op: 'assertion'
+  sub: string              // profileId: la identidad a la que se atribuye
+  aud: string              // PARA QUIÉN vale
+  nonce: string            // el reto de quien pide, de un solo uso
+  iat: number              // ms epoch
+  exp: number              // ms epoch (tope ASSERTION_MAX_TTL_MS desde iat)
+  scopes: AssertionScope[]
+  claims: AssertionClaims
+  signature: string        // firma del aparato firmante sobre el cuerpo canónico
+  publickey: string        // quién firmó (miembro del acta con `sign`)
+  chain: any[]             // cadena de actas que prueba que ese firmante es del perfil
+}
+
+export interface VerifiedAssertion {
+  ok: boolean
+  reason?: string
+  profileId?: string
+  signer?: string
+  seq?: number
+  scopes?: AssertionScope[]
+  claims?: AssertionClaims
+  aud?: string
+  exp?: number
+}
+
+export const ASSERTION_MAX_TTL_MS: number
+export const ASSERTION_DEFAULT_TTL_MS: number
+export const ASSERTION_MAX_SKEW_MS: number
+export const SCOPES: readonly AssertionScope[]
+export const SCOPE_CLAIMS: Readonly<Record<AssertionScope, readonly string[]>>
+/** Un reto de un solo uso, para quien pide la prueba. */
+export function newAssertionNonce (): string
+export function cleanScopes (scopes?: string[]): AssertionScope[]
+export function claimsAllowed (scopes?: string[]): Set<string>
+export function assertionBody (args: { sub: string; aud: string; nonce: string; scopes?: string[]; claims?: AssertionClaims; iat: number; exp: number }): Omit<Assertion, 'signature' | 'publickey' | 'chain'>
+/** ¿Vale esta prueba, PARA MÍ y AHORA? `audience` y `nonce` son obligatorios; sin modo permisivo. */
+export function verifyAssertion (assertion: Assertion, opts: { audience: string; nonce: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedAssertion>

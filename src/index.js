@@ -244,6 +244,24 @@ export class Identity {
   }
 
   /**
+   * Una prueba firmada PARA ALGUIEN EN CONCRETO y por un rato: `signData` dice «lo firmé
+   * yo», y esto dice además para quién, contestando a qué reto y hasta cuándo. Es lo que
+   * un servicio (o una aplicación ajena) tiene que pedir en vez de una firma suelta, que
+   * le sirve igual a otro servicio.
+   *
+   * `audience` es quien va a verificarla —su URL— y `nonce` lo pone él, de un solo uso.
+   * `scopes` es lo que se le deja ver, del catálogo cerrado de `@dotrino/identity/assertion`;
+   * `id:whoami` (solo quién eres) es el mínimo y el valor por defecto.
+   *
+   * @returns {Promise<object>} la prueba, lista para mandar. Se comprueba con
+   * `verifyAssertion(prueba, { audience, nonce })`.
+   */
+  async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
+    const { assertion } = await this._call('requestAssertion', { audience, nonce, scopes, ttlMs })
+    return assertion
+  }
+
+  /**
    * Firma un CERTIFICADO DE DELEGACIÓN: autoriza a una sub-clave de dispositivo
    * `sub` (JWK string) a hacer `scope` en tu nombre, hasta `exp`, revocable por
    * `nonce`. La clave maestra NUNCA sale del vault. `opts`: { ttlMs?, exp?, label?, nonce? }.
@@ -718,3 +736,8 @@ export class Identity {
 // Helpers de capacidad SIN clave maestra (lado dispositivo + verificación), reutilizables
 // por apps/bridges sin cargar el iframe del vault.
 export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, verifyDelegation, verifyChain, pubkeyId, deriveSAS, verifyDeviceSig, makePairingCode, commitCode, avatarSvg, avatarDataUri } from '../vault/capabilities.js'
+
+// PARA QUIÉN vale una firma, y hasta cuándo. Verificar NO necesita el iframe ni la clave
+// de nadie, así que un servicio puede importarlo suelto (`@dotrino/identity/assertion`, que
+// no arrastra el cliente del vault); aquí se reexporta para quien ya tiene esto cargado.
+export { verifyAssertion, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, SCOPES, SCOPE_CLAIMS, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS } from '../vault/assertion.js'

@@ -109,6 +109,43 @@ Mismo registro de `peers` que arriba, pero filtrado por flag `isContact: true`. 
 
 - `id.signData(data)` → `{ signature, publickey }` con encoding canonical-JSON. Lo usa el messenger para construir sobres `identify` que el proxy verifica con su `verifySignatureWithJWK`.
 
+### Prueba con destinatario (0.83.0+)
+
+`signData` dice «esto lo firmé yo», y no dice para quién. Eso significaba que **un sobre
+firmado para el proxio valía ante geo**: los dos comprueban la misma firma de la misma
+identidad y ninguno tenía con qué notar que no le hablaban a él. La ventana de repetición
+evita que el mismo sobre se reenvíe dos veces al mismo sitio; el cruce de destinatario es
+otra cosa.
+
+Una *assertion* es una firma normal del perfil sobre un cuerpo que además dice `aud` (para
+quién), `nonce` (para qué petición) e `iat`/`exp` (desde y hasta cuándo).
+
+```js
+// quien PIDE genera el reto y dice quién es él
+const nonce = newAssertionNonce()
+const prueba = await id.requestAssertion({ audience: 'https://proxy.dotrino.com', nonce })
+
+// quien RECIBE comprueba las dos cosas que él sabe y la prueba no puede inventar
+import { verifyAssertion } from '@dotrino/identity/assertion'
+const v = await verifyAssertion(prueba, { audience: 'https://proxy.dotrino.com', nonce })
+// { ok, profileId, signer, seq, scopes, claims, aud, exp }  ·  o { ok:false, reason }
+```
+
+- **`audience` y `nonce` son obligatorios en las dos puntas.** Sin ellos no hay nada que
+  comparar, así que `verifyAssertion` responde `no-audience` / `no-nonce` en vez de dar por
+  buena una prueba que no ha podido juzgar. **No hay modo permisivo.**
+- **Vigencia corta** (2 min por defecto, tope 5). El tope lo comprueba también quien
+  recibe: fiarse del `exp` que puso el otro es fiarse de su buena fe.
+- **Alcances**, lista cerrada: `id:whoami` (el mínimo, solo quién eres), `profile:name`,
+  `profile:avatar`, `profile:email`, `profile:social`. Un dato sin su alcance no se emite
+  ni se acepta. Hoy solo viaja lo que el perfil ya comparte; la pantalla de permiso para
+  conceder algo oculto a un destinatario concreto es la fase siguiente.
+- **Verificar no necesita el iframe ni clave alguna**: `@dotrino/identity/assertion` es un
+  módulo puro y lo puede importar un servidor.
+
+Diseño y hacia dónde va (inicio de sesión y federación):
+[`dotrino-vault/docs/inicio-de-sesion.md`](../dotrino-vault/docs/inicio-de-sesion.md).
+
 ### Backup / migración
 
 - `id.exportIdentity()` → blob JSON con `privateJwk` (ECDSA), `encPrivateJwk` (ECDH), `me`, `peers`. **Sensible** — el host app es responsable de guardarlo de manera segura.
