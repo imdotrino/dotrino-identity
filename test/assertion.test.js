@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Identity } from '../src/node.js'
 import {
-  verifyAssertion, newAssertionNonce, assertionBody, cleanScopes, claimsAllowed,
+  verifyAssertion, verifySignedFor, newAssertionNonce, assertionBody, cleanScopes, claimsAllowed,
   ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS
 } from '../vault/assertion.js'
 
@@ -223,4 +223,58 @@ test('basura no pasa por prueba', async () => {
     assert.equal(v.ok, false)
     assert.equal(v.reason, 'shape', JSON.stringify(mala))
   }
+})
+
+// ----- contenido dirigido: lo que se publica y va A un servicio (pin, atestación) -----
+
+test('un pin firmado para geo no lo acepta reputación', async () => {
+  await conIdentidad(async (id) => {
+    const pin = { op: 'pin', aud: GEO, lat: 0, lon: 0, iat: Date.now() }
+    const { signature, publickey, chain } = await id.signData(pin)
+
+    const enGeo = await verifySignedFor({ data: pin, signature, publickey, chain, audience: GEO })
+    assert.equal(enGeo.ok, true, enGeo.reason)
+    assert.equal(enGeo.profileId, id.me.publickey)
+
+    const enOtro = await verifySignedFor({ data: pin, signature, publickey, chain, audience: 'https://rep.dotrino.com' })
+    assert.equal(enOtro.ok, false)
+    assert.equal(enOtro.reason, 'otro-destinatario')
+  })
+})
+
+test('un sobre SIN destinatario no pasa por dirigido', async () => {
+  await conIdentidad(async (id) => {
+    const viejo = { op: 'pin', lat: 0, lon: 0 }
+    const { signature, publickey, chain } = await id.signData(viejo)
+    const v = await verifySignedFor({ data: viejo, signature, publickey, chain, audience: GEO })
+    assert.equal(v.ok, false)
+    assert.equal(v.reason, 'sin-destinatario')
+  })
+})
+
+test('el contenido dirigido NO necesita reto, pero sí respeta su propia caducidad', async () => {
+  await conIdentidad(async (id) => {
+    const iat = Date.now()
+    const conFin = { op: 'pin', aud: GEO, iat, exp: iat + 60000 }
+    const f = await id.signData(conFin)
+
+    assert.equal((await verifySignedFor({ data: conFin, ...f, audience: GEO })).ok, true)
+    const tarde = await verifySignedFor({ data: conFin, ...f, audience: GEO, now: iat + 61000 })
+    assert.equal(tarde.reason, 'vencida')
+
+    // Sin `exp` vale igual: la caducidad de lo publicado la lleva el servicio (el TTL del
+    // pin), no este cuerpo.
+    const sinFin = { op: 'pin', aud: GEO, iat }
+    const g = await id.signData(sinFin)
+    assert.equal((await verifySignedFor({ data: sinFin, ...g, audience: GEO })).ok, true)
+  })
+})
+
+test('dirigido: sin decir quién eres no se puede juzgar', async () => {
+  await conIdentidad(async (id) => {
+    const pin = { op: 'pin', aud: GEO }
+    const f = await id.signData(pin)
+    assert.equal((await verifySignedFor({ data: pin, ...f })).reason, 'no-audience')
+    assert.equal((await verifySignedFor({})).reason, 'no-audience')
+  })
 })

@@ -740,4 +740,4 @@ export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, ve
 // PARA QUIÉN vale una firma, y hasta cuándo. Verificar NO necesita el iframe ni la clave
 // de nadie, así que un servicio puede importarlo suelto (`@dotrino/identity/assertion`, que
 // no arrastra el cliente del vault); aquí se reexporta para quien ya tiene esto cargado.
-export { verifyAssertion, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, SCOPES, SCOPE_CLAIMS, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS } from '../vault/assertion.js'
+export { verifyAssertion, verifySignedFor, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, SCOPES, SCOPE_CLAIMS, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS } from '../vault/assertion.js'

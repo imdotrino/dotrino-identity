@@ -270,3 +270,5 @@ export function claimsAllowed (scopes?: string[]): Set<string>
 export function assertionBody (args: { sub: string; aud: string; nonce: string; scopes?: string[]; claims?: AssertionClaims; iat: number; exp: number }): Omit<Assertion, 'signature' | 'publickey' | 'chain'>
 /** ¿Vale esta prueba, PARA MÍ y AHORA? `audience` y `nonce` son obligatorios; sin modo permisivo. */
 export function verifyAssertion (assertion: Assertion, opts: { audience: string; nonce: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedAssertion>
+/** ¿Este contenido firmado (un pin, una atestación) va dirigido a mí? `aud` obligatorio; `exp` opcional. */
+export function verifySignedFor (args: { data: any; signature: string; publickey: string; chain: any[]; audience: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<{ ok: boolean; reason?: string; profileId?: string; signer?: string; seq?: number; aud?: string }>

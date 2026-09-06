@@ -143,6 +143,23 @@ const v = await verifyAssertion(prueba, { audience: 'https://proxy.dotrino.com',
 - **Verificar no necesita el iframe ni clave alguna**: `@dotrino/identity/assertion` es un
   módulo puro y lo puede importar un servidor.
 
+**Y su hermana, para lo que se publica** (0.84.0+). Un pin de geo o una atestación de
+reputación se firman y se sueltan: no hay nadie al otro lado que pueda dar un reto de
+antemano, así que ahí no cabe una prueba entera — lo que falta es el destinatario, y solo
+eso. Sin él, un pin firmado para geo lo acepta igual reputación.
+
+```js
+import { verifySignedFor } from '@dotrino/identity/assertion'
+
+const pin = { op: 'pin', aud: 'https://geo.dotrino.com', lat, lon, iat: Date.now() }
+const { signature, publickey, chain } = await id.signData(pin)
+// en el servidor:
+const v = await verifySignedFor({ data: pin, signature, publickey, chain, audience: 'https://geo.dotrino.com' })
+```
+
+`aud` es obligatorio igual que en la prueba; `exp` es opcional, porque la caducidad de lo
+publicado la lleva el servicio (el TTL del pin) y no el cuerpo.
+
 Diseño y hacia dónde va (inicio de sesión y federación):
 [`dotrino-vault/docs/inicio-de-sesion.md`](../dotrino-vault/docs/inicio-de-sesion.md).
 

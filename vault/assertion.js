@@ -174,4 +174,42 @@ export async function verifyAssertion (assertion, opts = {}) {
   return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, scopes: [...a.scopes], claims: { ...(a.claims || {}) }, aud: a.aud, exp: a.exp }
 }
 
-export default { ASSERTION_V, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS, SCOPES, SCOPE_CLAIMS, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, verifyAssertion }
+/**
+ * ¿ESTE CONTENIDO FIRMADO VA DIRIGIDO A MÍ? La otra mitad del destinatario, y **no es lo
+ * mismo que una prueba**: conviene tener claras las dos, porque confundirlas lleva a pedir
+ * un reto donde no hay quien lo emita.
+ *
+ *   · **Prueba** (`verifyAssertion`) — autenticación INTERACTIVA: alguien me habla, yo le
+ *     mando un reto y quiero saber quién es AHORA. Lleva `nonce` porque hay dos partes.
+ *   · **Contenido dirigido** (esto) — un pin de geo, una atestación de reputación: se
+ *     firma y se publica, sin nadie al otro lado que pueda dar un reto de antemano. Lo que
+ *     falta ahí es `aud`, y solo `aud`: sin él, un pin firmado para geo lo acepta igual
+ *     reputación.
+ *
+ * `aud` es obligatorio, como en la prueba. `exp` es OPCIONAL, y esa es la diferencia real:
+ * lo publicado tiene su propia caducidad (el TTL del pin, la vigencia de la atestación) y
+ * quien la lleva es el servicio; si el cuerpo trae `exp`, se respeta.
+ */
+/**
+ * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], audience?: string, expectedProfileId?: string|null, now?: number, maxSkewMs?: number }} [args]
+ */
+export async function verifySignedFor (args = {}) {
+  const { data, signature, publickey, chain, audience, expectedProfileId = null, now = Date.now(), maxSkewMs = ASSERTION_MAX_SKEW_MS } = args
+  if (typeof audience !== 'string' || !audience.trim()) return { ok: false, reason: 'no-audience' }
+  if (!data || typeof data !== 'object') return { ok: false, reason: 'shape' }
+  if (typeof data.aud !== 'string' || !data.aud) return { ok: false, reason: 'sin-destinatario' }
+  if (data.aud !== audience.trim()) return { ok: false, reason: 'otro-destinatario' }
+  if (data.exp != null) {
+    if (!Number.isFinite(data.exp)) return { ok: false, reason: 'shape' }
+    if (data.exp <= now) return { ok: false, reason: 'vencida' }
+  }
+  if (data.iat != null) {
+    if (!Number.isFinite(data.iat)) return { ok: false, reason: 'shape' }
+    if (data.iat > now + maxSkewMs) return { ok: false, reason: 'del-futuro' }
+  }
+  const v = await verifySignedBy({ data, signature, publickey, chain, expectedProfileId })
+  if (!v.ok) return { ok: false, reason: 'firma:' + v.reason }
+  return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, aud: data.aud }
+}
+
+export default { ASSERTION_V, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS, SCOPES, SCOPE_CLAIMS, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, verifyAssertion, verifySignedFor }
