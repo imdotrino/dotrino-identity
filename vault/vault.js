@@ -77,6 +77,24 @@ import { pubkeyId } from './capabilities.js'
       : { 'profile:name': 'tu nombre', 'profile:avatar': 'tu foto', 'profile:email': 'tu correo', 'profile:social': 'tus enlaces', 'id:whoami': 'quién eres' }
   })()
 
+  /**
+   * CÓMO SE LLAMA QUIEN PIDE. Una dirección cruda no dice nada —y quien la lee deprisa no
+   * distingue `chat.dotrino.com` de `chat.dotrlno.com`—, así que se enseña el nombre y
+   * DEBAJO la dirección entera, que es lo que de verdad identifica.
+   *
+   * No se importa el catálogo de aplicaciones: eso ataría este iframe al repositorio del
+   * home y habría que subirlo cada vez que nace una app. El subdominio ya es el nombre.
+   */
+  function nombreDeOrigen (origin) {
+    try {
+      const h = new URL(origin).hostname
+      if (h === 'dotrino.com' || h === 'www.dotrino.com') return 'Dotrino'
+      const m = /^([a-z0-9-]+)\.dotrino\.com$/.exec(h)
+      if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1)
+      return h
+    } catch (_) { return String(origin) }
+  }
+
   let consentAbierto = null
   function askConsent ({ origin, scopes }) {
     if (consentAbierto) return Promise.resolve(false)   // una pregunta a la vez
@@ -86,7 +104,8 @@ import { pubkeyId } from './capabilities.js'
       const lista = scopes.map((x) => `<li>${SCOPE_TXT[x] || x}</li>`).join('')
       host.innerHTML = `<div style="background:#171331;border:1px solid #2a2350;border-radius:16px;padding:22px;min-width:min(320px,90vw);max-width:90vw;color:#e7e3ff">
         <div style="opacity:.7;font-size:13px">${T_CONSENT.who}</div>
-        <div style="font-weight:700;margin:8px 0 4px">${String(origin).replace(/^https?:\/\//, '')} ${T_CONSENT.title}:</div>
+        <div style="font-weight:700;margin:8px 0 4px">${nombreDeOrigen(origin)} ${T_CONSENT.title}:</div>
+        <div style="opacity:.55;font-size:12px;margin-bottom:6px">${String(origin).replace(/^https?:\/\//, '')}</div>
         <ul style="margin:6px 0 12px 18px;padding:0">${lista}</ul>
         <div style="opacity:.7;font-size:12px;margin-bottom:12px">${T_CONSENT.once}</div>
         <div style="display:flex;gap:8px">
