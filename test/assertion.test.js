@@ -191,20 +191,24 @@ test('un dato colado sin su alcance se rechaza al verificar', async () => {
   })
 })
 
-test('lo que se pide es lo que se firma, y viaja lo que el perfil ya comparte', async () => {
+/**
+ * Los DATOS del perfil ya no salen por pedirlos: hace falta que el usuario los conceda a
+ * ese origen (el permiso por origen). En Node no hay a quién preguntar —ni origen al que
+ * apuntarle lo concedido—, así que sale el mínimo y nada más. Que se conceda y se recuerde
+ * se prueba en `consent.test.js`, que es donde vive esa regla.
+ */
+test('sin permiso, una prueba dice quién eres y NADA más', async () => {
   await conIdentidad(async (id) => {
     await id.updateMe({ nickname: 'Ada', email: 'ada@ejemplo.com' })
     const nonce = newAssertionNonce()
     const a = await id.requestAssertion({ audience: PROXIO, nonce, scopes: ['profile:name', 'profile:email'] })
 
-    assert.deepEqual(a.scopes, ['profile:email', 'profile:name'], 'orden estable: se firma canónicamente')
-    assert.equal(a.claims.name, 'Ada')
-    assert.equal(a.claims.email, 'ada@ejemplo.com')
-    assert.equal(a.claims.avatar, undefined, 'lo que no se pidió no va')
+    assert.deepEqual(a.scopes, ['id:whoami'], 'lo pedido no es lo concedido')
+    assert.deepEqual(a.claims, {}, 'ni el nombre ni el correo viajan sin permiso')
 
     const v = await verifyAssertion(a, { audience: PROXIO, nonce })
     assert.equal(v.ok, true, v.reason)
-    assert.equal(v.claims.name, 'Ada')
+    assert.equal(v.profileId, a.sub, 'y sigue diciendo quién eres, que es el mínimo')
   })
 })
 

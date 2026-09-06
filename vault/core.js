@@ -37,6 +37,7 @@ export const ACTA_STORAGE = 'dotrino.identity.acta'                 // acta de p
 export const ACTA_HISTORY_STORAGE = 'dotrino.identity.acta.history' // últimas actas selladas (§1.3)
 export const PENDING_JOIN_STORAGE = 'dotrino.identity.pendingJoin'  // «nací para adoptar la cuenta de otro»
 export const RENOUNCE_STORAGE = 'dotrino.identity.renounced'        // renuncias propias aún no absorbidas por el master
+export const GRANTS_STORAGE = 'dotrino.identity.grants'             // qué le concediste a cada origen (permiso por origen)
 // Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
 // namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
 export const PROFILES_STORAGE = 'dotrino.identity.profiles' // [{ id, name, pubkey }]
@@ -183,7 +184,15 @@ function sanitizeProfilePatch (patch = {}) {
   return out
 }
 
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null }) {
+/**
+ * `askConsent` es CÓMO SE PREGUNTA, y lo pone quien monta el núcleo (el iframe pinta su
+ * propio panel; en Node no hay a quién preguntar). Se inyecta en vez de vivir aquí porque
+ * este módulo no toca interfaz — y porque QUIÉN pinta importa: un panel dibujado por la
+ * aplicación que pide sería la aplicación aprobándose a sí misma.
+ *
+ * Si no se inyecta, no se concede nada nuevo: sin forma de preguntar, la respuesta es no.
+ */
+export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null, askConsent = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
@@ -594,6 +603,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // Diseño en `dotrino-vault/docs/acta-de-perfil.md`. Aquí solo se guarda, se lee y se
   // sella; las reglas (sellador único, seq/prev, no dejar el perfil sin firmante) viven en
   // `acta.js`, que es puro y está probado aparte.
+  // ----- PERMISO POR ORIGEN: qué le concedió el usuario a cada aplicación -----
+  //
+  // `{ [origin]: { scopes: [...], at } }`. Vive en el kv del PERFIL, así que cambiar de
+  // perfil cambia lo concedido: lo que le diste a una aplicación desde tu cuenta de trabajo
+  // no vale para la personal.
+  const loadGrants = () => { try { return JSON.parse(kv.getItem(GRANTS_STORAGE) || '{}') } catch (_) { return {} } }
+  const saveGrants = (g) => { try { kv.setItem(GRANTS_STORAGE, JSON.stringify(g)) } catch (_) {} }
+  /** Lo concedido a un origen, hoy. */
+  const grantedTo = (origin) => (loadGrants()[String(origin || '')]?.scopes) || []
+
   const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
   const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
   // VENTANA DE RETENCIÓN (§1.3): el master conserva las últimas actas para que un miembro
@@ -1382,6 +1401,49 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     'profileActa', 'profileMembers', 'myMembership', 'isMaster', 'sealerChain'
   ])
 
+  /**
+   * ¿QUÉ SE LE DEJA VER A ESTE ORIGEN? El corazón del permiso por origen.
+   *
+   * `id:whoami` —solo quién eres, sin ningún dato— se concede sin preguntar: quien llega
+   * aquí ya pasó el filtro de orígenes del iframe, y preguntarlo treinta veces al día por
+   * aplicaciones del mismo dueño es ceremonia, no seguridad.
+   *
+   * Todo lo DEMÁS (nombre, foto, correo, redes) exige una concesión guardada, y si no la
+   * hay se pregunta. Lo que el usuario diga se guarda por origen y se puede retirar.
+   *
+   * Y si no hay a quién preguntar —Node, o un cliente que no muestra el panel— se devuelve
+   * lo que ya estuviera concedido y nada más. **No se amplía en silencio**: sin respuesta,
+   * la respuesta es no.
+   */
+  async function consentFor (origin, pedidos) {
+    const org = String(origin || '').trim()
+    const base = pedidos.filter((s) => s === 'id:whoami')
+    const extra = pedidos.filter((s) => s !== 'id:whoami')
+    if (!extra.length) return pedidos
+    // Sin origen no se puede llevar la cuenta de a quién se le concedió qué, así que no se
+    // concede nada más que el mínimo. Es el caso de Node y el de una llamada interna.
+    if (!org) return base.length ? base : ['id:whoami']
+
+    const yaTiene = grantedTo(org)
+    const faltan = extra.filter((s) => !yaTiene.includes(s))
+    if (!faltan.length) return pedidos
+
+    if (typeof askConsent !== 'function') {
+      const conocidos = [...base, ...extra.filter((s) => yaTiene.includes(s))]
+      return conocidos.length ? conocidos : ['id:whoami']
+    }
+    let ok = false
+    try { ok = !!(await askConsent({ origin: org, scopes: faltan, already: yaTiene })) } catch (_) { ok = false }
+    if (!ok) {
+      const conocidos = [...base, ...extra.filter((s) => yaTiene.includes(s))]
+      return conocidos.length ? conocidos : ['id:whoami']
+    }
+    const g = loadGrants()
+    g[org] = { scopes: [...new Set([...yaTiene, ...faltan])].sort(), at: Date.now() }
+    saveGrants(g)
+    return pedidos
+  }
+
   const handlers = {
     async profileLockStatus () {
       refreshLockState()
@@ -1641,13 +1703,31 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * (`dotrino-vault/docs/inicio-de-sesion.md`); hasta entonces esto no entrega nada que
      * no se entregue ya, que es la forma de no adelantar una decisión del usuario.
      */
-    async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
+    /**
+     * QUÉ LE HAS CONCEDIDO A CADA APLICACIÓN. Es la mitad que hace que el permiso sea del
+     * usuario y no un trámite: si no se puede ver ni retirar, conceder no significa nada.
+     */
+    async listGrants () {
+      const g = loadGrants()
+      return Object.entries(g).map(([origin, v]) => ({ origin, scopes: v?.scopes || [], at: v?.at || 0 }))
+        .sort((a, b) => b.at - a.at)
+    },
+    /** Retirar lo concedido a un origen. La próxima vez que pida, se vuelve a preguntar. */
+    async revokeGrant ({ origin } = {}) {
+      const g = loadGrants()
+      const org = String(origin || '')
+      if (!(org in g)) return { ok: false }
+      delete g[org]; saveGrants(g)
+      return { ok: true }
+    },
+
+    async requestAssertion ({ audience, nonce, scopes, ttlMs, __origin } = {}) {
       if (typeof audience !== 'string' || !audience.trim()) throw new Error('audience required')
       if (typeof nonce !== 'string' || !nonce) throw new Error('nonce required')
       const acta = loadActa()
       // A NOMBRE DE QUIÉN va: la identidad es el `profileId`, no la llave de este aparato.
       const sub = acta?.profileId || publickeyJwkStr
-      const granted = cleanScopes(scopes)
+      const granted = await consentFor(__origin, cleanScopes(scopes))
       const permitido = claimsAllowed(granted)
       const claims = {}
       if (permitido.size) {

@@ -160,6 +160,24 @@ const v = await verifySignedFor({ data: pin, signature, publickey, chain, audien
 `aud` es obligatorio igual que en la prueba; `exp` es opcional, porque la caducidad de lo
 publicado la lleva el servicio (el TTL del pin) y no el cuerpo.
 
+### Permiso por origen (0.86.0+)
+
+Una prueba dice **quién eres** sin preguntar nada: quien llega al iframe ya pasó el filtro
+de orígenes, y pedir permiso treinta veces al día por aplicaciones del mismo dueño es
+ceremonia, no seguridad. Cualquier **dato tuyo** —nombre, foto, correo, enlaces— es otra
+cosa: hace falta que lo concedas a ESE origen, y lo concedido se guarda y se puede retirar.
+
+```js
+await id.listGrants()          // [{ origin, scopes, at }]
+await id.revokeGrant(origin)   // y la próxima vez se vuelve a preguntar
+```
+
+**El panel lo pinta la bóveda, no la aplicación.** Vive en otro origen, así que la página
+que pide no puede pulsar ahí dentro ni leerlo; lo único que puede hacer es no mostrarlo, y
+entonces no consigue el permiso — que es el lado correcto en el que fallar. Sin nadie a
+quien preguntar (Node, o un cliente que no muestra nada), la respuesta es **no**: nunca se
+amplía en silencio.
+
 ### Entrar sin enrolar: las sesiones (0.85.0+)
 
 Enlazar un aparato y entrar en uno no son lo mismo. Enlazar mete una llave en el acta —hay

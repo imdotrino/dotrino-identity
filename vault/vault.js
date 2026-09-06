@@ -55,12 +55,62 @@ import { pubkeyId } from './capabilities.js'
     removeItem: (k) => sessionStorage.removeItem(k)
   }
 
+  /**
+   * EL PANEL DE PERMISO LO PINTA ESTE IFRAME, no la aplicación que pide.
+   *
+   * Es la diferencia entre un permiso y un trámite: la aplicación vive en otro origen, así
+   * que no puede pulsar aquí dentro ni leer lo que hay. Lo único que puede hacer es NO
+   * mostrarnos —y entonces no consigue el permiso, que es el lado correcto en el que
+   * fallar—. Por eso se le pide que nos muestre (`consent:open`) y, si no lo hace, la
+   * pregunta se queda sin responder y se deniega sola.
+   */
+  const T_CONSENT = (() => {
+    const en = (navigator.language || 'es').startsWith('en')
+    return en
+      ? { title: 'wants to see', allow: 'Allow', deny: 'No', who: 'Your Dotrino identity', once: 'Only what you allow leaves here.' }
+      : { title: 'quiere ver', allow: 'Permitir', deny: 'No', who: 'Tu identidad de Dotrino', once: 'De aquí solo sale lo que permitas.' }
+  })()
+  const SCOPE_TXT = (() => {
+    const en = (navigator.language || 'es').startsWith('en')
+    return en
+      ? { 'profile:name': 'your name', 'profile:avatar': 'your picture', 'profile:email': 'your email', 'profile:social': 'your links', 'id:whoami': 'who you are' }
+      : { 'profile:name': 'tu nombre', 'profile:avatar': 'tu foto', 'profile:email': 'tu correo', 'profile:social': 'tus enlaces', 'id:whoami': 'quién eres' }
+  })()
+
+  let consentAbierto = null
+  function askConsent ({ origin, scopes }) {
+    if (consentAbierto) return Promise.resolve(false)   // una pregunta a la vez
+    return new Promise((resolve) => {
+      const host = document.createElement('div')
+      host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(10,8,20,.86);font-family:system-ui,-apple-system,Segoe UI,sans-serif'
+      const lista = scopes.map((x) => `<li>${SCOPE_TXT[x] || x}</li>`).join('')
+      host.innerHTML = `<div style="background:#171331;border:1px solid #2a2350;border-radius:16px;padding:22px;min-width:min(320px,90vw);max-width:90vw;color:#e7e3ff">
+        <div style="opacity:.7;font-size:13px">${T_CONSENT.who}</div>
+        <div style="font-weight:700;margin:8px 0 4px">${String(origin).replace(/^https?:\/\//, '')} ${T_CONSENT.title}:</div>
+        <ul style="margin:6px 0 12px 18px;padding:0">${lista}</ul>
+        <div style="opacity:.7;font-size:12px;margin-bottom:12px">${T_CONSENT.once}</div>
+        <div style="display:flex;gap:8px">
+          <button data-yes style="flex:1;padding:10px;border-radius:10px;border:0;background:#7c3aed;color:#fff;font:inherit;font-weight:600;cursor:pointer">${T_CONSENT.allow}</button>
+          <button data-no style="flex:1;padding:10px;border-radius:10px;border:1px solid #2a2350;background:transparent;color:inherit;font:inherit;cursor:pointer">${T_CONSENT.deny}</button>
+        </div></div>`
+      const cerrar = (v) => { try { host.remove() } catch (_) {} consentAbierto = null; broadcast('consent:close', {}); resolve(v) }
+      host.querySelector('[data-yes]').addEventListener('click', () => cerrar(true))
+      host.querySelector('[data-no]').addEventListener('click', () => cerrar(false))
+      consentAbierto = host
+      document.body.appendChild(host)
+      broadcast('consent:open', { origin })
+      // Si nadie contesta —porque nadie nos mostró—, se deniega. Nunca al revés.
+      setTimeout(() => { if (consentAbierto === host) cerrar(false) }, 60000)
+    })
+  }
+
   const core = await createIdentityCore({
     kv,
     peers: { initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty },
     makeSync: createSync,
     keyStore,
-    sessionKv
+    sessionKv,
+    askConsent
   })
 
   const { handlers } = core
@@ -290,7 +340,10 @@ import { pubkeyId } from './capabilities.js'
     const handler = selfHandlers[method] || handlers[method]
     if (!handler) return reply({ error: `Unknown method: ${method}` })
     try {
-      const result = await handler(params || {})
+      // EL ORIGEN LO PONE EL IFRAME, no quien llama: va pisado a propósito. Es el único
+      // dato que la aplicación no puede falsificar —el navegador lo garantiza— y de él
+      // depende a quién se le concedió qué.
+      const result = await handler({ ...(params || {}), __origin: event.origin })
       reply({ result })
     } catch (e) {
       // `code` (y su `detail`) CRUZAN. Sin ellos, al otro lado solo llegaba la frase, y una

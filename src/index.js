@@ -146,6 +146,12 @@ export class Identity {
         }
 
         if (msg.type === 'event') {
+          // MOSTRAR EL IFRAME PARA QUE PREGUNTE. El panel de permiso lo pinta la bóveda,
+          // en su propio origen: esta página no puede pulsar ahí dentro ni leerlo. Lo
+          // único que hace aquí es dejar sitio. Si una aplicación decidiera no hacerlo,
+          // no obtiene el permiso — que es el lado correcto en el que fallar.
+          if (msg.event === 'consent:open') this._showVault(true)
+          if (msg.event === 'consent:close') this._showVault(false)
           this._emit(msg.event, msg.payload)
         }
       }
@@ -155,6 +161,16 @@ export class Identity {
     })
 
     return this._ready
+  }
+
+  /** Deja ver la bóveda (a pantalla completa) mientras pregunta, y la devuelve a su sitio. */
+  _showVault (visible) {
+    const f = this._iframe
+    if (!f) return
+    f.style.cssText = visible
+      ? 'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483000'
+      : 'display:none'
+    f.setAttribute('aria-hidden', visible ? 'false' : 'true')
   }
 
   destroy () {
@@ -256,6 +272,11 @@ export class Identity {
    * @returns {Promise<object>} la prueba, lista para mandar. Se comprueba con
    * `verifyAssertion(prueba, { audience, nonce })`.
    */
+  /** Qué le has concedido a cada aplicación. Sin esto, conceder no significaría nada. */
+  async listGrants () { return this._call('listGrants') }
+  /** Retirar lo concedido a un origen: la próxima vez que pida, se vuelve a preguntar. */
+  async revokeGrant (origin) { return this._call('revokeGrant', { origin }) }
+
   async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
     const { assertion } = await this._call('requestAssertion', { audience, nonce, scopes, ttlMs })
     return assertion
