@@ -97,9 +97,8 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   const selfCert = await getSelfCert()
   const identify = async () => {
     if (!client.token) return
-    const data = { op: 'identify', publickey: iss, token: client.token, ts: Date.now() }
-    const { signature } = await identity.signData(data)
-    await client.identify({ data, signature, cert: selfCert })
+    // El sobre lo arma el pilar (`identifyAs`), que le pone el destinatario.
+    await client.identifyAs({ publickey: iss, sign: (d) => identity.signData(d), cert: selfCert })
   }
   await identify()
   client.on('token', () => identify().catch(() => {}))

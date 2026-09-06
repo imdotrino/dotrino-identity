@@ -272,3 +272,45 @@ export function assertionBody (args: { sub: string; aud: string; nonce: string; 
 export function verifyAssertion (assertion: Assertion, opts: { audience: string; nonce: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedAssertion>
 /** ¿Este contenido firmado (un pin, una atestación) va dirigido a mí? `aud` obligatorio; `exp` opcional. */
 export function verifySignedFor (args: { data: any; signature: string; publickey: string; chain: any[]; audience: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<{ ok: boolean; reason?: string; profileId?: string; signer?: string; seq?: number; aud?: string }>
+
+// ----- Sesiones: entrar sin enrolar (`@dotrino/identity/session`) -----
+
+export type SessionScope = 'id:whoami' | 'vault:store'
+
+export interface SessionPaper {
+  v: 1
+  op: 'session'
+  sid: string        // el identificador que el usuario ve para poder cerrarla
+  s: string          // pubkey de la sesión (vive en el aparato prestado)
+  by: string         // pubkey del aparato que la respalda (miembro del acta)
+  origin: string     // dónde vale
+  scopes: SessionScope[]
+  iat: number
+  exp: number        // vence por reloj: una sesión ES temporal
+  sig: string        // firma del aparato que respalda
+}
+
+export interface VerifiedSession {
+  ok: boolean
+  reason?: string
+  profileId?: string
+  seq?: number
+  sid?: string
+  s?: string
+  by?: string
+  origin?: string
+  scopes?: SessionScope[]
+  exp?: number
+}
+
+export const SESSION_SCOPES: readonly SessionScope[]
+export const SESSION_FORBIDDEN: readonly string[]
+export const SESSION_DEFAULT_TTL_MS: number
+export const SESSION_MAX_TTL_MS: number
+export function newSessionId (): string
+export function cleanSessionScopes (scopes?: string[]): SessionScope[]
+export function signSession (args: { sid: string; s: string; by: string; origin: string; scopes?: string[]; ttlMs?: number; now?: number }, sign: (body: any) => Promise<any>): Promise<SessionPaper>
+/** ¿Vale este papel AHORA? La cadena de actas es obligatoria: sin ella no se puede juzgar. */
+export function verifySession (paper: SessionPaper, opts: { chain: any[]; expectedProfileId?: string | null; origin?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedSession>
+/** ¿Firmó esta sesión esto, y su papel lo cubría? */
+export function verifySessionSigned (args: { data: any; signature: string; session: SessionPaper; chain: any[]; scope?: SessionScope | null; origin?: string | null; expectedProfileId?: string | null; now?: number }): Promise<VerifiedSession>

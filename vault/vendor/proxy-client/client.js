@@ -487,6 +487,41 @@ export class WebSocketProxyClient {
    *   esperar a `identify` por eso retrasaría todo lo que viene después para ganar algo que
    *   solo hace falta cuando se negocie el primer canal.
    */
+  /**
+   * PARA QUIÉN firmamos cuando le hablamos a ESTE proxio. Sale de la URL a la que estamos
+   * conectados: quien levanta su propio proxio tiene otro destinatario, y con un valor fijo
+   * un sobre firmado para el nuestro valdría ante el suyo.
+   */
+  get audience () { return String(this.url || '').replace(/\/+$/, '') }
+
+  /**
+   * IDENTIFICARSE, ARMANDO EL SOBRE AQUÍ. Doce repos lo escribían a mano
+   * (`{op:'identify', publickey, token, ts}` + firma), o sea el protocolo copiado doce
+   * veces: al añadirle el destinatario habría que acertar en los doce, y quien escribiera
+   * el trece lo haría sin él.
+   *
+   * `sign` es lo que firma (normalmente `(d) => identity.signData(d)`); acepta tanto la
+   * firma en texto como el paquete del vault.
+   */
+  async identifyAs ({ publickey, sign, cert, acta } = {}) {
+    if (typeof sign !== 'function') throw new Error('identifyAs requires sign(data)')
+    if (!publickey) throw new Error('identifyAs requires publickey')
+    if (!this.token) throw new Error('identifyAs: not connected yet (no token)')
+    // El `token` lo da el proxio al conectar y va firmado aquí dentro: es el reto de esta
+    // conexión, y por eso este sobre no necesita otro. Lo que le faltaba era decir a quién
+    // se lo estamos dando.
+    const data = { op: 'identify', aud: this.audience, publickey, token: this.token, ts: Date.now() }
+    const firmado = await sign(data)
+    const signature = typeof firmado === 'string' ? firmado : firmado?.signature
+    // «No pude firmar» y «se cayó la red» son cosas distintas, y se distinguen por el
+    // `code`: la bóveda usa esto para saber si su llave de comunicación firma todavía, y
+    // tragarse un fallo de red como si fuera lo primero la mandaría al camino equivocado.
+    if (typeof signature !== 'string') {
+      throw Object.assign(new Error('identifyAs: sign() returned no signature'), { code: 'no-signature' })
+    }
+    return this.identify({ data, signature, cert, acta, sign })
+  }
+
   identify ({ data, signature, cert, acta, sign }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
     const msg = { type: 'identify', data, signature }

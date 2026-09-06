@@ -160,6 +160,37 @@ const v = await verifySignedFor({ data: pin, signature, publickey, chain, audien
 `aud` es obligatorio igual que en la prueba; `exp` es opcional, porque la caducidad de lo
 publicado la lleva el servicio (el TTL del pin) y no el cuerpo.
 
+### Entrar sin enrolar: las sesiones (0.85.0+)
+
+Enlazar un aparato y entrar en uno no son lo mismo. Enlazar mete una llave en el acta —hay
+que sellarla, o sea despertar a la selladora y tener el perfil abierto— y salir es sellar
+otra vez. Nadie hace eso para abrir una aplicación en un navegador prestado.
+
+Una **sesión** es la otra puerta: una llave que vive en ese navegador y un **papel** con
+vencimiento que la respalda, firmado por un aparato tuyo que sí está en el acta.
+
+```js
+import { openSession } from '@dotrino/identity/session-flow'   // el que entra
+import { grantSession } from '@dotrino/identity/session-flow'  // el que respalda
+import { verifySession } from '@dotrino/identity/session'      // quien recibe algo suyo
+```
+
+El QR va **al revés** que en el emparejamiento: lo muestra quien quiere entrar, y lo escanea
+el teléfono — quien entra puede no tener cámara, el teléfono siempre la tiene.
+
+Lo que hace que esto no sea una llave maestra de repuesto:
+
+- **Nunca amplía**: cada alcance exige que el aparato que firmó lo tenga **hoy**, y se
+  comprueba contra el acta al verificar, no solo al emitir.
+- **Lista negra fija**: jamás `secrets`, `admin`, `approve`, `sealer`, `passwords`,
+  `unattended` ni `replica`, aunque el aparato los tenga.
+- **Vence por reloj** (8 h por defecto, tope 24). Es la excepción deliberada a *los papeles
+  ya no caducan por reloj*: un certificado describe pertenencia, que dura; una sesión **es**
+  temporal.
+- **Muere con su aparato**: si quitas del acta al que la respalda, sus sesiones caen solas.
+  Sin avisar a nadie ni perseguir papeles.
+- **No se re-delega**: una sesión no abre otra sesión.
+
 Diseño y hacia dónde va (inicio de sesión y federación):
 [`dotrino-vault/docs/inicio-de-sesion.md`](../dotrino-vault/docs/inicio-de-sesion.md).
 
