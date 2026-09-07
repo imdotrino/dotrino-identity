@@ -278,7 +278,13 @@ export class Identity {
   async revokeGrant (origin) { return this._call('revokeGrant', { origin }) }
 
   async requestAssertion ({ audience, nonce, scopes, ttlMs } = {}) {
-    const { assertion } = await this._call('requestAssertion', { audience, nonce, scopes, ttlMs })
+    // ESPERA LO QUE TARDE UNA PERSONA. Los cinco segundos de siempre valen para una
+    // llamada que solo hace cuentas; esta puede abrir la pantalla de permiso (§permiso por
+    // origen) y ahí quien contesta es un humano. Con el plazo corto, el cliente se rendía
+    // con «Vault timeout» mientras el usuario todavía miraba el panel — y pulsar «Permitir»
+    // ya no servía de nada. El tope es un poco mayor que el del propio panel, para que el
+    // error que llegue sea «no lo concedió», que dice lo que pasó.
+    const { assertion } = await this._call('requestAssertion', { audience, nonce, scopes, ttlMs }, 65000)
     return assertion
   }
 
