@@ -1415,31 +1415,48 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    * lo que ya estuviera concedido y nada más. **No se amplía en silencio**: sin respuesta,
    * la respuesta es no.
    */
-  async function consentFor (origin, pedidos) {
+  async function consentFor (origin, pedidos, onBehalfOf = null) {
     const org = String(origin || '').trim()
+    // APUNTA CUÁNDO SE USÓ. Sin esto, «dónde se usó mi identidad» solo puede decir qué
+    // concediste, no si sigue usándose — y eso es lo que hace que uno se decida a retirar
+    // un permiso que ya no hace falta. Se apunta aunque solo se pida el mínimo: entrar es
+    // usar, lleve datos o no.
+    const marcarUso = () => {
+      if (!org) return
+      const g = loadGrants()
+      const prev = g[org] || { scopes: [], at: Date.now() }
+      g[org] = { ...prev, lastUsed: Date.now(), ...(onBehalfOf ? { onBehalfOf: String(onBehalfOf).slice(0, 60) } : {}) }
+      saveGrants(g)
+    }
     const base = pedidos.filter((s) => s === 'id:whoami')
     const extra = pedidos.filter((s) => s !== 'id:whoami')
-    if (!extra.length) return pedidos
+    if (!extra.length) { marcarUso(); return pedidos }
     // Sin origen no se puede llevar la cuenta de a quién se le concedió qué, así que no se
     // concede nada más que el mínimo. Es el caso de Node y el de una llamada interna.
     if (!org) return base.length ? base : ['id:whoami']
 
     const yaTiene = grantedTo(org)
     const faltan = extra.filter((s) => !yaTiene.includes(s))
-    if (!faltan.length) return pedidos
+    if (!faltan.length) { marcarUso(); return pedidos }
 
     if (typeof askConsent !== 'function') {
       const conocidos = [...base, ...extra.filter((s) => yaTiene.includes(s))]
+      marcarUso()
       return conocidos.length ? conocidos : ['id:whoami']
     }
     let ok = false
-    try { ok = !!(await askConsent({ origin: org, scopes: faltan, already: yaTiene })) } catch (_) { ok = false }
+    try { ok = !!(await askConsent({ origin: org, scopes: faltan, already: yaTiene, onBehalfOf })) } catch (_) { ok = false }
     if (!ok) {
       const conocidos = [...base, ...extra.filter((s) => yaTiene.includes(s))]
+      marcarUso()
       return conocidos.length ? conocidos : ['id:whoami']
     }
     const g = loadGrants()
-    g[org] = { scopes: [...new Set([...yaTiene, ...faltan])].sort(), at: Date.now() }
+    g[org] = {
+      scopes: [...new Set([...yaTiene, ...faltan])].sort(),
+      at: (g[org]?.at) || Date.now(), lastUsed: Date.now(),
+      ...(onBehalfOf ? { onBehalfOf: String(onBehalfOf).slice(0, 60) } : {})
+    }
     saveGrants(g)
     return pedidos
   }
@@ -1709,8 +1726,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async listGrants () {
       const g = loadGrants()
-      return Object.entries(g).map(([origin, v]) => ({ origin, scopes: v?.scopes || [], at: v?.at || 0 }))
-        .sort((a, b) => b.at - a.at)
+      return Object.entries(g).map(([origin, v]) => ({
+        origin, scopes: v?.scopes || [], at: v?.at || 0,
+        lastUsed: v?.lastUsed || v?.at || 0,
+        ...(v?.onBehalfOf ? { onBehalfOf: v.onBehalfOf } : {})
+      })).sort((a, b) => b.lastUsed - a.lastUsed)
     },
     /** Retirar lo concedido a un origen. La próxima vez que pida, se vuelve a preguntar. */
     async revokeGrant ({ origin } = {}) {
@@ -1721,13 +1741,22 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { ok: true }
     },
 
-    async requestAssertion ({ audience, nonce, scopes, ttlMs, __origin } = {}) {
+    /**
+     * `onBehalfOf` es EN NOMBRE DE QUIÉN dice pedir el origen. Lo usa el puente OIDC, que
+     * pide por una aplicación de fuera: sin esto, todas ellas se verían como una sola
+     * entrada («Sso») y el usuario no sabría a quién le está dejando entrar.
+     *
+     * Es una AFIRMACIÓN del origen, no un hecho comprobable — y por eso se enseña siempre
+     * subordinado a él («sso.dotrino.com dice: Tal App»), nunca en su lugar. Quien
+     * responde por lo que pase sigue siendo el origen.
+     */
+    async requestAssertion ({ audience, nonce, scopes, ttlMs, onBehalfOf, __origin } = {}) {
       if (typeof audience !== 'string' || !audience.trim()) throw new Error('audience required')
       if (typeof nonce !== 'string' || !nonce) throw new Error('nonce required')
       const acta = loadActa()
       // A NOMBRE DE QUIÉN va: la identidad es el `profileId`, no la llave de este aparato.
       const sub = acta?.profileId || publickeyJwkStr
-      const granted = await consentFor(__origin, cleanScopes(scopes))
+      const granted = await consentFor(__origin, cleanScopes(scopes), onBehalfOf)
       const permitido = claimsAllowed(granted)
       const claims = {}
       if (permitido.size) {

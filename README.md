@@ -168,9 +168,19 @@ ceremonia, no seguridad. Cualquier **dato tuyo** —nombre, foto, correo, enlace
 cosa: hace falta que lo concedas a ESE origen, y lo concedido se guarda y se puede retirar.
 
 ```js
-await id.listGrants()          // [{ origin, scopes, at }]
+await id.listGrants()          // [{ origin, scopes, at, lastUsed, onBehalfOf? }]
 await id.revokeGrant(origin)   // y la próxima vez se vuelve a preguntar
 ```
+
+`lastUsed` se apunta cada vez que ese origen pide una prueba, **aunque solo pida el
+mínimo**: entrar es usar, lleve datos o no. Sin ese dato, «dónde se usó mi identidad» solo
+podría decir qué concediste, no si sigue usándose — que es lo que hace que uno se decida a
+retirar un permiso que ya no hace falta.
+
+`onBehalfOf` lo declara el origen cuando pide **por otro** (lo usa el puente OIDC, que pide
+por una aplicación de fuera; sin esto todas ellas se verían como una sola entrada). Es una
+afirmación suya, no un hecho comprobable, así que se enseña siempre subordinada al origen —
+«Tal App · a través de sso.dotrino.com»— y nunca en su lugar.
 
 **El panel lo pinta la bóveda, no la aplicación.** Vive en otro origen, así que la página
 que pide no puede pulsar ahí dentro ni leerlo; lo único que puede hacer es no mostrarlo, y

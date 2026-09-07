@@ -67,8 +67,8 @@ import { pubkeyId } from './capabilities.js'
   const T_CONSENT = (() => {
     const en = (navigator.language || 'es').startsWith('en')
     return en
-      ? { title: 'wants to see', allow: 'Allow', deny: 'No', who: 'Your Dotrino identity', once: 'Only what you allow leaves here.' }
-      : { title: 'quiere ver', allow: 'Permitir', deny: 'No', who: 'Tu identidad de Dotrino', once: 'De aquí solo sale lo que permitas.' }
+      ? { title: 'wants to see', allow: 'Allow', deny: 'No', who: 'Your Dotrino identity', once: 'Only what you allow leaves here.', via: 'through' }
+      : { title: 'quiere ver', allow: 'Permitir', deny: 'No', who: 'Tu identidad de Dotrino', once: 'De aquí solo sale lo que permitas.', via: 'a través de' }
   })()
   const SCOPE_TXT = (() => {
     const en = (navigator.language || 'es').startsWith('en')
@@ -85,6 +85,9 @@ import { pubkeyId } from './capabilities.js'
    * No se importa el catálogo de aplicaciones: eso ataría este iframe al repositorio del
    * home y habría que subirlo cada vez que nace una app. El subdominio ya es el nombre.
    */
+  /** Lo que dice el origen se pinta como texto, nunca como marcado: quien lo escribe es él. */
+  const escaparTexto = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
   function nombreDeOrigen (origin) {
     try {
       const h = new URL(origin).hostname
@@ -96,7 +99,7 @@ import { pubkeyId } from './capabilities.js'
   }
 
   let consentAbierto = null
-  function askConsent ({ origin, scopes }) {
+  function askConsent ({ origin, scopes, onBehalfOf }) {
     if (consentAbierto) return Promise.resolve(false)   // una pregunta a la vez
     return new Promise((resolve) => {
       const host = document.createElement('div')
@@ -104,8 +107,8 @@ import { pubkeyId } from './capabilities.js'
       const lista = scopes.map((x) => `<li>${SCOPE_TXT[x] || x}</li>`).join('')
       host.innerHTML = `<div style="background:#171331;border:1px solid #2a2350;border-radius:16px;padding:22px;min-width:min(320px,90vw);max-width:90vw;color:#e7e3ff">
         <div style="opacity:.7;font-size:13px">${T_CONSENT.who}</div>
-        <div style="font-weight:700;margin:8px 0 4px">${nombreDeOrigen(origin)} ${T_CONSENT.title}:</div>
-        <div style="opacity:.55;font-size:12px;margin-bottom:6px">${String(origin).replace(/^https?:\/\//, '')}</div>
+        <div style="font-weight:700;margin:8px 0 4px">${onBehalfOf ? escaparTexto(onBehalfOf) : nombreDeOrigen(origin)} ${T_CONSENT.title}:</div>
+        <div style="opacity:.55;font-size:12px;margin-bottom:6px">${onBehalfOf ? T_CONSENT.via + ' ' : ''}${String(origin).replace(/^https?:\/\//, '')}</div>
         <ul style="margin:6px 0 12px 18px;padding:0">${lista}</ul>
         <div style="opacity:.7;font-size:12px;margin-bottom:12px">${T_CONSENT.once}</div>
         <div style="display:flex;gap:8px">

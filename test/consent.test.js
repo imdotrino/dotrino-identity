@@ -121,3 +121,44 @@ test('sin origen tampoco se amplía: no habría a quién apuntarle lo concedido'
   assert.equal(n.preguntas.length, 0)
   n.limpia()
 })
+
+// ----- «Dónde se usó mi identidad»: el último uso y quién pedía de verdad -----
+
+test('se apunta CUÁNDO se usó, no solo cuándo se concedió', async () => {
+  const n = await nucleo(true)
+  await n.h.updateMe({ patch: { nickname: 'Ada' } })
+  await pedir(n.h, ['profile:name'])
+  const [g1] = await n.h.listGrants()
+  assert.ok(g1.at > 0)
+  assert.equal(g1.lastUsed, g1.at, 'recién concedido: lo mismo')
+
+  await new Promise((r) => setTimeout(r, 12))
+  await pedir(n.h, ['id:whoami'])          // entrar es usar, lleve datos o no
+  const [g2] = await n.h.listGrants()
+  assert.ok(g2.lastUsed > g1.lastUsed, 'el último uso avanza')
+  assert.equal(g2.at, g1.at, 'y la fecha de la concesión no se toca')
+  n.limpia()
+})
+
+test('el puente dice en nombre de quién pide, y se guarda con el origen', async () => {
+  const n = await nucleo(true)
+  await n.h.updateMe({ patch: { nickname: 'Ada' } })
+  await n.h.requestAssertion({
+    audience: 'https://sso.dotrino.com', nonce: 'n1', scopes: ['id:whoami', 'profile:name'],
+    __origin: 'https://sso.dotrino.com', onBehalfOf: 'Tienda de Pepe'
+  })
+  assert.equal(n.preguntas[0].onBehalfOf, 'Tienda de Pepe', 'el panel lo enseña')
+  const [g] = await n.h.listGrants()
+  assert.equal(g.origin, 'https://sso.dotrino.com', 'quien responde sigue siendo el origen')
+  assert.equal(g.onBehalfOf, 'Tienda de Pepe')
+  n.limpia()
+})
+
+test('sin usar nada, un origen no aparece en la lista', async () => {
+  const n = await nucleo(false)
+  await pedir(n.h, ['id:whoami'], 'https://algo.dotrino.com')
+  const lista = await n.h.listGrants()
+  assert.equal(lista.length, 1, 'entrar cuenta como uso, aunque no se conceda ningún dato')
+  assert.deepEqual(lista[0].scopes, [], 'y sin datos concedidos')
+  n.limpia()
+})
