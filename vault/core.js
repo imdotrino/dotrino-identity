@@ -563,6 +563,66 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     throw Object.assign(new Error('no signing key stored for that profile'), { code: 'no-key' })
   }
 
+  /**
+   * LA LLAVE DE CIFRADO DE OTRA CUENTA DE ESTE DISPOSITIVO, sin abrirla ni ponerla activa.
+   *
+   * El par de `signerForProfile`, y por el mismo motivo: la pantalla de Pedidos enseña los
+   * de TODAS las cuentas a la vez, y desde 2026-09-11 cada pedido trae **qué comando está
+   * pidiendo las claves** dentro de un sobre cerrado a la llave de ESA cuenta. Sin esto, los
+   * pedidos de las demás cuentas se verían sin comando — que es justo el dato por el que se
+   * mira la pantalla.
+   *
+   * Mismas tres reglas que allí: no se mueve `currentPid`, no se genera ninguna llave (si no
+   * está, se dice) y una cuenta sellada bajo su contraseña se contesta `profile-locked`.
+   */
+  async function encKeyForProfile (pid) {
+    if (pid === currentPid) return encKeypair?.privateKey || null
+    const { algo, privUses } = ALGO_OF.enc
+    const nombre = ENC_KEY_STORAGE.replace(/^dotrino\.identity\./, `dotrino.identity.p.${pid}.`)
+    if (keyStore) {
+      const guardado = await keyStore.get(nombre).catch(() => null)
+      if (guardado?.privateKey) return guardado.privateKey
+    }
+    const raw = rawKv.getItem(nombre)
+    if (raw) {
+      const g = JSON.parse(raw)
+      if (g?.sealed) throw Object.assign(new Error('that profile is locked: its encryption key is sealed under its password'), { code: 'profile-locked' })
+      if (g?.privateJwk) return crypto.subtle.importKey('jwk', g.privateJwk, algo, true, privUses)
+    }
+    throw Object.assign(new Error('no encryption key stored for that profile'), { code: 'no-key' })
+  }
+
+  /**
+   * ABRE EL COMANDO DE CADA PEDIDO, aquí dentro, donde están las llaves.
+   *
+   * La bóveda manda el comando y el path sellados a la llave de cifrado del aparato que
+   * pregunta (no los manda en claro: el camino hasta aquí es el proxio, que no cifra). Se
+   * abren en el iframe y salen a la página ya legibles: la página no ve ninguna llave, y el
+   * único tramo en claro es el `postMessage` entre dos ventanas del mismo navegador.
+   *
+   * Lo que no se puede abrir se dice (`ctxError`) en vez de quedarse como un pedido sin
+   * comando: son cosas distintas y en la pantalla hay que poder distinguirlas.
+   */
+  async function abrirContextos (items, pid) {
+    if (!Array.isArray(items) || !items.length) return items
+    let priv = null
+    let fallo = null
+    try { priv = await encKeyForProfile(pid) } catch (e) { fallo = e?.code || 'no-key' }
+    const salida = []
+    for (const raw of items) {
+      const { ctxWrap, ctxEnvelope, ...it } = raw || {}
+      if (!ctxWrap || !ctxEnvelope) { salida.push(it); continue }
+      if (!priv) { salida.push({ ...it, ctxError: fallo || 'no-key' }); continue }
+      try {
+        const cek = await Content.openWrap({ wrap: ctxWrap, myEncPrivateKey: priv })
+        salida.push({ ...it, ctx: JSON.parse(await Content.decryptWithCek({ cek, envelope: ctxEnvelope })) })
+      } catch (e) {
+        salida.push({ ...it, ctxError: e?.code || 'cannot-open' })
+      }
+    }
+    return salida
+  }
+
   /** La cuenta de este dispositivo que YA está emparejada con la bóveda `master`, si la hay. */
   const profilePairedWith = (master) => {
     if (!master) return null
@@ -2565,8 +2625,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
-      try { return await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, onRevoked: wipeVaultLink }) }
-      catch (e) { return handleVaultError(e) }
+      try {
+        const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, onRevoked: wipeVaultLink })
+        // El comando de cada pedido viene sellado a este aparato: se abre aquí, que es
+        // donde está la llave, y sale ya legible.
+        if (Array.isArray(r?.items)) return { ...r, items: await abrirContextos(r.items, currentPid) }
+        return r
+      } catch (e) { return handleVaultError(e) }
     },
 
     /**
@@ -2607,7 +2672,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
         if (!device) return { ...base, items: [], error: 'no-key' }
         try {
           const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals' })
-          return { ...base, items: Array.isArray(r?.items) ? r.items : [] }
+          const items = Array.isArray(r?.items) ? await abrirContextos(r.items, p.id) : []
+          return { ...base, items }
         } catch (e) {
           return { ...base, items: [], error: e?.code || e?.message || 'error' }
         }

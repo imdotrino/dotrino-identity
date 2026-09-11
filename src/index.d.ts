@@ -167,10 +167,16 @@ export class Identity {
   vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
   vaultStore (method: string, args?: any): Promise<any>
   listVaultDevices (): Promise<{ devices: any[]; revoked: any[] }>
-  /** Pedidos de aprobación de la cuenta activa (o de otra, con `profile`). */
+  /**
+   * Pedidos de aprobación de la cuenta activa (o de otra, con `profile`).
+   *
+   * Cada pedido trae `ctx` —qué comando está pidiendo las claves y desde qué carpeta— ya
+   * abierto: viaja sellado a la llave de cifrado de este aparato y se descifra aquí dentro.
+   * `ctxError` si no se pudo abrir; sin ninguno de los dos, el pedido no dijo qué corría.
+   */
   vaultApprovals (op: 'approvals' | 'approve' | 'deny', args?: { id?: string; profile?: string }): Promise<any>
   /** Los pedidos de TODAS las cuentas de este dispositivo que aprueban, sin cambiar la activa. */
-  vaultApprovalsAll (): Promise<Array<{ profile: string; name: string; current: boolean; items: any[]; error?: string }>>
+  vaultApprovalsAll (): Promise<Array<{ profile: string; name: string; current: boolean; items: ApprovalRequest[]; error?: string }>>
   canApproveVault (): Promise<boolean>
   getVaultCert (): Promise<any>
   onVault (handler: (payload: any) => void): () => void
@@ -323,3 +329,33 @@ export function signSession (args: { sid: string; s: string; by: string; origin:
 export function verifySession (paper: SessionPaper, opts: { chain: any[]; expectedProfileId?: string | null; origin?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedSession>
 /** ¿Firmó esta sesión esto, y su papel lo cubría? */
 export function verifySessionSigned (args: { data: any; signature: string; session: SessionPaper; chain: any[]; scope?: SessionScope | null; origin?: string | null; expectedProfileId?: string | null; now?: number }): Promise<VerifiedSession>
+
+/** Un pedido de aprobación tal y como lo ve la pantalla que dice que sí o que no. */
+export interface ApprovalRequest {
+  id: string
+  ns: string
+  deviceId: string | null
+  label: string
+  ts: number
+  exp: number
+  /** Qué comando está pidiendo las claves, ya descifrado. `null`/ausente si no lo dijo. */
+  ctx?: ProcessContext | null
+  /** Por qué no se pudo abrir el comando (`no-key`, `profile-locked`, `cannot-open`). */
+  ctxError?: string
+  /** La bóveda no pudo sellarlo para este aparato (`no-enc-key`, `seal-failed`). */
+  ctxSealed?: boolean
+  ctxReason?: string
+}
+
+/** Qué proceso pide, y si lo comprobó el kernel (`proc`) o solo lo dice él (`declared`). */
+export interface ProcessContext {
+  pid: number | null
+  uid: number | null
+  exe: string
+  cwd: string
+  argv: string[]
+  truncated: boolean
+  user: string
+  host: string
+  verified: 'proc' | 'declared'
+}
