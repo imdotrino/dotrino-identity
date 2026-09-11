@@ -257,6 +257,9 @@ export class Identity {
   vaultStore (method, args) { return this._h('vaultStore', { method, args }) }
   listVaultDevices () { return this._h('listVaultDevices') }
   getVaultCert () { return this._h('getVaultCert') }
+  vaultApprovals (op, args) { return this._h('vaultApprovals', { op, ...(args || {}) }) }
+  /** Los pedidos de TODAS las cuentas que aprueban, sin cambiar la activa. */
+  vaultApprovalsAll () { return this._h('vaultApprovalsAll') }
   onVault (handler) { return this.on('vault', handler) }
   // Multi-perfil por dispositivo (crear/cambiar reinicializa con el nuevo perfil activo).
   listProfiles () { return this._h('listProfiles') }

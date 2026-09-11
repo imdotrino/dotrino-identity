@@ -463,9 +463,27 @@ export class Identity {
   /**
    * PEDIDOS DE APROBACIÓN de la bóveda (cajones con `approval`): `op` = `approvals` ·
    * `approve` · `deny` (estos dos con `{ id }`). Requiere `vault:approve` en el cert.
+   *
+   * `args.profile` apunta a OTRA cuenta de este dispositivo (la que diga
+   * `vaultApprovalsAll`); sin él es la activa.
    */
   async vaultApprovals (op, args) {
     return this._call('vaultApprovals', { op, ...(args || {}) }, 20000)
+  }
+
+  /**
+   * LOS PEDIDOS DE TODAS TUS CUENTAS, SIN CAMBIARTE DE CUENTA.
+   *
+   * Una entrada por cuenta de este dispositivo que pueda aprobar: `{ profile, name,
+   * current, items }`, o `{ ..., error }` si a esa no se le pudo preguntar. El timbre no
+   * dice a qué cuenta llamó, así que quien enseña Pedidos tiene que mirar en todas —y
+   * hacerlo cambiando la cuenta activa significaba una recarga por cuenta, con el avatar
+   * y el icono de la app cambiando a la vista.
+   *
+   * Aprobar uno de otra cuenta: `vaultApprovals('approve', { id, profile })`.
+   */
+  async vaultApprovalsAll () {
+    return this._call('vaultApprovalsAll', {}, 30000)
   }
 
   /** Registra el token de push de la app nativa (FCM/APNs) bajo la llave de este aparato. */

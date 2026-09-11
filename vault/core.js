@@ -527,6 +527,42 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     } catch (_) { return null }
   }
 
+  /**
+   * LA LLAVE DE FIRMA DE OTRA CUENTA DE ESTE DISPOSITIVO, sin abrirla ni ponerla activa.
+   *
+   * Existe para poder PREGUNTAR por los pedidos de cada cuenta sin cambiarse a ella (ver
+   * `vaultApprovalsAll`). La privada nunca se ve: en el almacén de llaves es una `CryptoKey`
+   * no extraíble y se devuelve tal cual, para firmar y nada más.
+   *
+   * Tres cosas que NO se hacen aquí, y las tres importan:
+   *
+   * · **No se mueve `currentPid`.** Abrir otra cuenta «un momento» pisa la identidad en
+   *   memoria y además persiste cuál es la activa: cualquier otra llamada que caiga en medio
+   *   se atendería con la cuenta equivocada, y una recarga a mitad te deja en otra cuenta.
+   * · **No se genera ninguna llave.** Si no está, se dice. Un `catch` que cae a `generateKey`
+   *   le cambiaría la identidad a esa cuenta y la dejaría fuera de su propio perfil para
+   *   siempre — el mismo fallo que ya está avisado en `loadOrCreatePair`.
+   * · **No se abre lo sellado.** Una cuenta del camino legado guarda su privada sellada bajo
+   *   su contraseña; sin la frase no hay con qué, y se contesta `profile-locked` en vez de
+   *   fingir que no existe.
+   */
+  async function signerForProfile (pid) {
+    const nombre = KEY_STORAGE.replace(/^dotrino\.identity\./, `dotrino.identity.p.${pid}.`)
+    if (keyStore) {
+      const guardado = await keyStore.get(nombre).catch(() => null)
+      if (guardado?.privateKey && guardado?.publicJwk) {
+        return { publickey: JSON.stringify(guardado.publicJwk), privateKey: guardado.privateKey }
+      }
+    }
+    const raw = rawKv.getItem(nombre)
+    if (raw) {
+      const g = JSON.parse(raw)
+      if (g?.sealed) throw Object.assign(new Error('that profile is locked: its key is sealed under its password'), { code: 'profile-locked' })
+      if (g?.privateJwk && g?.publicJwk) return { publickey: JSON.stringify(g.publicJwk), privateJwk: g.privateJwk }
+    }
+    throw Object.assign(new Error('no signing key stored for that profile'), { code: 'no-key' })
+  }
+
   /** La cuenta de este dispositivo que YA está emparejada con la bóveda `master`, si la hay. */
   const profilePairedWith = (master) => {
     if (!master) return null
@@ -575,6 +611,25 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     if (e && /\brevoked\b/.test(e.message || '')) emitVault({ phase: 'rejected', reason: e.message })
     throw e
   }
+  /**
+   * APROBAR O DENEGAR un pedido de OTRA cuenta de este dispositivo.
+   *
+   * Es el par de `vaultApprovalsAll`: si la pantalla enseña los pedidos de las tres cuentas,
+   * el botón «Aprobar» tiene que funcionar en las tres — si no, seguirías teniendo que
+   * cambiarte, que es lo que esto vino a quitar. Firma con la llave de ESA cuenta y no toca
+   * nada de la activa.
+   *
+   * Solo lo suyo: sin cert o sin `vault:approve` en ese cert, no hay nada que hacer aquí.
+   */
+  async function approvalsDeOtroPerfil (pid, { op, id } = {}) {
+    if (!loadProfiles().some((p) => p.id === pid)) throw Object.assign(new Error('that profile does not exist on this device'), { code: 'no-profile' })
+    const v = vaultCertOf(pid)
+    if (!v?.cert) throw Object.assign(new Error('that profile is not paired with a vault'), { code: 'not-paired' })
+    if (!(v.cert.scope || []).includes('vault:approve')) throw Object.assign(new Error('that profile does not approve requests'), { code: 'no-approve' })
+    const device = await signerForProfile(pid)
+    return remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
+  }
+
   /** Id estable y corto de una llave de cifrado: con esto se indexan las envolturas. */
   const encKeyId = async (encPub) => (await pubkeyIdOf(encPub)).slice(0, 16)
 
@@ -2501,13 +2556,63 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      * PEDIDOS DE APROBACIÓN: lo que le toca al teléfono cuando un cajón de la bóveda exige
      * el visto bueno por uso. `op`: `approvals` (listar) · `approve` · `deny` (con `id`).
      * Requiere `vault:approve` en el cert, que se concede a mano (`caps <ID> +aprueba`).
+     *
+     * `profile` apunta a OTRA cuenta de este mismo dispositivo (ver `vaultApprovalsAll`):
+     * sin él es la activa, como siempre.
      */
-    async vaultApprovals ({ op, id } = {}) {
+    async vaultApprovals ({ op, id, profile = null } = {}) {
+      if (profile && profile !== currentPid) return approvalsDeOtroPerfil(profile, { op, id })
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
       try { return await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
+    },
+
+    /**
+     * LOS PEDIDOS DE TODAS TUS CUENTAS, SIN CAMBIARTE DE CUENTA.
+     *
+     * El timbre del teléfono no dice a qué perfil llamó —viaja por FCM, o sea por Google, y
+     * ahí no se mete nada que identifique al dueño—, así que la pantalla de Pedidos tiene
+     * que mirar en todos los que aprueban. Antes lo hacía cambiando el perfil activo y
+     * recargando la página una vez por cuenta: funcionaba y era insufrible, porque el avatar
+     * y el icono de la app cambiaban dos o tres veces por abrir la pantalla (dueño,
+     * 2026-09-10: «rotan los perfiles, cambia el icono y es molesto»).
+     *
+     * Y era innecesario: **este iframe tiene las llaves de todos los perfiles**. Cada cuenta
+     * guarda la suya en el mismo almacén, bajo su propio nombre, y son `CryptoKey` NO
+     * EXTRAÍBLES: se puede firmar con ellas sin verlas y sin tocar cuál es la activa. Eso es
+     * justo lo que hace falta, y es lo único que se hace aquí.
+     *
+     * Lo que NO hace, a propósito: no renueva certificados ajenos ni borra enlaces ajenos
+     * (eso escribe, y escribir en otra cuenta desde la pantalla de otra es pedir un lío).
+     * Mirar es de solo lectura; si el papel de una cuenta está desfasado, se dice y punto.
+     *
+     * @returns {Promise<Array<{ profile, name, items, error? }>>} una entrada por cuenta que
+     *   aprueba — con sus pedidos, o con el motivo por el que no se pudo preguntar.
+     */
+    async vaultApprovalsAll () {
+      // La activa sí se pone al día: es la única en la que esta pantalla puede escribir.
+      try { maybeRenewVaultCert() } catch (_) {}
+      const perfiles = loadProfiles()
+      const salida = await Promise.all(perfiles.map(async (p) => {
+        const v = p.id === currentPid ? loadVaultCert() : vaultCertOf(p.id)
+        if (!v?.cert) return null                                             // sin bóveda: no es asunto suyo
+        if (!(v.cert.scope || []).includes('vault:approve')) return null      // no aprueba: tampoco
+        const base = { profile: p.id, name: p.name || '', current: p.id === currentPid }
+        let device = null
+        try { device = p.id === currentPid ? loadVaultDevice() : await signerForProfile(p.id) } catch (e) {
+          return { ...base, items: [], error: e?.code || 'no-key' }
+        }
+        if (!device) return { ...base, items: [], error: 'no-key' }
+        try {
+          const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals' })
+          return { ...base, items: Array.isArray(r?.items) ? r.items : [] }
+        } catch (e) {
+          return { ...base, items: [], error: e?.code || e?.message || 'error' }
+        }
+      }))
+      return salida.filter(Boolean)
     },
 
     /**

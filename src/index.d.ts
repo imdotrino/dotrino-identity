@@ -167,6 +167,11 @@ export class Identity {
   vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
   vaultStore (method: string, args?: any): Promise<any>
   listVaultDevices (): Promise<{ devices: any[]; revoked: any[] }>
+  /** Pedidos de aprobación de la cuenta activa (o de otra, con `profile`). */
+  vaultApprovals (op: 'approvals' | 'approve' | 'deny', args?: { id?: string; profile?: string }): Promise<any>
+  /** Los pedidos de TODAS las cuentas de este dispositivo que aprueban, sin cambiar la activa. */
+  vaultApprovalsAll (): Promise<Array<{ profile: string; name: string; current: boolean; items: any[]; error?: string }>>
+  canApproveVault (): Promise<boolean>
   getVaultCert (): Promise<any>
   onVault (handler: (payload: any) => void): () => void
   // self-vault (este dispositivo ES el vault, daemon dentro del iframe)
