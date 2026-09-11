@@ -687,7 +687,12 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     if (!v?.cert) throw Object.assign(new Error('that profile is not paired with a vault'), { code: 'not-paired' })
     if (!(v.cert.scope || []).includes('vault:approve')) throw Object.assign(new Error('that profile does not approve requests'), { code: 'no-approve' })
     const device = await signerForProfile(pid)
-    return remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
+    const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
+    // Y EL COMANDO SE ABRE TAMBIÉN AQUÍ, con la llave de ESA cuenta. Sin esto los pedidos de
+    // las demás cuentas se veían sin comando —el dato por el que se mira la pantalla— y el
+    // fallo era mudo: llegaban con su sobre cerrado y nadie lo abría.
+    if (Array.isArray(r?.items)) return { ...r, items: await abrirContextos(r.items, pid) }
+    return r
   }
 
   /** Id estable y corto de una llave de cifrado: con esto se indexan las envolturas. */
