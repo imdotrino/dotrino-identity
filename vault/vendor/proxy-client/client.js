@@ -1,5 +1,6 @@
-import { buildSignedChannel, getPublicKeyJwk, signData } from './signature.js'
+import { buildSignedChannel, getPublicKeyJwk, signData, samePubkey } from './signature.js'
 import { seal, open, isSealed } from './sealing.js'
+import { buildEncPubStatement, readEncPubStatement, isEncPub } from './encpub.js'
 import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection } from './webrtc.js'
 
 /**
@@ -57,6 +58,40 @@ export class WebSocketProxyClient {
      */
     this.requireSealed = options.requireSealed === true
     this.myEncPrivateKey = options.myEncPrivateKey || null
+
+    /**
+     * MI llave de cifrado, la pública. Con ella puesta, `identify` anuncia al proxio
+     * —firmado— que esta identidad se abre por aquí, y cualquiera que sepa mi pubkey puede
+     * averiguarla y sellarme sin habernos emparejado nunca. Sin ella, los demás no tienen
+     * de dónde sacarla y `sendSealed` hacia mí no sale: falla en vez de ir en claro.
+     *
+     * En un aparato headless es `(await makeEncKeypair()).encPub`; en el navegador,
+     * `await identity.getEncryptionPubkey()` — ahí la privada vive en la bóveda y no se
+     * pasa, se delega en `sealing`.
+     */
+    this.myEncPub = options.myEncPub || null
+
+    /**
+     * Llaves de cifrado ajenas YA VERIFICADAS (pubkey → encpub). Solo entra aquí lo que
+     * pasó por `readEncPubStatement`, así que lo de dentro está atado a su identidad.
+     * No se cachean los fallos: «hoy no la tengo» no es un hecho, es un momento.
+     */
+    this._encPubs = new Map()
+    this._encPubInflight = new Map()
+
+    /**
+     * QUIEN YA SABE LA RESPUESTA, QUE NO PREGUNTE. Los aparatos de un mismo dueño llevan su
+     * llave de cifrado escrita en el ACTA (`memberEncPub` de `@dotrino/identity`), firmada
+     * por el master: eso es más fuerte que el anuncio y no hace falta ir al proxio a por
+     * ello. Una app con acta enchufa aquí
+     * `encPubResolver: (pub) => memberEncPub(acta, pub)`.
+     *
+     * Devolver `null` significa «yo no sé», y entonces se pregunta al proxio. No es un
+     * repliegue: si no lo sabe nadie, no se manda nada — se sigue fallando cerrado.
+     *
+     * @type {((publickey:string)=>Promise<string|null>|string|null)|null}
+     */
+    this.encPubResolver = typeof options.encPubResolver === 'function' ? options.encPubResolver : null
 
     /**
      * Who does the sealing. Two worlds, and only one of them holds the key:
@@ -187,6 +222,8 @@ export class WebSocketProxyClient {
     // perderla.
     if (options.sealing) this.sealing = options.sealing
     if (options.myEncPrivateKey) this.myEncPrivateKey = options.myEncPrivateKey
+    if (options.myEncPub) this.myEncPub = options.myEncPub
+    if (typeof options.encPubResolver === 'function') this.encPubResolver = options.encPubResolver
 
     // Se puede ENCENDER, no apagar. Bajar la exigencia en caliente dejaría que
     // cualquier otro módulo de la app la desactivara sin querer, y no hay ningún
@@ -210,6 +247,15 @@ export class WebSocketProxyClient {
    * The payload is JSON-stringified into the envelope's `message` field.
    */
   send (to, payload) {
+    // `requireSealed` vale para los DOS caminos dirigidos, no solo para el de pubkey
+    // (CONVENCIONES §4.1 nombra `sendByPubkey` / `send`). Guardar uno y dejar el otro
+    // abierto es no guardar ninguno: la app manda por donde le sale y el proxio lo lee
+    // igual. Para sellar por token está `sendSealedTo`.
+    if (this.requireSealed && !this._isSealed(payload)) {
+      throw errorCon(
+        'requireSealed: refusing to send a directed message in the clear — use sendSealedTo()',
+        'unsealed')
+    }
     const tokens = Array.isArray(to) ? to : [to]
     const messageStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
     if (!this._rtc) {
@@ -370,12 +416,150 @@ export class WebSocketProxyClient {
    * should use for anything that is not meant for the proxy's eyes.
    */
   async sendSealed (toPubkeys, payload, { peerEncPub, ...opts } = {}) {
-    if (this.sealing) {
-      this._sendByPubkeyRaw(toPubkeys, await this.sealing.seal(payload, peerEncPub), opts)
+    const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
+    // Con la llave puesta a mano se respeta tal cual: quien la pasa está diciendo que ya
+    // sabe de quién es (se emparejaron), y un sobre vale para todos los destinatarios.
+    if (peerEncPub) {
+      this._sendByPubkeyRaw(list, await this._seal(payload, peerEncPub), opts)
       return
     }
-    if (!peerEncPub) throw Object.assign(new Error('sendSealed: missing peerEncPub'), { code: 'unsealed' })
-    this._sendByPubkeyRaw(toPubkeys, await seal(payload, peerEncPub), opts)
+    // Sin ella, se averigua. UNA ENVOLTURA POR DESTINATARIO: cada uno tiene su llave, así
+    // que un solo sobre solo lo abriría uno.
+    //
+    // Y SE RESUELVEN TODAS ANTES DE MANDAR NADA. Enviar a los que se pudo y fallar por el
+    // resto deja a la app creyendo que el mensaje salió, con la mitad de la sala sin él y
+    // sin forma de saber cuál mitad.
+    const llaves = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
+    for (const [pk, encPub] of llaves) {
+      this._sendByPubkeyRaw([pk], await this._seal(payload, encPub), opts)
+    }
+  }
+
+  /**
+   * Sellar y mandar POR TOKEN, que es como hablan entre sí los de una sala (y lo único
+   * que puede subir a WebRTC, §transporte: el camino más directo).
+   *
+   * `peerPubkey` no es un adorno: el token es una dirección del proxio y no dice de quién
+   * es. Quien puede afirmar «este token es de esta identidad» es la app —lo sabe por el
+   * canal, por el saludo de la sala o por la invitación—, así que lo dice ella y aquí se
+   * sella a esa identidad. Sin ese dato no hay a quién sellarle y no se manda nada.
+   *
+   * @param {string|string[]} toTokens
+   * @param {any} payload
+   * @param {{ peerPubkey?:string, peerEncPub?:string }} opts
+   */
+  async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub } = /** @type {any} */ ({})) {
+    const tokens = Array.isArray(toTokens) ? toTokens : [toTokens]
+    if (!peerEncPub) {
+      if (!peerPubkey) {
+        throw errorCon('sendSealedTo: missing peerPubkey — a token does not say whose it is', 'unsealed')
+      }
+      peerEncPub = await this.encPubOf(peerPubkey)
+    }
+    const sobre = await this._seal(payload, peerEncPub)
+    // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
+    this.send(tokens, sobre)
+  }
+
+  /** Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar. */
+  async _seal (payload, peerEncPub) {
+    if (!peerEncPub) throw errorCon('seal: missing peerEncPub', 'unsealed')
+    return this.sealing ? this.sealing.seal(payload, peerEncPub) : seal(payload, peerEncPub)
+  }
+
+  // ---------- llaves de cifrado ajenas ----------
+
+  /**
+   * ANUNCIAR MI LLAVE DE CIFRADO. Una frase firmada por la misma identidad con la que me
+   * identifico; el proxio la guarda y se la da a quien pregunte, y quien pregunta la
+   * verifica contra mi pubkey. El proxio es el buzón, no la autoridad.
+   *
+   * Lo llama `identify` solo cuando el cliente tiene `myEncPub`. Se expone aparte para el
+   * caso de anunciar una llave nueva sin reconectar.
+   */
+  async announceEncPub ({ publickey, encPub, sign } = /** @type {any} */ ({})) {
+    const statement = await buildEncPubStatement({ publickey, encPub, sign })
+    await this._request({ type: 'encpub', ...statement }, 'encpub-announced')
+    // Lo mío también va a la caché: si una app se escribe a sí misma (otro aparato del
+    // mismo perfil no, ése tiene otra llave) no hace falta preguntar por ello.
+    this._encPubs.set(publickey, encPub)
+    return encPub
+  }
+
+  /**
+   * LA LLAVE DE CIFRADO DE UNA IDENTIDAD, verificada. Devuelve la llave o LANZA:
+   *
+   *   · `no-encpub`          nadie ha anunciado llave para esa identidad — se arregla
+   *                          cuando el otro lado actualice; esperar no sirve
+   *   · `encpub-unverified`  llegó una llave que NO firmó esa identidad. Es el caso que
+   *                          importa: significa que alguien intentó ponerte la suya
+   *   · `no-encpub-support`  este proxio no sabe de esto (es viejo)
+   *
+   * Nunca devuelve `null` y nunca cae a «manda igual»: si no se puede sellar, no se manda.
+   */
+  async encPubOf (publickey) {
+    if (typeof publickey !== 'string' || !publickey) {
+      throw errorCon('encPubOf: missing publickey', 'encpub-shape')
+    }
+    const cacheada = this._encPubs.get(publickey)
+    if (cacheada) return cacheada
+    // Una pregunta en vuelo por llave: una sala de ocho manda ocho mensajes a la vez y
+    // preguntaría ocho veces por lo mismo.
+    const enVuelo = this._encPubInflight.get(publickey)
+    if (enVuelo) return enVuelo
+    const promesa = this._lookupEncPub(publickey)
+      .finally(() => this._encPubInflight.delete(publickey))
+    this._encPubInflight.set(publickey, promesa)
+    return promesa
+  }
+
+  async _lookupEncPub (publickey) {
+    // EL CAMINO MÁS DIRECTO PRIMERO. Si la app comparte acta con el destinatario, la llave
+    // ya la tiene en la mano y firmada por el master: preguntársela a un servidor sería
+    // dar la vuelta para llegar a lo que ya está aquí.
+    if (this.encPubResolver) {
+      const propia = await this.encPubResolver(publickey)
+      if (propia) {
+        if (!isEncPub(propia)) {
+          throw errorCon('encPubResolver returned something that is not a P-256 public JWK', 'encpub-unverified')
+        }
+        this._encPubs.set(publickey, propia)
+        return propia
+      }
+    }
+    // SI EL PROXIO DICE QUE NO SABE DE ESTO, se dice con su propio código en vez de
+    // esperar diez segundos a un timeout. Un proxio que no manda `caps` es de antes de
+    // que esto existiera y no se sabe: se pregunta igual, y contesta la pregunta.
+    if (Array.isArray(this.caps) && !this.caps.includes('encpub')) {
+      throw errorCon(
+        `este proxio (${this.url}) no sirve llaves de cifrado: hace falta websocket-proxy >= 1.1.0`,
+        'no-encpub-support')
+    }
+    const res = await this._request({ type: 'enc-lookup', publickeys: [publickey] }, 'enc-lookup')
+    // `samePubkey`, no `===`: el proxio guarda el string exacto con el que se anunció, y
+    // la app puede tener el mismo JWK escrito de otra forma.
+    const statement = (res.keys || []).find((k) => samePubkey(k?.data?.publickey, publickey))
+    if (!statement) {
+      throw errorCon('no encryption key announced for that identity — it cannot be sealed to yet', 'no-encpub')
+    }
+    // AQUÍ ES DONDE EL PROXIO DEJA DE IMPORTAR: la firma se comprueba contra la pubkey a
+    // la que vamos a escribir. Si cambió la llave por la suya, esto lanza.
+    const encPub = await readEncPubStatement(statement, { publickey })
+    this._encPubs.set(publickey, encPub)
+    return encPub
+  }
+
+  /** Guardar una llave que ya viene firmada por su dueño (de un canal, de una invitación). */
+  async learnEncPub (statement, { publickey } = /** @type {any} */ ({})) {
+    const encPub = await readEncPubStatement(statement, { publickey })
+    this._encPubs.set(publickey, encPub)
+    return encPub
+  }
+
+  /** Olvidar lo aprendido de una identidad (rotó su llave, o se quiere volver a preguntar). */
+  forgetEncPub (publickey) {
+    if (publickey == null) this._encPubs.clear()
+    else this._encPubs.delete(publickey)
   }
 
   _isSealed (msg) {
@@ -532,6 +716,21 @@ export class WebSocketProxyClient {
     const done = this._request(msg, 'identified')
     if (this._rtc && typeof sign === 'function' && data.publickey) {
       done.then(() => this.enableTurn({ publicKey: data.publickey, sign })).catch(() => {})
+    }
+    // ANUNCIAR LA LLAVE DE CIFRADO, y por detrás. Identificarse es lo que da dirección a
+    // esta identidad; anunciar su llave es lo que hace que alguien pueda sellarle sin
+    // haberla emparejado antes. Va después y sin bloquear, como TURN: esperar a esto
+    // retrasaría el primer mensaje para ganar algo que solo hace falta cuando el OTRO
+    // quiera escribirnos.
+    if (typeof sign === 'function' && data.publickey && this.myEncPub) {
+      done
+        .then(() => this.announceEncPub({ publickey: data.publickey, encPub: this.myEncPub, sign }))
+        .catch((e) => {
+          // Se dice en voz alta: sin anuncio nadie podrá sellarnos, y el síntoma llega
+          // días después y del otro lado («no puedo escribirte»). Callarlo es justo el
+          // fallo mudo que el ecosistema paga caro.
+          this._emit('error', { type: 'encpub_announce_failed', error: e, code: e?.code || null })
+        })
     }
     return done
   }
@@ -905,6 +1104,12 @@ export class WebSocketProxyClient {
         // de salas): se pregunta en cada nodo y se mezcla, en vez de designar a
         // uno como árbitro. Son públicos: van en cada instancia y en /peers.
         this.peers = Array.isArray(data.peers) ? data.peers : []
+        // QUÉ SABE HACER ESTE PROXIO, dicho por él al conectar (§14: una incompatibilidad
+        // que no se anuncia se vive como silencio). `caps` ausente = proxio anterior a que
+        // esto existiera: no se da por hecho nada, se pregunta igual y contesta la
+        // pregunta.
+        this.protocol = Number.isInteger(data.protocol) ? data.protocol : null
+        this.caps = Array.isArray(data.caps) ? data.caps : null
         /** Este nodo + los que conoce, sin repetidos. */
         this.knownNodes = [this.node, ...this.peers].filter((n, i, a) => n && a.indexOf(n) === i)
         this.token = this.instance
@@ -963,6 +1168,8 @@ export class WebSocketProxyClient {
       case 'turn-credentials':
       case 'pair-code':
       case 'pair-redeem':
+      case 'encpub-announced':
+      case 'enc-lookup':
         this._resolvePending(data, type)
         break
       case 'error':

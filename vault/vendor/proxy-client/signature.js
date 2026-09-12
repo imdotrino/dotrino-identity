@@ -194,10 +194,85 @@ export async function signData (data) {
   return bufferToBase64(new Uint8Array(signature))
 }
 
+/**
+ * ¿SON LA MISMA LLAVE? Nunca `===` sobre el JWK serializado.
+ *
+ * Es trampa conocida del ecosistema: un JWK serializado NO es canónico, así que la misma
+ * llave escrita por dos piezas distintas —o guardada por una tabla vieja y otra nueva— da
+ * dos strings diferentes y `===` dice que no son la misma. Lo que identifica a una P-256
+ * es el punto: `kty`, `crv`, `x` e `y`. Lo demás del JWK (`ext`, `key_ops`, `alg`, `use`)
+ * es cómo se usa, no cuál es.
+ *
+ * Ojo con lo que esto NO cambia: el proxio enruta por el STRING exacto, así que la
+ * dirección a la que se escribe sigue siendo la que te dio la app. Esto es para DECIDIR
+ * si dos referencias hablan de la misma identidad, no para reemplazar una por otra.
+ */
+export function samePubkey (a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (a === b) return true
+  try {
+    const x = JSON.parse(a)
+    const y = JSON.parse(b)
+    return !!x && !!y && x.kty === y.kty && x.crv === y.crv && x.x === y.x && x.y === y.y
+  } catch (_) {
+    return false
+  }
+}
+
+/**
+ * Verifica una firma ajena sobre el JSON canónico de `data`.
+ *
+ * POR QUÉ VIVE AQUÍ Y NO SE IMPORTA DE `@dotrino/identity`, que tiene la misma función
+ * (`verifyDeviceSig` en `/capabilities`): esa ruta arrastra `vault/core.js` entero —tres
+ * mil líneas de bóveda, con el acta, el contenido y el cliente remoto detrás— por un
+ * `crypto.subtle.verify` de tres líneas, y este paquete lo importan ~30 PWAs. La capa de
+ * firma de este cliente ya era deliberadamente sin dependencias (mira `signData` justo
+ * arriba: tampoco usa el pilar); esto es su operación inversa, no un esquema nuevo.
+ *
+ * Que no se separen no se deja a la buena fe: `test/encpub.test.mjs` firma con
+ * `@dotrino/identity` y verifica con esto, y al revés. Si el pilar cambiara de algoritmo
+ * o de canonicalización, esa prueba se pone roja el mismo día.
+ *
+ * Devuelve `false` ante una clave ilegible o una firma corrupta — no lanza. Es la
+ * respuesta correcta a «¿esto lo firmó él?» cuando lo que llega es basura.
+ *
+ * @param {string} publickeyJwkStr  JWK público serializado (lo mismo que viaja en el cable)
+ * @param {any} data
+ * @param {string} signatureB64
+ * @returns {Promise<boolean>}
+ */
+export async function verifyData (publickeyJwkStr, data, signatureB64) {
+  if (typeof publickeyJwkStr !== 'string' || typeof signatureB64 !== 'string') return false
+  try {
+    const jwk = JSON.parse(publickeyJwkStr)
+    const key = await crypto.subtle.importKey(
+      'jwk', jwk,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false, ['verify']
+    )
+    const bytes = new TextEncoder().encode(canonicalStringify(data))
+    return crypto.subtle.verify(
+      { name: 'ECDSA', hash: { name: 'SHA-256' } },
+      key,
+      base64ToBuffer(signatureB64),
+      bytes
+    )
+  } catch (e) {
+    return false
+  }
+}
+
 function bufferToBase64 (bytes) {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
   return btoa(binary)
+}
+
+function base64ToBuffer (b64) {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
 /**

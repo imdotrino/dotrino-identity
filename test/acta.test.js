@@ -8,7 +8,7 @@ import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, canSeal,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
   memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape,
-  CAP_SCOPE, sealersOf
+  CAP_SCOPE, sealersOf, memberEncPub, samePubkey
 } from '../vault/acta.js'
 
 /** Una llave de miembro (extractable, para poder firmar en el test con privateJwk). */
@@ -524,4 +524,41 @@ test('lo sensible es privado por defecto y lo demás público, como siempre', as
 
   const sinNombre = profileFieldClasses({ nombres: 'Santiago', nombresVisible: false })
   assert.equal(sinNombre.nombres, 'private', 'lo normal se puede esconder')
+})
+
+
+/**
+ * LA LLAVE DE CIFRADO DE UN MIEMBRO. El dato existía desde que un aparato se enrola, pero
+ * no la función: cada consumidor repetía el `.find()` y comparaba pubkeys con `===`.
+ */
+test('memberEncPub devuelve la llave del miembro, y null cuando no la hay', async () => {
+  const a = await key(); const b = await key()
+  const enc = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const ej = await crypto.subtle.exportKey('jwk', enc.publicKey)
+  const encPub = JSON.stringify({ kty: ej.kty, crv: ej.crv, x: ej.x, y: ej.y })
+
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub, encPub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['sign'] } }], a)
+
+  assert.equal(memberEncPub(dos, a.pub), encPub)
+  // Un miembro SIN llave de cifrado devuelve null, y eso no es un repliegue: es el dato
+  // que falta dicho en voz alta. A ése no se le puede sellar nada, y hay que parar ahí.
+  assert.equal(memberEncPub(dos, b.pub), null)
+  assert.equal(memberEncPub(dos, (await key()).pub), null, 'quien no es miembro tampoco')
+  assert.equal(memberEncPub(null, a.pub), null)
+})
+
+test('memberEncPub encuentra al miembro aunque el JWK venga escrito de otra forma', async () => {
+  const a = await key()
+  const enc = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const ej = await crypto.subtle.exportKey('jwk', enc.publicKey)
+  const encPub = JSON.stringify({ kty: ej.kty, crv: ej.crv, x: ej.x, y: ej.y })
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub, encPub }), privateJwk: a.privateJwk })
+
+  const j = JSON.parse(a.pub)
+  const alReves = JSON.stringify({ y: j.y, x: j.x, crv: j.crv, kty: j.kty })
+  assert.notEqual(alReves, a.pub, 'el test no prueba nada si los strings ya son iguales')
+  assert.equal(samePubkey(a.pub, alReves), true)
+  assert.equal(memberEncPub(g, alReves), encPub, 'con === esto habría dicho que no es miembro')
+  assert.equal(samePubkey(a.pub, (await key()).pub), false)
 })

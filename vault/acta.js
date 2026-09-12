@@ -1025,6 +1025,44 @@ export function memberScopes (acta, pub, extraRenounces = []) {
 /** ¿Es un servicio (tiene CN) o un dispositivo del usuario? */
 export const isService = (acta, pub) => !!(acta?.members || []).find((x) => x.pub === pub)?.cn
 
+/**
+ * ¿SON LA MISMA LLAVE? Nunca `===` sobre el JWK serializado: no es canónico, así que la
+ * misma llave escrita por dos piezas distintas da dos strings distintos y `===` dice que
+ * no. Lo que identifica a una P-256 es el punto (`kty`, `crv`, `x`, `y`); lo demás del
+ * JWK es cómo se usa, no cuál es.
+ */
+export function samePubkey (a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (a === b) return true
+  try {
+    const x = JSON.parse(a)
+    const y = JSON.parse(b)
+    return !!x && !!y && x.kty === y.kty && x.crv === y.crv && x.x === y.x && x.y === y.y
+  } catch (_) {
+    return false
+  }
+}
+
+/**
+ * LA LLAVE DE CIFRADO DE UN MIEMBRO, que es lo que hace falta para sellarle algo.
+ *
+ * Existía el dato —cada aparato la publica al enrolarse y queda escrita en el acta— pero
+ * no la función, así que cada consumidor repetía el `.find()` a mano y cada copia
+ * comparaba pubkeys con `===`. Esto es esa lectura, una vez y en el pilar.
+ *
+ * Devuelve `null` cuando no la hay, y eso NO es un repliegue: es el dato que falta dicho
+ * en voz alta. Quien llama tiene que parar ahí, no mandar en claro — un miembro sin
+ * `encPub` (un acta vieja, un servicio) simplemente no puede recibir nada sellado.
+ *
+ * @param {any} acta
+ * @param {string} pub
+ * @returns {string|null}
+ */
+export function memberEncPub (acta, pub) {
+  const m = (acta?.members || []).find((x) => samePubkey(x?.pub, pub))
+  return m?.encPub || null
+}
+
 /** ¿Puede este miembro hacer `cap` según el acta? (con el cert se cruza aparte: cert ∩ acta). */
 export function memberCan (acta, pub, cap, extraRenounces = []) {
   return effectiveCaps(acta, pub, extraRenounces).includes(cap)
@@ -1183,5 +1221,6 @@ export default {
   sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
-  effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt
+  effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt,
+  samePubkey, memberEncPub
 }
