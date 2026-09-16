@@ -306,7 +306,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
           cleanup(); reject(vaultError(p))
         }
       })
-      const t = setTimeout(() => { cleanup(); reject(new Error('the vault did not reply (is it running?)')) }, timeoutMs)
+      const t = setTimeout(() => { cleanup(); reject(Object.assign(new Error('the vault did not reply (is it running?)'), { code: 'vault-no-reply' })) }, timeoutMs)
       const cleanup = () => { off(); clearTimeout(t); clearTimeout(graceTimer) }
     })
     client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })

@@ -165,6 +165,11 @@ export class Identity {
   vaultStatus (): Promise<any>
   vaultUnpair (): Promise<any>
   vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
+  /**
+   * El almacén de hilos EN la bóveda, cifrado de punta a punta con la clave de contenido del
+   * perfil. Sin esa clave lanza `code: 'no-content-key'` en vez de mandarlo en claro (≥ 0.91.0);
+   * sin emparejar, `not-paired`; si la bóveda no contesta, `vault-no-reply`.
+   */
   vaultStore (method: string, args?: any): Promise<any>
   listVaultDevices (): Promise<{ devices: any[]; revoked: any[] }>
   /**

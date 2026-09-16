@@ -3,7 +3,7 @@ export { canonicalStringify } from './canonical.js'
 export { getPublicKeyJwk, signData, verifyData, samePubkey, buildSignedChannel, setKeypairStore } from './signature.js'
 export {
   seal, open, isSealed, makeEncKeypair, importEncPrivate, exportEncPrivate,
-  setSealingPrimitives,
+  setSealingPrimitives, identitySealing,
 } from './sealing.js'
 export {
   ENCPUB_V, ENCPUB_AUD, encPubBody, isEncPub,

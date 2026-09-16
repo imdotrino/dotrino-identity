@@ -13,6 +13,15 @@ import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, re
  * @param {string} code
  * @returns {Error & { code: string }}
  */
+/**
+ * EL SALUDO: «este token es de esta identidad».
+ *
+ * Es una trama de CONTROL del transporte, como la señalización de WebRTC, y por eso va
+ * en claro y no la para `requireSealed`: lo único que lleva es una llave PÚBLICA que el
+ * proxio ya tiene atada a esta conexión desde `identify`. Nada del usuario viaja aquí.
+ */
+const HELLO_TAG = '__cc_hello__'
+
 function errorCon (mensaje, code) {
   const e = /** @type {Error & { code: string }} */ (new Error(mensaje))
   e.code = code
@@ -33,6 +42,7 @@ function errorCon (mensaje, code) {
  *   - 'channel_joined'    (channel, token)            : new peer joined the channel
  *   - 'channel_left'      (channel, token)            : peer unpublished
  *   - 'peer_disconnected' (token, channel?)           : peer dropped (with channel if it was published there)
+ *   - 'peer_identity'     (token, publickey)          : that token said whose it is (helloTo)
  *   - 'reconnecting'      (attempt, max)
  *   - 'reconnect_failed'  (attempts)
  */
@@ -78,6 +88,23 @@ export class WebSocketProxyClient {
      */
     this._encPubs = new Map()
     this._encPubInflight = new Map()
+
+    /**
+     * QUIÉN ESTÁ AL OTRO LADO DE CADA TOKEN (token → publickey), aprendido del saludo.
+     *
+     * Un token es una dirección del proxio y no dice de quién es. Hasta que alguien lo
+     * diga, a ese token no se le puede sellar nada: no se sabe a qué identidad, y por lo
+     * tanto tampoco a qué llave de cifrado. Es el hueco por el que una sala de
+     * desconocidos seguía hablando en claro aunque el sellado ya existiera.
+     *
+     * Se vacía al reconectar: los tokens se reparten por conexión y los de antes ya no
+     * son de nadie.
+     */
+    this._tokenPubkeys = new Map()
+    this._helloSent = new Set()
+
+    /** Mi propia identidad en el cable, la que `identify` dejó atada a este token. */
+    this.myPublickey = null
 
     /**
      * QUIEN YA SABE LA RESPUESTA, QUE NO PREGUNTE. Los aparatos de un mismo dueño llevan su
@@ -451,14 +478,79 @@ export class WebSocketProxyClient {
   async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub } = /** @type {any} */ ({})) {
     const tokens = Array.isArray(toTokens) ? toTokens : [toTokens]
     if (!peerEncPub) {
+      // Si la app no lo dice, lo dice el SALUDO: `helloTo` dejó apuntado de quién es
+      // cada token. Con más de uno no se adivina —cada identidad tiene su llave y un
+      // solo sobre solo lo abriría una—, así que ahí se exige decirlo.
+      if (!peerPubkey && tokens.length === 1) peerPubkey = this.pubkeyOfToken(tokens[0])
       if (!peerPubkey) {
-        throw errorCon('sendSealedTo: missing peerPubkey — a token does not say whose it is', 'unsealed')
+        throw errorCon(
+          'sendSealedTo: nobody has said whose this token is — greet it (helloTo) or pass peerPubkey',
+          'no-peer-identity')
       }
       peerEncPub = await this.encPubOf(peerPubkey)
     }
     const sobre = await this._seal(payload, peerEncPub)
     // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
     this.send(tokens, sobre)
+  }
+
+  // ---------- el saludo: de quién es este token ----------
+
+  /**
+   * SALUDAR: decirle a uno o varios tokens quién soy.
+   *
+   * Un token es una dirección del proxio y no dice de quién es, así que sin esto no hay
+   * a quién sellarle: una sala de desconocidos se queda muda o —lo que pasaba— hablando
+   * en claro. El saludo lleva SOLO mi llave pública, la misma que el proxio ya tiene
+   * atada a esta conexión desde `identify`; no hay nada del usuario dentro y por eso no
+   * necesita sobre.
+   *
+   * Quien lo recibe contesta el suyo una vez, así que basta con que salude UNA de las
+   * dos puntas y la app no tiene que coreografiar nada.
+   *
+   * **No autentica, y no hace falta que lo haga.** Mentir sobre la propia identidad solo
+   * consigue que te sellen a una llave que no puedes abrir: el embustero se queda sin
+   * leer, y nadie se queda suplantado. Quién firma de verdad lo dice el reto de la app,
+   * o el `from_publickey` que pone el proxio cuando se enruta por pubkey.
+   */
+  helloTo (to) {
+    if (!this.myPublickey) {
+      throw errorCon('helloTo: identify first — a greeting with no identity says nothing', 'not-identified')
+    }
+    const tokens = Array.isArray(to) ? to : [to]
+    for (const t of tokens) {
+      if (!t || t === this.token) continue
+      this._helloSent.add(t)
+      this._proxySendOne(t, { t: HELLO_TAG, publickey: this.myPublickey })
+    }
+  }
+
+  /** De quién es este token, si alguien lo ha dicho. `null` es «todavía no lo sé». */
+  pubkeyOfToken (token) {
+    return this._tokenPubkeys.get(token) || null
+  }
+
+  /** Olvidar un token (se fue, o se quiere volver a preguntar). Sin argumento, todos. */
+  forgetToken (token) {
+    if (token == null) { this._tokenPubkeys.clear(); this._helloSent.clear(); return }
+    this._tokenPubkeys.delete(token)
+    this._helloSent.delete(token)
+  }
+
+  _onHello (from, msg) {
+    if (typeof msg.publickey !== 'string' || !msg.publickey) return
+    const antes = this._tokenPubkeys.get(from)
+    // UN TOKEN NO CAMBIA DE DUEÑO: la conexión ES la identidad, y el proxio no recicla
+    // tokens. Un segundo saludo con otra identidad es un intento de que le sellemos a
+    // otro; manda el primero y esto se dice en voz alta en vez de pisarlo.
+    if (antes && !samePubkey(antes, msg.publickey)) {
+      this._emit('error', { type: 'hello_conflict', from, code: 'hello-conflict' })
+      return
+    }
+    this._tokenPubkeys.set(from, msg.publickey)
+    // Contestar UNA vez: el saludo queda simétrico sin rebotar para siempre.
+    if (!this._helloSent.has(from) && this.myPublickey) this.helloTo(from)
+    this._emit('peer_identity', from, msg.publickey)
   }
 
   /** Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar. */
@@ -714,6 +806,10 @@ export class WebSocketProxyClient {
     // escribirle a la PERSONA llega a cualquiera de sus dispositivos. Ver acta-de-perfil.md.
     if (acta) msg.acta = acta
     const done = this._request(msg, 'identified')
+    // Mi identidad en el cable, para poder decirla en el saludo sin que la app la
+    // repita. Se apunta al pedirlo y no al confirmarlo: si la identificación falla,
+    // el saludo tampoco sale (el proxio no reparte a una conexión sin identidad).
+    this.myPublickey = data.publickey
     if (this._rtc && typeof sign === 'function' && data.publickey) {
       done.then(() => this.enableTurn({ publicKey: data.publickey, sign })).catch(() => {})
     }
@@ -1130,6 +1226,13 @@ export class WebSocketProxyClient {
           this._rtc.handleIncoming(from, parsed)
           break
         }
+        // El saludo se atiende AQUÍ, antes de `_deliver`: es del transporte y no sube a
+        // la app, así que `requireSealed` no lo ve pasar ni tiene que hacerle una
+        // excepción.
+        if (parsed && parsed.t === HELLO_TAG) {
+          this._onHello(from, parsed)
+          break
+        }
         this._deliver(from, parsed ?? message, {
           raw: message, timestamp, via: 'proxy',
           fromPubkey: from_publickey || null,
@@ -1139,6 +1242,9 @@ export class WebSocketProxyClient {
         break
       }
       case 'disconnected':
+        // El token muere con la conexión y no se recicla: lo aprendido de él deja de
+        // valer en el acto. Guardarlo «por si vuelve» sería sellarle a quien ya no está.
+        this.forgetToken(data.token)
         this._emit('peer_disconnected', data.token, data.channel || null)
         if (this._rtc && data.token) this._rtc.closePeer(data.token)
         this._resolvePending(data, 'token')

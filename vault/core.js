@@ -2575,27 +2575,29 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     /**
      * Store DELEGADO, CIFRADO de punta a punta. Los argumentos y el resultado viajan
      * cifrados con la clave de contenido del perfil: el proxy transporta pero no ve nada
-     * de lo que guardas. Si todavía no tengo la clave (nadie me la ha envuelto), va en
-     * claro como antes — y se dice en el resultado en vez de fallar en silencio.
+     * de lo que guardas.
+     *
+     * Sin la clave NO se manda nada. Antes iba en claro «como antes», y eso era dejar que
+     * el proxio leyera el almacén entero justo en el aparato al que todavía no le habían
+     * envuelto la clave. Ahora falla con `no-content-key`, que se arregla entrando al
+     * perfil desde un aparato que ya la tenga — y se ve, en vez de viajar a la vista.
+     * Por lo mismo, una respuesta sin cifrar tampoco se acepta.
      */
     async vaultStore ({ method, args }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
+      if (!v?.cert || !device) throw Object.assign(new Error('this device is not paired with a vault'), { code: 'not-paired' })
       maybeRenewVaultCert()
-      const mine = await myCek().catch(() => null)
-      let payload = { method, args }
-      if (mine) {
-        payload = { method, enc: await Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: JSON.stringify(args ?? {}) }) }
-      }
+      const mine = await myCek()
+      if (!mine) throw Object.assign(new Error('this device does not hold the profile content key yet'), { code: 'no-content-key' })
+      const enc = await Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: JSON.stringify(args ?? {}) })
       try {
-        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: payload.method, args: payload.args, enc: payload.enc, onRevoked: wipeVaultLink })
-        // La respuesta vuelve cifrada con la misma clave si la bóveda pudo.
-        if (res && typeof res === 'object' && res.__enc && mine) {
-          return JSON.parse(await Content.decryptWithKeyring({
-            envelope: res.__enc, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
-          }))
+        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, enc, onRevoked: wipeVaultLink })
+        if (!res || typeof res !== 'object' || !res.__enc) {
+          throw Object.assign(new Error('the vault replied to the store without encrypting it'), { code: 'vault-reply-unsealed' })
         }
-        return res
+        return JSON.parse(await Content.decryptWithKeyring({
+          envelope: res.__enc, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
+        }))
       } catch (e) { return handleVaultError(e) }
     },
 
