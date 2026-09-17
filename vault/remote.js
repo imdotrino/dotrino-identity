@@ -13,8 +13,8 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDelegation, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
-import { sealersOf } from './acta.js'
+import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
+import { checkVaultReply } from './acta.js'
 
 const MSG = {
   HELLO: 'vault.hello',
@@ -218,14 +218,12 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // (Aquí vivía el margen de reloj: el cert lo sellaba la bóveda con SU reloj y lo validaba
     // este aparato con el suyo, y 850 ms de diferencia bastaban para no poder enrolarse. Sin
     // vencimiento no hay ventana que ajustar y el problema no puede volver.)
-    if (!res.acta) throw new Error('the vault did not send its record: cannot check who signed this cert')
-    if (res.acta.profileId !== qr.iss) throw new Error('the record is from a profile other than the one you saw')
-    const v = await verifyDelegation({
-      cert: res.cert, expectedSub: dev.publickey,
-      actaSeq: res.acta.seq, sealers: sealersOf(res.acta)
-    })
-    if (!v.ok) throw new Error('invalid cert: ' + v.reason)
-    if (res.cert.sub !== dev.publickey) throw new Error('cert issued for a different device')
+    //
+    // Se juzga contra la llave de LA BÓVEDA con la que hablas, no contra el `profileId`:
+    // eso solo coincidía en una cuenta que nació en esa bóveda, y dejaba fuera a quien se
+    // emparejaba con una segunda bóveda o con una que adoptó la cuenta (`checkVaultReply`).
+    const chk = await checkVaultReply({ acta: res.acta, cert: res.cert, vault: qr.iss, sub: dev.publickey, justSealed: true })
+    if (!chk.ok) throw new Error('the vault reply does not check out: ' + chk.reason)
     return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
   } finally { try { client.close() } catch (_) {} }
 }
@@ -381,12 +379,17 @@ export async function requestDevices ({ master, proxy, device, cert, sinceSeq, o
  */
 export async function requestRenew ({ master, proxy, device, cert, onRevoked } = {}) {
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
-  if (!res.cert || res.cert.sub !== device.publickey) throw new Error('invalid renewed cert')
   // EL ACTA VIAJA CON EL PAPEL y hay que dejarla pasar: quien lo recibe la necesita para
   // comprobar que lo firmó una SELLADORA de este perfil. Aquí se comparaba `cert.iss` con
   // la maestra y se tiraba el acta, así que arriba no había con qué juzgar y la renovación
   // fallaba con «the vault did not send its record» — con el papel correcto en la mano.
-  return { cert: res.cert, acta: res.acta || null }
+  //
+  // Y se juzga AQUÍ, en el pilar: antes lo hacía cada cliente por su cuenta —uno comparando
+  // el `profileId`, que con dos bóvedas no vale, y el navegador guardando el papel sin mirar
+  // nada—. `master` es la bóveda a la que se le pidió.
+  const chk = await checkVaultReply({ acta: res.acta, cert: res.cert, vault: master, sub: device.publickey })
+  if (!chk.ok) throw new Error('invalid renewed cert: ' + chk.reason)
+  return { cert: res.cert, acta: res.acta }
 }
 
 /**

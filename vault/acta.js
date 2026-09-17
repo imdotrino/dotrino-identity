@@ -35,7 +35,7 @@
  * Módulo PURO: sin kv, sin red, sin disco. Cripto de `./capabilities.js`.
  */
 import { canonicalStringify } from './core.js'
-import { signWithDevice, verifyDeviceSig, pubkeyId } from './capabilities.js'
+import { signWithDevice, verifyDeviceSig, verifyDelegation, pubkeyId } from './capabilities.js'
 
 export const ACTA_V = 5
 
@@ -650,6 +650,52 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
 }
 
 /**
+ * ¿ES DE FIAR LO QUE CONTESTA LA BÓVEDA CON LA QUE TE EMPAREJASTE? El papel y el acta que
+ * llegan al enrolarse o al renovar, juzgados contra la llave de ESA bóveda (`vault`: la
+ * `iss` del QR, o la que quedó guardada al enrolarse).
+ *
+ * Antes cada cliente comparaba `acta.profileId` con esa llave. Eso solo es verdad en una
+ * cuenta de una bóveda que además nació en ella: el `profileId` es la llave del GÉNESIS, y
+ * en una cuenta que la bóveda ADOPTÓ, o en la SEGUNDA bóveda de un multivault, la llave de
+ * la bóveda es otra. Ahí ningún aparato podía entrar ni renovar. Y encima no protegía: el
+ * acta no se verificaba, así que bastaba con escribir ese `profileId` en una inventada.
+ *
+ * Lo que se comprueba ahora, y por qué alcanza:
+ *   1. el acta está bien firmada por quien dice haberla sellado;
+ *   2. esa bóveda PUEDE SELLAR esta acta — es de la cuenta, con el permiso, y una llave
+ *      está en una sola cuenta, así que esto también fija la cuenta;
+ *   3. el papel lo firmó ESA bóveda y no otra selladora: la respuesta es suya, porque nadie
+ *      por el camino puede firmar con su llave;
+ *   4. y el papel vale según esa acta (para esta llave, este permiso, un `seq` que no viene
+ *      del futuro).
+ *
+ * `justSealed` es para el ENROLAMIENTO: aprobar es admitir al aparato, así que el acta que
+ * vuelve la acaba de sellar esa misma bóveda. Exigirlo ata el acta a su llave y no solo el
+ * papel — el llavero que el aparato va a usar viaja ahí dentro. Al RENOVAR no se pide: la
+ * última acta pudo sellarla otra selladora de la cuenta.
+ *
+ * @returns {Promise<{ok:true}|{ok:false, reason:string}>}
+ */
+export async function checkVaultReply ({ acta, cert, vault, sub, scope = null, justSealed = false } = {}) {
+  if (!acta) return { ok: false, reason: 'sin-acta' }
+  if (!isPub(vault)) return { ok: false, reason: 'sin-boveda' }
+  // Para QUÉ llave es el papel no es opcional: sin ella `verifyDelegation` no lo mira, y un
+  // papel emitido para otra llave pasaría por bueno.
+  if (!isPub(sub)) return { ok: false, reason: 'sin-llave-del-aparato' }
+  const v = await verifyActa({ acta })
+  if (!v.ok) return { ok: false, reason: 'acta:' + v.reason }
+  if (!canSeal(acta, vault)) return { ok: false, reason: 'boveda-no-sella' }
+  if (justSealed && !samePubkey(acta.sealedBy, vault)) return { ok: false, reason: 'acta-de-otra-selladora' }
+  if (!cert || !samePubkey(cert.iss, vault)) return { ok: false, reason: 'papel-de-otra-llave' }
+  const d = await verifyDelegation({
+    cert, expectedSub: sub, actaSeq: acta.seq, sealers: sealersOf(acta),
+    ...(scope ? { expectedScope: scope } : {})
+  })
+  if (!d.ok) return { ok: false, reason: 'papel:' + d.reason }
+  return { ok: true }
+}
+
+/**
  * Aplica cambios y devuelve el acta SIGUIENTE, **sin firmar** (hay que `sealActa`).
  * `by` es quien va a sellar: si no es el sellador vigente, se rechaza (regla 1).
  *
@@ -1218,7 +1264,7 @@ export async function canAdopt ({ candidate, current }) {
 
 export default {
   ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain, verifySignedBy,
-  sealActa, verifyActa, applyChanges, makeRenounce, verifyRenounce,
+  sealActa, verifyActa, checkVaultReply, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
   effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt,
