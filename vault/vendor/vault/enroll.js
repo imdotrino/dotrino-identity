@@ -349,23 +349,50 @@ export function createEnrollDesk ({
       return { ok: true, deviceId: pend.deviceId, adopting: true }
     }
 
-    const { cert } = await identity.signDelegation(pend.dpub, pend.scope, { ttlMs: pend.ttlMs, label: pend.label })
-
     // Aprobar un emparejamiento ES admitir al dispositivo en el perfil: el cert es la
     // credencial y el acta es la política, y no tiene sentido emitir una sin la otra.
     // Las capacidades salen del scope que se pidió al emparejar (cert ∩ acta, §2.3).
-    let record = null
+    //
+    // NADA DE REPLIEGUES (2026-09-17). Esto antes estaba envuelto en un `catch` que solo
+    // anotaba el error, y además se saltaba en silencio si la identidad no sabía admitir o si
+    // el scope no daba ninguna capacidad: el aparato recibía su certificado SIN estar en el
+    // acta, y el fallo aparecía después y en otro sitio. Ahora, si no se puede admitir, no
+    // se entrega nada y se dice.
+    if (typeof identity.admitMember !== 'function') {
+      throw Object.assign(new Error('this vault cannot add devices to the account record: no certificate was issued'), { code: 'admit-unavailable' })
+    }
+    // PERMISOS, no tipos (2026-08-22): las capacidades son las del scope ENTERO. Un
+    // cajón (`secrets:<ns>`) suma `secrets` y fija el CN; no borra lo demás — un bot
+    // con `sign,secrets:eco` firma como aparato del acta Y lee solo su cajón.
+    const cn = scopeToCn(pend.scope)
+    const caps = [...new Set([...scopeToCaps(pend.scope), ...(cn ? ['secrets'] : [])])]
+    if (!caps.length) {
+      throw Object.assign(new Error('the pairing scope grants no permission: no certificate was issued'), { code: 'empty-scope' })
+    }
+
+    const { cert } = await identity.signDelegation(pend.dpub, pend.scope, { ttlMs: pend.ttlMs, label: pend.label })
+
     try {
-      if (typeof identity.admitMember === 'function') {
-        // PERMISOS, no tipos (2026-08-22): las capacidades son las del scope ENTERO. Un
-        // cajón (`secrets:<ns>`) suma `secrets` y fija el CN; no borra lo demás — un bot
-        // con `sign,secrets:eco` firma como aparato del acta Y lee solo su cajón.
-        const cn = scopeToCn(pend.scope)
-        const caps = [...new Set([...scopeToCaps(pend.scope), ...(cn ? ['secrets'] : [])])]
-        if (caps.length) await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
+      await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
+    } catch (e) {
+      // El certificado ya está firmado y no se entrega: se revoca, para que no quede uno
+      // válido suelto. Si ni eso sale, se dice también.
+      let revoked = true
+      try { await identity.revokeDelegation(cert.nonce) } catch (re) {
+        revoked = false
+        log('[vault] could not revoke the undelivered certificate %s: %s', cert.nonce, re.message)
       }
-      record = (await identity.profileActa?.())?.acta || null
-    } catch (e) { log('[vault] could not admit into the record:', e.message) }
+      audit('rejected', { what: 'approve', device: pend.deviceId, reason: 'admit-failed' })
+      reply(pend.from, { type: MSG_ERROR, error: 'the vault could not add this device to the account: pairing failed, try again' })
+      pending.delete(pend.token)
+      fire(onPendingChange)
+      log('[vault] could not add %s to the record, no certificate was delivered: %s', pend.deviceId, e.message)
+      throw Object.assign(
+        new Error(`could not add the device to the account record (${e.message}): no certificate was delivered${revoked ? '' : ', and the signed one could not be revoked'}`),
+        { code: 'admit-failed', cause: e }
+      )
+    }
+    const record = (await identity.profileActa?.())?.acta || null
 
     audit('enroll', { device: pend.deviceId, label: pend.label || '', scope: pend.scope })
     // Echamos el código tipeado junto al cert: el DISPOSITIVO acepta solo si coincide
