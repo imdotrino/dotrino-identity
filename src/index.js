@@ -274,8 +274,12 @@ export class Identity {
    */
   /** Qué le has concedido a cada aplicación. Sin esto, conceder no significaría nada. */
   async listGrants () { return this._call('listGrants') }
-  /** Retirar lo concedido a un origen: la próxima vez que pida, se vuelve a preguntar. */
-  async revokeGrant (origin) { return this._call('revokeGrant', { origin }) }
+  /**
+   * Retirar lo concedido a una aplicación: la próxima vez que pida, se vuelve a preguntar.
+   * Las que entran por el puente llegan todas desde el mismo origen, así que a esas se las
+   * nombra con `onBehalfOf` (el que trae su fila de `listGrants`).
+   */
+  async revokeGrant (origin, onBehalfOf) { return this._call('revokeGrant', { origin, ...(onBehalfOf ? { onBehalfOf } : {}) }) }
 
   async requestAssertion ({ audience, nonce, scopes, ttlMs, onBehalfOf } = {}) {
     // ESPERA LO QUE TARDE UNA PERSONA. Los cinco segundos de siempre valen para una

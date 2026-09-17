@@ -15,7 +15,7 @@ const APP = 'https://chat.dotrino.com'
 /** kv y peers en memoria: aquí lo que se prueba es el permiso, no dónde se guarda. */
 function kvMemoria () {
   const m = new Map()
-  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), keys: () => [...m.keys()] }
 }
 function peersMemoria () {
   let p = {}
@@ -27,10 +27,10 @@ function peersMemoria () {
 }
 
 /** Un núcleo con una forma de preguntar que decide el test. */
-async function nucleo (respuesta) {
+async function nucleo (respuesta, kv = kvMemoria()) {
   const preguntas = []
   const core = await createIdentityCore({
-    kv: kvMemoria(),
+    kv,
     peers: peersMemoria(),
     askConsent: respuesta === undefined ? null : async (q) => { preguntas.push(q); return respuesta }
   })
@@ -151,6 +151,72 @@ test('el puente dice en nombre de quién pide, y se guarda con el origen', async
   const [g] = await n.h.listGrants()
   assert.equal(g.origin, 'https://sso.dotrino.com', 'quien responde sigue siendo el origen')
   assert.equal(g.onBehalfOf, 'Tienda de Pepe')
+  n.limpia()
+})
+
+// ----- Las aplicaciones que entran por el puente llegan todas desde el mismo origen -----
+
+const BRIDGE = 'https://sso.dotrino.com'
+const viaBridge = (h, app, scopes = ['id:whoami', 'profile:name', 'profile:email']) =>
+  h.requestAssertion({ audience: BRIDGE, nonce: 'n' + Math.random(), scopes, __origin: BRIDGE, onBehalfOf: app })
+
+test('two apps behind the same bridge do not share what was granted', async () => {
+  const n = await nucleo(true)
+  await n.h.updateMe({ patch: { nickname: 'Ada', email: 'ada@ejemplo.com' } })
+
+  await viaBridge(n.h, 'Tienda de Pepe')
+  assert.equal(n.preguntas.length, 1)
+  await viaBridge(n.h, 'Otra tienda')
+  assert.equal(n.preguntas.length, 2, 'the second app is asked, it does not inherit the first one')
+  assert.equal(n.preguntas[1].onBehalfOf, 'Otra tienda')
+
+  await viaBridge(n.h, 'Tienda de Pepe')
+  assert.equal(n.preguntas.length, 2, 'the first one keeps its own grant')
+
+  const rows = await n.h.listGrants()
+  assert.deepEqual(rows.map((r) => r.onBehalfOf).sort(), ['Otra tienda', 'Tienda de Pepe'], 'one row per app')
+  assert.ok(rows.every((r) => r.origin === BRIDGE), 'and the origin is still the bridge')
+  n.limpia()
+})
+
+test('revoking one app behind the bridge leaves the others alone', async () => {
+  const n = await nucleo(true)
+  await n.h.updateMe({ patch: { nickname: 'Ada' } })
+  await viaBridge(n.h, 'Tienda de Pepe', ['profile:name'])
+  await viaBridge(n.h, 'Otra tienda', ['profile:name'])
+
+  assert.deepEqual(await n.h.revokeGrant({ origin: BRIDGE }), { ok: false }, 'the bare origin names no app')
+  assert.deepEqual(await n.h.revokeGrant({ origin: BRIDGE, onBehalfOf: 'Otra tienda' }), { ok: true })
+  const rows = await n.h.listGrants()
+  assert.deepEqual(rows.map((r) => r.onBehalfOf), ['Tienda de Pepe'])
+
+  await viaBridge(n.h, 'Otra tienda', ['profile:name'])
+  assert.equal(n.preguntas.length, 3, 'the revoked app is asked again')
+  n.limpia()
+})
+
+// MIGRACIÓN (identity 0.93.0): quitar este test junto con el código, después del 2026-10-17.
+test('grants saved before 0.93 under the bare bridge origin are dropped; direct ones survive', async () => {
+  const kv = kvMemoria()
+  const n = await nucleo(true, kv)
+  await n.h.updateMe({ patch: { nickname: 'Ada' } })
+  // El kv va por perfil: se escribe una concesión para saber bajo qué clave cruda vive, y
+  // se sustituye por lo que habría guardado una versión anterior.
+  await pedir(n.h, ['id:whoami'], 'https://seed.dotrino.com')
+  const rawKey = kv.keys().find((k) => k.endsWith('.grants'))
+  assert.ok(rawKey, 'the grants live in the kv')
+  kv.setItem(rawKey, JSON.stringify({
+    [BRIDGE]: { scopes: ['profile:name'], at: 1, lastUsed: 1, onBehalfOf: 'Tienda de Pepe' },
+    [APP]: { scopes: ['profile:name'], at: 1, lastUsed: 1 }
+  }))
+
+  const rows = await n.h.listGrants()
+  assert.deepEqual(rows.map((r) => r.origin), [APP], 'the shared bridge grant cannot be attributed to any app')
+
+  await viaBridge(n.h, 'Tienda de Pepe', ['profile:name'])
+  assert.equal(n.preguntas.length, 1, 'so that app is asked again')
+  await pedir(n.h, ['profile:name'], APP)
+  assert.equal(n.preguntas.length, 1, 'while a direct grant from before is still valid')
   n.limpia()
 })
 

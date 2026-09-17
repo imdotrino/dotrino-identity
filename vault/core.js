@@ -725,13 +725,34 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // `acta.js`, que es puro y está probado aparte.
   // ----- PERMISO POR ORIGEN: qué le concedió el usuario a cada aplicación -----
   //
-  // `{ [origin]: { scopes: [...], at } }`. Vive en el kv del PERFIL, así que cambiar de
-  // perfil cambia lo concedido: lo que le diste a una aplicación desde tu cuenta de trabajo
-  // no vale para la personal.
-  const loadGrants = () => { try { return JSON.parse(kv.getItem(GRANTS_STORAGE) || '{}') } catch (_) { return {} } }
+  // `{ [grantKey]: { scopes: [...], at, lastUsed, onBehalfOf? } }`. Vive en el kv del
+  // PERFIL, así que cambiar de perfil cambia lo concedido: lo que le diste a una aplicación
+  // desde tu cuenta de trabajo no vale para la personal.
+  //
+  // LA CLAVE ES EL ORIGEN Y, SI PIDE POR OTRO, TAMBIÉN EN NOMBRE DE QUIÉN (dueño,
+  // 2026-09-17). Hasta 0.92 era solo el origen, y todas las aplicaciones que entran por el
+  // puente OIDC llegan desde el MISMO: `sso.dotrino.com`. Lo que el usuario le concedía a
+  // una lo heredaban todas las demás sin que saliera el panel, y en «dónde se usó mi
+  // identidad» se veían como una sola fila con el nombre de la última.
+  //
+  // Separar por `onBehalfOf` no le da a nadie más de lo que tenía: el nombre lo pone el
+  // origen, así que un origen que mintiera solo conseguiría una concesión aparte —vacía—,
+  // nunca la de otro origen. `|` no aparece en un origen, así que la clave no es ambigua.
+  const grantKey = (origin, onBehalfOf) => onBehalfOf ? `${origin}|${onBehalfOf}` : origin
+  const behalfName = (onBehalfOf) => onBehalfOf ? String(onBehalfOf).slice(0, 60) : ''
+  const loadGrants = () => {
+    let g
+    try { g = JSON.parse(kv.getItem(GRANTS_STORAGE) || '{}') } catch (_) { return {} }
+    // MIGRACIÓN DECLARADA (identity 0.93.0) — quitar después del 2026-10-17.
+    // Una entrada guardada bajo el origen A SECAS pero con `onBehalfOf` es de antes de 0.93:
+    // la compartían todas las aplicaciones del puente, así que no se puede atribuir a
+    // ninguna. Se tira, y cada aplicación vuelve a preguntar — que es el lado seguro.
+    for (const k of Object.keys(g)) if (!k.includes('|') && g[k]?.onBehalfOf) delete g[k]
+    return g
+  }
   const saveGrants = (g) => { try { kv.setItem(GRANTS_STORAGE, JSON.stringify(g)) } catch (_) {} }
-  /** Lo concedido a un origen, hoy. */
-  const grantedTo = (origin) => (loadGrants()[String(origin || '')]?.scopes) || []
+  /** Lo concedido a un origen (y a nombre de quién pide), hoy. */
+  const grantedTo = (key) => (loadGrants()[key]?.scopes) || []
 
   const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
   const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
@@ -1537,6 +1558,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    */
   async function consentFor (origin, pedidos, onBehalfOf = null) {
     const org = String(origin || '').trim()
+    const behalf = behalfName(onBehalfOf)
+    const key = grantKey(org, behalf)
     // APUNTA CUÁNDO SE USÓ. Sin esto, «dónde se usó mi identidad» solo puede decir qué
     // concediste, no si sigue usándose — y eso es lo que hace que uno se decida a retirar
     // un permiso que ya no hace falta. Se apunta aunque solo se pida el mínimo: entrar es
@@ -1544,8 +1567,8 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const marcarUso = () => {
       if (!org) return
       const g = loadGrants()
-      const prev = g[org] || { scopes: [], at: Date.now() }
-      g[org] = { ...prev, lastUsed: Date.now(), ...(onBehalfOf ? { onBehalfOf: String(onBehalfOf).slice(0, 60) } : {}) }
+      const prev = g[key] || { scopes: [], at: Date.now() }
+      g[key] = { ...prev, lastUsed: Date.now(), ...(behalf ? { onBehalfOf: behalf } : {}) }
       saveGrants(g)
     }
     const base = pedidos.filter((s) => s === 'id:whoami')
@@ -1555,7 +1578,7 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     // concede nada más que el mínimo. Es el caso de Node y el de una llamada interna.
     if (!org) return base.length ? base : ['id:whoami']
 
-    const yaTiene = grantedTo(org)
+    const yaTiene = grantedTo(key)
     const faltan = extra.filter((s) => !yaTiene.includes(s))
     if (!faltan.length) { marcarUso(); return pedidos }
 
@@ -1565,17 +1588,17 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return conocidos.length ? conocidos : ['id:whoami']
     }
     let ok = false
-    try { ok = !!(await askConsent({ origin: org, scopes: faltan, already: yaTiene, onBehalfOf })) } catch (_) { ok = false }
+    try { ok = !!(await askConsent({ origin: org, scopes: faltan, already: yaTiene, onBehalfOf: behalf || null })) } catch (_) { ok = false }
     if (!ok) {
       const conocidos = [...base, ...extra.filter((s) => yaTiene.includes(s))]
       marcarUso()
       return conocidos.length ? conocidos : ['id:whoami']
     }
     const g = loadGrants()
-    g[org] = {
+    g[key] = {
       scopes: [...new Set([...yaTiene, ...faltan])].sort(),
-      at: (g[org]?.at) || Date.now(), lastUsed: Date.now(),
-      ...(onBehalfOf ? { onBehalfOf: String(onBehalfOf).slice(0, 60) } : {})
+      at: (g[key]?.at) || Date.now(), lastUsed: Date.now(),
+      ...(behalf ? { onBehalfOf: behalf } : {})
     }
     saveGrants(g)
     return pedidos
@@ -1846,18 +1869,22 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
      */
     async listGrants () {
       const g = loadGrants()
-      return Object.entries(g).map(([origin, v]) => ({
-        origin, scopes: v?.scopes || [], at: v?.at || 0,
+      return Object.entries(g).map(([key, v]) => ({
+        origin: key.split('|')[0], scopes: v?.scopes || [], at: v?.at || 0,
         lastUsed: v?.lastUsed || v?.at || 0,
         ...(v?.onBehalfOf ? { onBehalfOf: v.onBehalfOf } : {})
       })).sort((a, b) => b.lastUsed - a.lastUsed)
     },
-    /** Retirar lo concedido a un origen. La próxima vez que pida, se vuelve a preguntar. */
-    async revokeGrant ({ origin } = {}) {
+    /**
+     * Retirar lo concedido a una aplicación. La próxima vez que pida, se vuelve a preguntar.
+     * `onBehalfOf` es obligatorio para las que piden por otro (el puente): retirar el permiso
+     * de UNA no puede quitárselo a todas las que entran por el mismo sitio.
+     */
+    async revokeGrant ({ origin, onBehalfOf } = {}) {
       const g = loadGrants()
-      const org = String(origin || '')
-      if (!(org in g)) return { ok: false }
-      delete g[org]; saveGrants(g)
+      const key = grantKey(String(origin || ''), behalfName(onBehalfOf))
+      if (!(key in g)) return { ok: false }
+      delete g[key]; saveGrants(g)
       return { ok: true }
     },
 

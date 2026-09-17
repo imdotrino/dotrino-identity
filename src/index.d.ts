@@ -126,8 +126,11 @@ export class Identity {
   requestAssertion (args: { audience: string; nonce: string; scopes?: AssertionScope[]; ttlMs?: number; onBehalfOf?: string }): Promise<Assertion>
   /** Qué le has concedido a cada aplicación (permiso por origen). */
   listGrants (): Promise<Array<{ origin: string; scopes: AssertionScope[]; at: number; lastUsed: number; onBehalfOf?: string }>>
-  /** Retirar lo concedido a un origen: la próxima vez que pida, se vuelve a preguntar. */
-  revokeGrant (origin: string): Promise<{ ok: boolean }>
+  /**
+   * Retirar lo concedido a una aplicación: la próxima vez que pida, se vuelve a preguntar.
+   * `onBehalfOf` identifica a una aplicación que entra por el puente (el mismo origen para todas).
+   */
+  revokeGrant (origin: string, onBehalfOf?: string): Promise<{ ok: boolean }>
   setMyNickname (nickname: string): Promise<{ me: Me }>
   getEncryptionPubkey (): Promise<string>
   encrypt (recipients: EncryptRecipient[], plaintext: string): Promise<EnvelopeV1>
