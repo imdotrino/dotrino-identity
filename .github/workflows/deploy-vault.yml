@@ -38,10 +38,16 @@ jobs:
         run: |
           V=${GITHUB_SHA::8}
           sed -i "s|src=\"./vault.js\"|src=\"./vault.js?v=$V\"|" vault/index.html
-          sed -i -E "s|from '(\./[a-zA-Z0-9_-]+\.js)'|from '\1?v=$V'|g" vault/*.js vault/vendor/*/*.js
+          # `..` y una carpeta más de hondo: la copia de @dotrino/opaque conserva la forma
+          # del paquete (`src/index.js` importa `../build/opaque.js`, que es el WASM), así
+          # que un patrón de un solo nivel dejaba justo ese archivo sin versionar.
+          sed -i -E "s|from '(\.\.?/[a-zA-Z0-9_/-]+\.js)'|from '\1?v=$V'|g" \
+            vault/*.js vault/vendor/*/*.js vault/vendor/*/*/*.js
           # El importmap también: sin esto el index.js vendorizado se queda rancio en el borde
-          # (y arrastra a sus imports viejos) aunque el resto ya lleve ?v=.
-          sed -i -E "s|\"(\./vendor/[a-zA-Z0-9_-]+/index\.js)\"|\"\1?v=$V\"|g" vault/index.html
+          # (y arrastra a sus imports viejos) aunque el resto ya lleve ?v=. Cualquier ruta del
+          # vendor, no solo los `index.js`: el mapa ya apunta a `passwordLogins.js` y a
+          # `opaque/src/index.js`, y los que se queden fuera son los que se cachean en 404.
+          sed -i -E "s|\"(\./vendor/[a-zA-Z0-9_/-]+\.js)\"|\"\1?v=$V\"|g" vault/index.html
           COMMIT=${GITHUB_SHA::7}
           sed -i "s|</head>|  <meta name=\"commit\" content=\"$COMMIT\" />\\n</head>|" vault/index.html
       - uses: actions/configure-pages@v5

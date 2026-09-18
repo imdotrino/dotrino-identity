@@ -10,3 +10,9 @@ node_modules
 dist
 build
 .npmrc
+
+# La copia vendorizada de @dotrino/opaque trae su carpeta `build/` (el WASM dentro del JS),
+# y el `build` de arriba —que apunta a los compilados de cualquier proyecto— se la comía en
+# silencio: el iframe se desplegó sin ella y el navegador recibía un 404 que el borde cachea
+# CUATRO HORAS. Lo que se sirve no puede estar ignorado.
+!vault/vendor/opaque/build/

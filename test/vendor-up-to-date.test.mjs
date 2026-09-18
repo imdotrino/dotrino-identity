@@ -66,3 +66,34 @@ test('el import map resuelve todo lo que el vendor importa por nombre', async ()
     assert.ok(map[spec], `el import map de vault/index.html no resuelve "${spec}"`)
   }
 })
+
+/**
+ * LO QUE SE SIRVE NO PUEDE ESTAR IGNORADO.
+ *
+ * La copia de `@dotrino/opaque` trae su carpeta `build/` (el WASM dentro del JS) y el
+ * `.gitignore` tenía un `build` genérico —los compilados de cualquier proyecto— que se la
+ * comió sin decir nada: las pruebas pasaban (los archivos estaban en el disco), el commit
+ * salió sin ellos y el iframe se desplegó pidiendo un archivo que no existía. Un 404 así lo
+ * cachea el borde CUATRO HORAS, o sea que ni arreglarlo enseguida lo arregla enseguida.
+ *
+ * `git check-ignore` responde por el .gitignore de verdad, que es lo único que decide esto,
+ * y va con `--no-index` a propósito: sin esa bandera, un archivo que YA está en el índice
+ * se declara «no ignorado» aunque el patrón lo tape — así que la prueba pasaría en el repo
+ * donde el problema ya se arregló y solo fallaría en uno recién clonado. Lo que se quiere
+ * saber no es si este archivo entró, sino si el patrón se lo comería.
+ */
+test('nada de lo vendorizado está fuera de git', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const rutas = VENDORED.flatMap((v) => v.files.map((f) => `${v.to}/${f}`))
+  const ignorados = []
+  for (const r of rutas) {
+    try {
+      execFileSync('git', ['check-ignore', '--no-index', '-q', r], { cwd: here })
+      ignorados.push(r)                         // salió 0: el patrón lo tapa
+    } catch (_) { /* salió 1: no lo tapa, que es lo que queremos */ }
+  }
+  assert.deepEqual(ignorados, [], 'el .gitignore se come archivos que el iframe SIRVE: ' + ignorados.join(', '))
+
+  const noRastreados = execFileSync('git', ['ls-files', '--others', '--exclude-standard', ...rutas], { cwd: here, encoding: 'utf8' }).trim()
+  assert.equal(noRastreados, '', 'vendorizado pero sin commitear (el deploy lo serviría en 404): ' + noRastreados)
+})
