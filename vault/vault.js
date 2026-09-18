@@ -215,13 +215,50 @@ import { pubkeyId } from './capabilities.js'
     joinProfile: (acta) => handlers.joinProfile({ acta })
   }
 
+  /**
+   * EL ESCRITORIO DE LOS INICIOS DE SESIÓN CON CONTRASEÑA, con el almacén de este navegador.
+   *
+   * La bóveda no decide dónde se guarda nada: en el navegador no hay archivos, así que el
+   * estado lo pone quien la monta —esto—. Sin escritorio la pestaña contesta
+   * `logins-unavailable`, que es distinto de «contraseña incorrecta» y por eso se ve.
+   *
+   * Cuelga del PERFIL ACTIVO: los inicios de sesión son de una cuenta, no de este
+   * navegador, y dos cuentas en el mismo equipo no comparten usuarios.
+   *
+   * Se carga solo aquí, y no arriba, porque arrastra el OPAQUE en WASM (~270 KB): el
+   * iframe lo cargan las ~30 apps del ecosistema y solo esta pestaña es bóveda.
+   *
+   * Lo que guarda aguanta lo mismo que el disco del daemon: con una copia de este
+   * `localStorage` se pueden probar contraseñas sin límite contra el registro de OPAQUE.
+   * Lo único que aguanta ahí es que la contraseña sea larga (`temporary-access.md` §4).
+   */
+  async function makeLoginDesk () {
+    const { createLoginDesk } = await import('@dotrino/vault/password-logins')
+    const { id: pid } = await handlers.currentProfile()
+    if (!pid) throw new Error('no profile: password logins belong to an account')
+    const key = `dotrino.identity.p.${pid}.self-vault.logins`
+    return createLoginDesk({
+      load: () => {
+        const raw = kv.getItem(key)
+        // Si está y no parsea, REVIENTA aquí a propósito: devolver `null` haría nacer el
+        // escritorio vacío, y el primer guardado se llevaría por delante todos los inicios
+        // de sesión de esta cuenta sin que nadie se enterara.
+        return raw ? JSON.parse(raw) : null
+      },
+      save: (s) => kv.setItem(key, JSON.stringify(s))
+    })
+  }
+
   async function startSelfDaemon () {
     if (daemon) return
     try {
       // Import dinámico: aísla fallos del vendor del arranque del vault (cargado por
       // todas las apps). El import map de index.html resuelve @dotrino/vault.
       const { startDeviceVault } = await import('@dotrino/vault')
-      daemon = await startDeviceVault(selfIdentity, selfProxyUrl ? { proxyUrl: selfProxyUrl } : undefined)
+      daemon = await startDeviceVault(selfIdentity, {
+        ...(selfProxyUrl ? { proxyUrl: selfProxyUrl } : {}),
+        logins: await makeLoginDesk()
+      })
       daemon.onPendingChange(() => broadcast('selfVault', { pending: daemon.listPending() }))
       broadcast('selfVault', { running: true })
     } catch (e) { daemon = null; broadcast('selfVault', { error: e?.message || String(e) }) }

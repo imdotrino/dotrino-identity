@@ -90,6 +90,19 @@ export const MSG = Object.freeze({
   // firmados de antes y no se pueden falsificar) y la réplica acusa hasta qué `seq` tiene.
   REPLICA_PUSH: 'vault.replica.push',         // master → réplica: { body:{seq,acta,secrets,ts}, signature }
   REPLICA_ACK: 'vault.replica.ack',           // réplica → master: { body:{seq,ts}, signature }
+  // ENTRAR CON USUARIO Y CONTRASEÑA (`src/passwordLogins.js`,
+  // `dotrino-passmanager/docs/temporary-access.md`). Es lo ÚNICO que se atiende sin
+  // certificado y sin firma: quien pregunta todavía no tiene llaves — vienen dentro del
+  // paquete que solo abre su contraseña. La contraseña NO viaja: viajan los mensajes de
+  // OPAQUE, que no la llevan ni dejan adivinarla.
+  LOGIN_START: 'vault.login.start',           // aparato → vault: { user, request }
+  LOGIN_RESPONSE: 'vault.login.response',     // vault → aparato: { lid, response }
+  LOGIN_FINISH: 'vault.login.finish',         // aparato → vault: { lid, finalization, label }
+  LOGIN_OK: 'vault.login.ok',                 // vault → aparato: { sid, blob, cert, iss, acta }
+  // Salir SÍ va firmado, con la llave que acaba de abrir: cerrar la sesión de otro sería
+  // una forma de echar a alguien de su cuenta.
+  LOGIN_CLOSE: 'vault.login.close',           // aparato → vault: { data:{op,user,sid,publickey,ts}, signature }
+  LOGIN_CLOSED: 'vault.login.closed',         // vault → aparato: { ok }
   ERROR: 'vault.error'                        // vault → dispositivo: { error }
 })
 

@@ -16,7 +16,7 @@
  *
  *   node vendor.mjs
  */
-import { readFile, writeFile, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,11 +36,29 @@ export const VENDORED = [
     pkg: 'dotrino-vault/lib/package.json',
     from: 'dotrino-vault/lib/src',
     to: 'vault/vendor/vault',
-    files: ['index.js', 'enroll.js', 'protocol.js'],
+    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'b64.js'],
     note: [
       'index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),',
       '@dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y',
       '@dotrino/proxy-client (= ../proxy-client/), todos por el import map de index.html.',
+      'passwordLogins.js es el aparato que se abre con usuario y contraseña: lo carga',
+      'vault.js SOLO cuando esta pestaña es bóveda, porque arrastra el OPAQUE en WASM.',
+    ],
+  },
+  // OPAQUE: comprobar una contraseña sin verla nunca. Solo lo carga la pestaña que es
+  // bóveda — son ~270 KB de WASM incrustado, y el iframe lo cargan las ~30 apps.
+  {
+    name: '@dotrino/opaque',
+    repo: 'dotrino-opaque',
+    pkg: 'dotrino-opaque/package.json',
+    from: 'dotrino-opaque',
+    to: 'vault/vendor/opaque',
+    files: ['src/index.js', 'build/opaque.js', 'build/wasm-bytes.js'],
+    note: [
+      'src/index.js importa ../build/{opaque,wasm-bytes}.js, así que la copia CONSERVA',
+      'esas dos carpetas: aplanarla rompería el import relativo.',
+      'El WASM viaja dentro del JS (base64) porque el binario del vault es un ejecutable',
+      'único; aquí eso significa que se baja como script, sin un fetch aparte.',
     ],
   },
   {
@@ -79,7 +97,13 @@ async function main () {
       continue
     }
     const ver = await version(v.pkg)
-    for (const f of v.files) await copyFile(join(eco, v.from, f), join(here, v.to, f))
+    for (const f of v.files) {
+      // `f` puede llevar carpetas (`build/opaque.js`): la copia conserva la forma del
+      // paquete, porque sus imports relativos cuentan con ella.
+      const dest = join(here, v.to, f)
+      await mkdir(dirname(dest), { recursive: true })
+      await copyFile(join(eco, v.from, f), dest)
+    }
     await writeFile(join(here, v.to, 'VERSION.txt'),
       `Copia vendorizada de ${v.name}@${ver} (${v.from}/{${v.files.map((f) => f.replace(/\.js$/, '')).join(',')}}.js).\n` +
       'NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.\n' +

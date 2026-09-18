@@ -125,3 +125,103 @@ test('la copia servida concede `passwords` al emparejar',
     const v = await aparato.handlers.vaultStatus()
     assert.ok(v.scope.includes('vault:passwords'), 'el cert no lleva el permiso: ' + JSON.stringify(v.scope))
   })
+
+/**
+ * Y LA COPIA SERVIDA TAMBIÉN ABRE CON USUARIO Y CONTRASEÑA.
+ *
+ * Es la regla de las tres versiones: la pestaña tiene que hacer lo mismo que el binario,
+ * menos lo que su contexto no permite. Aquí lo que su contexto no permite son los
+ * archivos, y por eso el almacén se lo pone quien la monta — igual que hace `vault.js`.
+ *
+ * Esto NO necesita proxio: se le habla al mostrador por sus handles, que es justo lo que
+ * hace la consola de la pestaña.
+ */
+test('la copia servida crea un inicio de sesión con contraseña y lo deja entrar', async (t) => {
+  const { client: opaqueClient } = await import('@dotrino/opaque')
+  const { createLoginDesk } = await import('../vault/vendor/vault/passwordLogins.js')
+  const { makeDeviceKey } = await import('../vault/capabilities.js')
+
+  const core = await nucleo()
+  let guardado = null
+  const logins = createLoginDesk({
+    load: () => (guardado ? JSON.parse(guardado) : null),
+    save: (s) => { guardado = JSON.stringify(s) }
+  })
+  // Sin proxio: `startDeviceVault` acepta un cliente puesto desde fuera, y el mostrador de
+  // contraseñas no manda nada por la red — es la consola de esta misma pestaña.
+  const handle = await startDeviceVault(comoElIframe(core), { client: clienteMudo(), logins })
+  t.after(() => handle.close())
+
+  const password = 'una contraseña larga de verdad'
+  const start = opaqueClient.registrationStart({ password })
+  const { response } = handle.loginRegisterBegin({ user: 'ana', request: start.request })
+  const fin = opaqueClient.registrationFinish({ state: start.state, response, password })
+  const device = await makeDeviceKey({ label: 'equipo prestado' })
+  const r = await handle.loginRegisterFinish({
+    user: 'ana', upload: fin.upload, pub: device.publickey, label: 'equipo prestado', blob: 'sellado:' + fin.exportKey.slice(0, 8)
+  })
+  assert.ok(r.cert?.sig, 'el aparato sale con su certificado')
+
+  // Y está en el acta de la cuenta, que es lo que lo hace un aparato de verdad.
+  const { members } = await core.handlers.profileMembers()
+  assert.ok((members || []).some((m) => m.pub === device.publickey), 'el aparato no quedó en el acta')
+
+  const s = opaqueClient.loginStart({ password })
+  const b = handle.loginBegin({ user: 'ana', request: s.request })
+  const f = opaqueClient.loginFinish({ state: s.state, response: b.response, password })
+  const entrada = handle.loginEnd({ lid: b.lid, finalization: f.finalization })
+  assert.equal(entrada.blob, 'sellado:' + fin.exportKey.slice(0, 8), 'devuelve el paquete tal cual se guardó')
+  assert.equal(f.exportKey, fin.exportKey, 'la llave que lo abre sale de la contraseña')
+
+  assert.equal(handle.listLogins().length, 1)
+})
+
+/**
+ * SIN ALMACÉN LO DICE, y no dice que la contraseña está mal. Son cosas distintas: una la
+ * arregla quien monta la bóveda, la otra quien escribe la contraseña.
+ */
+test('la copia servida sin almacén contesta `logins-unavailable`', async (t) => {
+  const core = await nucleo()
+  const handle = await startDeviceVault(comoElIframe(core), { client: clienteMudo() })
+  t.after(() => handle.close())
+  assert.throws(() => handle.listLogins(), (e) => e.code === 'logins-unavailable')
+})
+
+/** Un transporte que no habla con nadie: aquí se prueba el mostrador, no la red. */
+function clienteMudo () {
+  return {
+    token: 'MUDO',
+    on () {}, off () {},
+    async connect () {}, async identify () {}, async identifyAs () {},
+    async publish () {}, async list () { return [] },
+    send () {}, sendByPubkey () {}, sendSealed () {}, close () {}
+  }
+}
+
+/**
+ * EL WASM QUE SE DESCARGA EL NAVEGADOR, ejecutado.
+ *
+ * La prueba de arriba importa `@dotrino/opaque` por su nombre, o sea el paquete de
+ * `node_modules`: en el navegador eso lo resuelve el import map a `vendor/opaque/`, que es
+ * OTRA copia. Esta importa los archivos servidos y los hace trabajar, para que una copia
+ * truncada o de otra versión no pase inadvertida — el WASM viaja dentro del JS, así que un
+ * archivo a medias sigue pareciendo un archivo.
+ */
+test('el OPAQUE servido instancia su WASM y hace un intercambio entero', async () => {
+  const { client, server, suiteId } = await import('../vault/vendor/opaque/src/index.js')
+  assert.ok(suiteId(), 'la suite se nombra')
+  const setup = server.createSetup()
+  const password = 'una contraseña larga de verdad'
+  const credentialId = 'ana'
+
+  const reg = client.registrationStart({ password })
+  const response = server.registrationResponse({ setup, request: reg.request, credentialId })
+  const fin = client.registrationFinish({ state: reg.state, response, password })
+  const record = server.registrationFinish({ upload: fin.upload })
+
+  const s = client.loginStart({ password })
+  const b = server.loginStart({ setup, record, request: s.request, credentialId })
+  const f = client.loginFinish({ state: s.state, response: b.response, password })
+  server.loginFinish({ state: b.state, finalization: f.finalization })
+  assert.equal(f.exportKey, fin.exportKey, 'la misma contraseña da la misma llave')
+})

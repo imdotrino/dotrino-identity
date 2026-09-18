@@ -46,11 +46,16 @@ export { deviceIdOf }
  *   `me.publickey`, `signData`, `signDelegation`, `listDelegations`, `revokeDelegation`.
  * @param {object} [opts]
  * @param {string} [opts.proxyUrl='wss://proxy.dotrino.com']
+ * @param {object} [opts.logins]  escritorio de `createLoginDesk` (`./password-logins`) para
+ *   ENTRAR CON USUARIO Y CONTRASEÑA. Lo monta quien levanta esta bóveda, porque en el
+ *   navegador no hay archivos y el estado tiene que guardarlo él. Sin él, esta bóveda
+ *   contesta `logins-unavailable` — no se inventa un almacén.
  * @returns {Promise<object>} handle: { iss, proxy, client, startPairing, stopPairing,
- *   approve, reject, listPending, listMachines, revoke, getSelfCert, onPendingChange,
- *   onAdopted, close }
+ *   approve, reject, listPending, listMachines, revoke, getSelfCert, listLogins,
+ *   loginRegisterBegin, loginRegisterFinish, loginBegin, loginEnd, closeLogin,
+ *   clearLoginBlock, removeLogin, onPendingChange, onAdopted, close }
  */
-export async function startDeviceVault (identity, { proxyUrl, client: injectedClient } = {}) {
+export async function startDeviceVault (identity, { proxyUrl, client: injectedClient, logins = null } = {}) {
   const iss = identity.me?.publickey
   if (!iss) throw new Error('no identity: create/unlock your identity before using this device as a vault')
   const proxy = proxyUrl || 'wss://proxy.dotrino.com'
@@ -328,7 +333,71 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     else if (p.type === MSG.GET) handle('get', handleGet(_from, p), _from)
     else if (p.type === MSG.STORE) handle('store', handleStore(_from, p), _from)
     else if (p.type === MSG.CHECK) handle('check', handleCheck(_from, p), _from)
+    // ENTRAR CON USUARIO Y CONTRASEÑA. La misma pieza que usa el binario
+    // (`passwordLogins.js`), con el almacén que le ponga quien monta esta bóveda: en el
+    // navegador no hay archivos, así que lo pone el iframe de identidad.
+    else if (p.type === MSG.LOGIN_START) handle('login', handleLoginStart(_from, p), _from)
+    else if (p.type === MSG.LOGIN_FINISH) handle('login', handleLoginFinish(_from, p), _from)
+    else if (p.type === MSG.LOGIN_CLOSE) handle('login', handleLoginClose(_from, p), _from)
   })
+
+  // --- ENTRAR CON USUARIO Y CONTRASEÑA ---------------------------------------------------
+  //
+  // Sin almacén no se inventa nada: se contesta que aquí no hay inicios de sesión. Es una
+  // bóveda que no atiende esto, no una que dice que la contraseña está mal.
+  const noLogins = (from) => send(from, { type: MSG.ERROR, error: 'this vault does not keep password logins', code: 'logins-unavailable' })
+
+  /** Lo mismo desde la consola: sin almacén no se administra nada, y se dice. */
+  function needLogins () {
+    if (!logins) throw Object.assign(new Error('this vault does not keep password logins: no store was given to startDeviceVault'), { code: 'logins-unavailable' })
+    return logins
+  }
+
+  function loginError (from, e) {
+    const code = e?.code
+    if (code === 'too-many-tries') return send(from, { type: MSG.ERROR, error: e.message, code, waitMs: e.waitMs || 0 })
+    if (code === 'login-failed' || code === 'no-exchange' || code === 'bad-input' || code === 'bad-user') {
+      return send(from, { type: MSG.ERROR, error: e.message, code })
+    }
+    send(from, { type: MSG.ERROR, error: 'login failed', code: 'login-error' })
+  }
+
+  async function handleLoginStart (from, p) {
+    if (!logins) return noLogins(from)
+    try {
+      const { lid, response } = logins.loginBegin({ user: p?.user, request: p?.request })
+      send(from, { type: MSG.LOGIN_RESPONSE, lid, response })
+    } catch (e) { loginError(from, e) }
+  }
+
+  async function handleLoginFinish (from, p) {
+    if (!logins) return noLogins(from)
+    try {
+      const r = logins.loginEnd({ lid: p?.lid, finalization: p?.finalization, label: p?.label })
+      const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+      send(from, { type: MSG.LOGIN_OK, sid: r.sid, blob: r.blob, cert: r.cert, iss: r.iss || iss, acta })
+    } catch (e) { loginError(from, e) }
+  }
+
+  /** Salir va firmado con la llave que acaba de abrir: cerrar la de otro sería echarlo. */
+  async function handleLoginClose (from, p) {
+    if (!logins) return noLogins(from)
+    const d = p?.data
+    if (typeof d?.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
+      return send(from, { type: MSG.ERROR, error: 'stale request', code: 'stale' })
+    }
+    if (d?.op !== 'login.close' || typeof d.publickey !== 'string' || typeof d.user !== 'string' || typeof d.sid !== 'string') {
+      return send(from, { type: MSG.ERROR, error: 'unauthorized: shape', code: 'bad-input' })
+    }
+    if (!(await verifyDeviceSig({ publickey: d.publickey, data: d, signature: p.signature }))) {
+      return send(from, { type: MSG.ERROR, error: 'unauthorized: bad-signature', code: 'bad-signature' })
+    }
+    const mine = logins.list().find((x) => x.user === d.user)
+    if (!mine || mine.pub !== d.publickey) {
+      return send(from, { type: MSG.ERROR, error: 'unauthorized: that key does not own this login', code: 'not-yours' })
+    }
+    send(from, { type: MSG.LOGIN_CLOSED, ok: logins.closeSession({ user: d.user, sid: d.sid }).ok })
+  }
 
   /**
    * Máquinas enroladas bajo esta identidad (P), vigentes, con scope de firma y label
@@ -368,6 +437,31 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     // exactamente esto.
     revoke: (nonce) => desk.revoke(nonce),
     getSelfCert,
+    // ENTRAR CON USUARIO Y CONTRASEÑA, desde la consola de esta bóveda. Es la misma pieza
+    // que el binario (`registerLogin`), para que el aparato que sale de aquí sea idéntico.
+    // Sin almacén no hay nada que administrar, y se dice en vez de contestar una lista vacía.
+    listLogins: () => needLogins().list(),
+    loginRegisterBegin: (opts) => needLogins().registerBegin(opts),
+    // El alta se trae cuando se usa: arrastra el OPAQUE en WASM (unos 260 KB) y la mayoría
+    // de las apps que usan este módulo no crean ningún inicio de sesión.
+    loginRegisterFinish: async (opts) => {
+      const { registerLogin } = await import('./passwordLogins.js')
+      return registerLogin({ ...opts, identity, logins: needLogins() })
+    },
+    // Entrar desde la propia consola, sin pasar por el proxio. Hace falta para cambiar la
+    // contraseña: el paquete de llaves se abre con la vieja y se vuelve a cerrar con la nueva.
+    loginBegin: ({ user, request }) => needLogins().loginBegin({ user, request }),
+    loginEnd: ({ lid, finalization, label }) => needLogins().loginEnd({ lid, finalization, label }),
+    closeLogin: ({ user, sid }) => needLogins().closeSession({ user, sid }),
+    clearLoginBlock: ({ user }) => needLogins().clearBlock({ user }),
+    removeLogin: ({ user }) => {
+      const store = needLogins()
+      const found = store.list().find((x) => x.user === user)
+      if (!found) return { ok: false }
+      store.remove({ user })
+      // Quitarlo de aquí no lo saca del acta: lo suyo es revocar el aparato, y eso ya existe.
+      return { ok: true, pub: found.pub, deviceId: found.deviceId }
+    },
     onPendingChange (fn) { _onPendingChange = fn || (() => {}) },
     /** Camino A: la cuenta del aparato quedó adoptada por esta bóveda. */
     onAdopted (fn) { _onAdopted = fn || (() => {}) },
