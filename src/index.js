@@ -561,6 +561,36 @@ export class Identity {
   /** Suscribe a eventos del self-vault ('selfVault'): { running?, pending?, error? }. */
   onSelfVault (handler) { return this.on('selfVault', handler) }
 
+  // ----- entrar con usuario y contraseña, cuando la bóveda es ESTA pestaña -----
+  //
+  // La pestaña ya atendía el inicio de sesión desde el primer día; lo que faltaba era poder
+  // CREARLO, y sin eso solo el binario daba de alta el aparato — que rompe la regla de las
+  // tres versiones. Todo esto exige que esta pestaña sea la bóveda activa; si no lo es, se
+  // dice con `code: 'not-the-vault'` en vez de contestar una lista vacía.
+
+  /** Los aparatos que se abren con usuario y contraseña, con sus sesiones abiertas. */
+  async selfVaultLogins () { return this._call('selfVaultLogins') }
+
+  /**
+   * Da de alta uno. La contraseña **no sale del iframe**: se comprueba con OPAQUE y de ella
+   * deriva la llave que cierra el paquete con las privadas del aparato nuevo.
+   *
+   * Devuelve su dirección `nombre@AB12-CD34-EF56`, que es lo que hay que teclear al entrar.
+   */
+  async selfVaultLoginAdd (opts) { return this._call('selfVaultLoginAdd', opts || {}, 60000) }
+
+  /** Cambia la contraseña: hace falta la vieja, y lo que estuviera abierto se cierra. */
+  async selfVaultLoginPasswd (opts) { return this._call('selfVaultLoginPasswd', opts || {}, 60000) }
+
+  /** Cierra un inicio de sesión abierto (sin `sid`, todos los de ese usuario). */
+  async selfVaultLoginClose (opts) { return this._call('selfVaultLoginClose', opts || {}) }
+
+  /** Quita la espera que dejan los intentos fallidos. */
+  async selfVaultLoginUnblock (user) { return this._call('selfVaultLoginUnblock', { user }) }
+
+  /** Lo quita, y saca su llave del acta: las dos cosas, o ninguna. */
+  async selfVaultLoginRemove (user) { return this._call('selfVaultLoginRemove', { user }, 30000) }
+
   // ----- multi-perfil por dispositivo -----
   // Podés tener varios perfiles (identidades) en el mismo navegador, cada uno conectado o no
   // a su propio vault. Crear/cambiar setea el perfil activo; la app RECARGA la página y toma

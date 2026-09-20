@@ -383,7 +383,119 @@ import { pubkeyId } from './capabilities.js'
     },
     // Presencia online (ping/pong) de las máquinas enroladas. Requiere que ESTE
     // iframe sea el daemon activo (tiene el cliente del proxy); si no, devuelve [].
-    selfVaultProbe: async ({ pubkeys }) => ({ online: [...(await probeOnline(pubkeys || []))] })
+    selfVaultProbe: async ({ pubkeys }) => ({ online: [...(await probeOnline(pubkeys || []))] }),
+
+    // ----- ENTRAR CON USUARIO Y CONTRASEÑA, desde la PESTAÑA -----
+    //
+    // La bóveda-pestaña ya sabía ATENDER un inicio de sesión desde el primer día; lo que no
+    // había era forma de CREAR uno: el mostrador estaba montado y sus operaciones no
+    // asomaban por aquí, así que solo el binario podía dar de alta el aparato. Eso rompe la
+    // regla de las tres versiones (`sealed-passwords.md` §2.7), y esto la cumple.
+    //
+    // El OPAQUE de las dos puntas corre AQUÍ DENTRO: el alta necesita la mitad del cliente
+    // —la que tiene la contraseña— y la mitad del servidor, y las dos están en esta pestaña
+    // cuando es bóveda. La contraseña cruza el `postMessage` como ya lo hace la del perfil
+    // (`unlockProfile`), y no sale de este origen.
+    selfVaultLogins: async () => (daemon ? daemon.listLogins() : []),
+
+    /**
+     * DAR DE ALTA un aparato que se abre con usuario y contraseña.
+     *
+     * Las llaves del aparato NACEN aquí y salen ya cerradas con lo que deriva la contraseña:
+     * la bóveda guarda un paquete que no puede abrir. Es el mismo camino que `logins add`
+     * del binario, con la misma pieza compartida.
+     */
+    selfVaultLoginAdd: async ({ user, password, label = '', scope = null, unattended = false } = {}) => {
+      const d = pidaDaemon()
+      const { client: opaque } = await import('@dotrino/opaque')
+      const { makeDeviceKey, makeDeviceEncKey } = await import('@dotrino/identity/capabilities')
+      const { sealDeviceKeys, loginAddress, accountFingerprint } = await import('@dotrino/vault/password-logins')
+      if (typeof password !== 'string' || password.length < 12) {
+        throw Object.assign(new Error('the password must be at least 12 characters'), { code: 'weak-password' })
+      }
+      const nombre = String(label || 'equipo prestado')
+      const reg = opaque.registrationStart({ password })
+      const { response } = d.loginRegisterBegin({ user, request: reg.request })
+      const fin = opaque.registrationFinish({ state: reg.state, response, password })
+      const device = await makeDeviceKey({ label: nombre })
+      const enc = await makeDeviceEncKey()
+      const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.encPrivateJwk })
+      const r = await d.loginRegisterFinish({
+        user, upload: fin.upload, pub: device.publickey, encPub: enc.encPublickey,
+        label: nombre, blob, ...(Array.isArray(scope) && scope.length ? { scope } : {}), unattended: !!unattended
+      })
+      return { ...r, address: loginAddress(user, await accountFingerprint(selfIdentity)) }
+    },
+
+    /**
+     * CAMBIAR LA CONTRASEÑA es abrir y volver a cerrar: el aparato, su llave y su papel
+     * siguen siendo los mismos. Por eso hace falta la vieja — sin ella no hay nada que
+     * volver a cerrar — y por eso lo que estuviera abierto se cierra.
+     */
+    selfVaultLoginPasswd: async ({ user, oldPassword, newPassword } = {}) => {
+      const d = pidaDaemon()
+      const { client: opaque } = await import('@dotrino/opaque')
+      const { sealDeviceKeys, openDeviceKeys } = await import('@dotrino/vault/password-logins')
+      if (typeof newPassword !== 'string' || newPassword.length < 12) {
+        throw Object.assign(new Error('the password must be at least 12 characters'), { code: 'weak-password' })
+      }
+      const start = opaque.loginStart({ password: oldPassword })
+      const begun = d.loginBegin({ user, request: start.request })
+      let fin
+      try { fin = opaque.loginFinish({ state: start.state, response: begun.response, password: oldPassword }) }
+      catch (_) { throw Object.assign(new Error('wrong password'), { code: 'login-failed' }) }
+      const entered = d.loginEnd({ lid: begun.lid, finalization: fin.finalization, label: 'consola' })
+      const keys = await openDeviceKeys(fin.exportKey, entered.blob)
+
+      const reg = opaque.registrationStart({ password: newPassword })
+      const { response } = d.loginRegisterBegin({ user, request: reg.request, replace: true })
+      const nueva = opaque.registrationFinish({ state: reg.state, response, password: newPassword })
+      await d.loginRegisterFinish({
+        user, upload: nueva.upload, blob: await sealDeviceKeys(nueva.exportKey, keys), replace: true
+      })
+      return { ok: true, user }
+    },
+
+    /** Cerrar un inicio de sesión abierto (sin `sid`, todos los de ese usuario). */
+    selfVaultLoginClose: async ({ user, sid = null } = {}) => {
+      const d = pidaDaemon()
+      if (sid) return d.closeLogin({ user, sid })
+      const fila = d.listLogins().find((x) => x.user === user)
+      for (const s of fila?.sessions || []) d.closeLogin({ user, sid: s.sid })
+      return { ok: true, closed: (fila?.sessions || []).length }
+    },
+
+    /** Quitar la espera de los intentos fallidos, desde la máquina de la bóveda. */
+    selfVaultLoginUnblock: async ({ user } = {}) => pidaDaemon().clearLoginBlock({ user }),
+
+    /**
+     * QUITARLO. Se va de aquí **y su llave sale del acta**: borrar solo el inicio de sesión
+     * dejaba un miembro que ya no puede entrar y sigue siendo de la cuenta.
+     */
+    selfVaultLoginRemove: async ({ user } = {}) => {
+      const d = pidaDaemon()
+      const fila = d.listLogins().find((x) => x.user === user)
+      const r = d.removeLogin({ user })
+      if (r?.ok && fila?.pub) {
+        try { await handlers.revokeDevice({ sub: fila.pub }) } catch (e) {
+          throw Object.assign(new Error(`the login is gone but its key is still in the record: ${e.message}`), { code: 'revoke-failed' })
+        }
+      }
+      return { ...r, deviceId: fila?.deviceId || null }
+    }
+  }
+
+  /**
+   * El mostrador solo existe mientras ESTA pestaña sea la bóveda activa. Se dice con esas
+   * palabras porque es lo que hay que hacer: abrirla y dejarla visible.
+   */
+  function pidaDaemon () {
+    if (!daemon) {
+      throw Object.assign(
+        new Error('this tab is not the active vault: open it as a visible tab and turn on «this device is a vault»'),
+        { code: 'not-the-vault' })
+    }
+    return daemon
   }
 
   window.addEventListener('message', async (event) => {
