@@ -47,6 +47,17 @@ export const CURRENT_STORAGE = 'dotrino.identity.current'   // id del perfil act
 const NONCE_TTL_MS = 5 * 60 * 1000
 /** El proxio del ecosistema. No hay otro: quien quiera el suyo lo dice al llamar. */
 const DEFAULT_PROXY = 'wss://proxy.dotrino.com'
+/**
+ * EL PILAR DE LA BÓVEDA, EN UNA VARIABLE Y NO ESCRITO EN EL `import`. No es un capricho de
+ * estilo: **este archivo lo empaqueta cada app** —`capabilities.js` tira de él— y
+ * `@dotrino/vault` no es dependencia de ninguna, ni debe serlo: arrastraría el OPAQUE en
+ * WASM (~270 KB) a las treinta. Con el nombre escrito, el empaquetador intenta resolverlo
+ * al construir y **el build de la app se cae**, aunque nunca vaya a ejecutar esa línea.
+ *
+ * Lo que hay detrás solo corre en el iframe de identidad, que lo resuelve con su import map
+ * (o en Node, donde el paquete está instalado).
+ */
+const PILAR_VAULT = '@dotrino/vault'
 
 // ----- crypto helpers (puros) -----
 
@@ -1123,8 +1134,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     let client = null
     try {
       const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-      const { closeLogin } = await import('@dotrino/vault/login-client')
-      const { vaultChannel } = await import('@dotrino/vault/password-logins')
+      const { closeLogin } = await import(/* @vite-ignore */ `${PILAR_VAULT}/login-client`)
+      const { vaultChannel } = await import(/* @vite-ignore */ `${PILAR_VAULT}/password-logins`)
       client = new WebSocketProxyClient({ url: meta.proxy || DEFAULT_PROXY, enableWebRTC: false, autoReconnect: false })
       await client.connect()
       // El token de la bóveda cambia con cada reconexión suya, así que se vuelve a mirar el
@@ -2323,7 +2334,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     async loginWithPassword ({ address, password, remember = false, label = '', proxyUrl = null } = {}) {
       const url = proxyUrl || DEFAULT_PROXY
       const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-      const { loginWithPassword: entrar } = await import('@dotrino/vault/login-client')
+      const { loginWithPassword: entrar } = await import(/* @vite-ignore */ `${PILAR_VAULT}/login-client`)
       const client = new WebSocketProxyClient({ url, enableWebRTC: false, autoReconnect: false })
       await client.connect()
       let entrada
