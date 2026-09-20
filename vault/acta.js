@@ -103,7 +103,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -116,6 +116,15 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * dominio; nunca lista la bóveda. Va aquí y no en una lista aparte porque quién puede
  * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
  * de lo mismo obliga a acordarse de los dos al quitar un aparato.
+ *
+ * `passkeys` es ABRIR LA PRIVADA DE UNA PASSKEY. Una passkey no se parece a una
+ * contraseña: es una llave privada que firma el reto de un sitio, y si se copia sirve
+ * **hasta que la borres en cada sitio** donde la registraste — no hay nada que «cambiar».
+ * Por eso su envoltura solo se le hace a quien tenga `passwords` **y** esto
+ * (`dotrino-passmanager/docs/sealed-passwords.md` §2.8).
+ *
+ * Sin `passwords` no significa nada: la passkey vive en una entrada de contraseñas. Y una
+ * SESIÓN no lo lleva nunca, como `passwords` (`session.js`).
  *
  * `replica` es REPARTIR, NO DECIDIR. Un replicador no tiene maestra: guarda el acta y los
  * sobres —que ya vienen sellados a su destinatario, así que tampoco puede abrirlos— y los
@@ -140,7 +149,7 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 
  * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
  * sin acordarse de un segundo registro escondido.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se

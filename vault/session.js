@@ -57,7 +57,7 @@ export const SESSION_SCOPES = Object.freeze(['id:whoami', 'vault:store'])
  * blanca a propósito: si mañana alguien añade un alcance a `SESSION_SCOPES` sin pensarlo,
  * esto sigue cortando lo que no puede pasar.
  */
-export const SESSION_FORBIDDEN = Object.freeze(['secrets', 'admin', 'approve', 'sealer', 'passwords', 'unattended', 'replica'])
+export const SESSION_FORBIDDEN = Object.freeze(['secrets', 'admin', 'approve', 'sealer', 'passwords', 'passkeys', 'unattended', 'replica'])
 
 /** Qué capacidad del acta hace falta para conceder cada alcance de sesión. */
 const SCOPE_NEEDS = Object.freeze({ 'id:whoami': null, 'vault:store': 'store' })
