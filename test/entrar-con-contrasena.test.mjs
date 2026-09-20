@@ -139,7 +139,7 @@ async function bovedaConLogin (t, { user = 'ana', password = 'una contraseña la
   const device = await makeDeviceKey({ label: 'equipo prestado' })
   const enc = await makeDeviceEncKey()
   const reg = opaqueClient.registrationStart({ password })
-  const { response } = handle.loginRegisterBegin({ user, request: reg.request })
+  const { response } = await handle.loginRegisterBegin({ user, request: reg.request })
   const fin = opaqueClient.registrationFinish({ state: reg.state, response, password })
   const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.encPrivateJwk })
   await handle.loginRegisterFinish({ user, upload: fin.upload, pub: device.publickey, encPub: enc.encPublickey, label: 'equipo prestado', blob })

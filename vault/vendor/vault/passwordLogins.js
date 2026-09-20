@@ -24,7 +24,7 @@
  * binario, `lib/src/index.js` en la pestaña—. Lo único que no es puro es `registerLogin`, al
  * final, porque hace falta la identidad que firma.
  */
-import { server as opaque, suiteId } from '@dotrino/opaque'
+import { server as opaquePorDefecto, suiteId as suitePorDefecto } from '@dotrino/opaque'
 import { pubkeyId } from '@dotrino/identity/capabilities'
 import { deviceIdOf, scopeToCaps, scopeToCn } from './enroll.js'
 import { SCOPE } from './protocol.js'
@@ -181,9 +181,24 @@ export async function openDeviceKeys (exportKey, blob) {
  *   `load()`  devuelve el estado guardado (o `null` la primera vez)
  *   `save(s)` lo guarda
  *   `now()`   el reloj, para poder probar el freno sin esperar una hora
+ *   `opaque`  la mitad de SERVIDOR de OPAQUE. Por defecto la del paquete, que es WASM y
+ *     corre en el mismo hilo. Se puede inyectar OTRA porque en una extensión MV3 el WASM
+ *     vive al otro lado de un `postMessage` —en una página sandbox, para no tener que
+ *     abrirle la CSP a toda la extensión—, y desde allí solo puede contestar una promesa.
+ *
+ * **Por eso los métodos que tocan OPAQUE son ASÍNCRONOS**, también con la implementación de
+ * casa: una firma que cambia según quién la use son dos mostradores, y de eso va la regla
+ * de las tres versiones.
  */
-export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
+export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = opaquePorDefecto } = {}) {
   if (typeof load !== 'function' || typeof save !== 'function') throw new Error('createLoginDesk: load and save are required')
+
+  /**
+   * QUÉ SUITE se está usando, dicha por quien hace el cálculo. Con el OPAQUE de casa es la
+   * del paquete; con uno inyectado, la suya — preguntárselo a él es lo único que no miente,
+   * porque el registro que queda guardado lo hizo él.
+   */
+  const suite = () => (typeof opaque.suiteId === 'function' ? opaque.suiteId() : suitePorDefecto())
 
   /** Intercambios a medias: viven en memoria, y por eso un reinicio los tira. */
   const exchanges = new Map()
@@ -195,9 +210,9 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
   }
 
   /** La preparación del servidor nace con el primer usuario y no se toca nunca más. */
-  function setupOf (state) {
+  async function setupOf (state) {
     if (state.setup) return state.setup
-    state.setup = opaque.createSetup()
+    state.setup = await opaque.createSetup()
     return state.setup
   }
 
@@ -234,30 +249,30 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
      * ALTA, primer paso. La contraseña no llega hasta aquí: lo que llega es el mensaje de
      * registro de OPAQUE, que no la lleva ni permite adivinarla.
      */
-    registerBegin ({ user, request, replace = false } = {}) {
+    async registerBegin ({ user, request, replace = false } = {}) {
       const state = read()
       const existing = userOf(state, user)
       if (existing && !replace) throw err('user-exists', `there is already a login called "${user}"`)
       if (!existing && replace) throw err('no-user', `there is no login called "${user}"`)
       if (typeof request !== 'string' || !request) throw err('bad-input', 'request required')
-      const setup = setupOf(state)
-      const response = opaque.registrationResponse({ setup, request, credentialId: user })
+      const setup = await setupOf(state)
+      const response = await opaque.registrationResponse({ setup, request, credentialId: user })
       save(state)
-      return { response, suite: suiteId() }
+      return { response, suite: await suite() }
     },
 
     /**
      * ALTA, segundo paso. `blob` son las llaves privadas del aparato, ya cerradas por quien
      * creó el aparato con la llave que sale de la contraseña: aquí no se abre nunca.
      */
-    registerFinish ({ user, upload, pub, encPub = null, deviceId = null, label = '', blob, replace = false } = {}) {
+    async registerFinish ({ user, upload, pub, encPub = null, deviceId = null, label = '', blob, replace = false } = {}) {
       const state = read()
       const existing = userOf(state, user)
       if (existing && !replace) throw err('user-exists', `there is already a login called "${user}"`)
       if (!existing && replace) throw err('no-user', `there is no login called "${user}"`)
       if (typeof blob !== 'string' || !blob) throw err('bad-input', 'blob required (the device keys, sealed with the password)')
       if (!replace && (typeof pub !== 'string' || !pub)) throw err('bad-input', 'pub required')
-      const record = opaque.registrationFinish({ upload })
+      const record = await opaque.registrationFinish({ upload })
       const t = now()
       state.users[user] = {
         ...(existing || {}),
@@ -267,7 +282,7 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
         label: label || existing?.label || '',
         record,
         blob,
-        suite: suiteId(),
+        suite: await suite(),
         createdAt: existing?.createdAt || t,
         passwordChangedAt: t,
         // Cambiar la contraseña cierra lo abierto: si alguien entró con la vieja, deja de
@@ -277,7 +292,7 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
         nextTryAt: 0
       }
       save(state)
-      return { user, suite: suiteId() }
+      return { user, suite: await suite() }
     },
 
     /** El certificado del aparato, que firma la bóveda al admitirlo en el acta. Es público. */
@@ -298,7 +313,7 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
      * registro inventado: desde fuera no se puede averiguar qué usuarios hay. Y cuenta
      * contra el mismo freno, para que tampoco se pueda medir por el tiempo.
      */
-    loginBegin ({ user, request } = {}) {
+    async loginBegin ({ user, request } = {}) {
       sweepExchanges()
       const state = read()
       if (typeof request !== 'string' || !request) throw err('bad-input', 'request required')
@@ -314,8 +329,8 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
         u.fails = (u.fails || 0) + 1
         u.nextTryAt = t + backoffFor(u.fails)
       }
-      const setup = setupOf(state)
-      const { state: serverState, response } = opaque.loginStart({
+      const setup = await setupOf(state)
+      const { state: serverState, response } = await opaque.loginStart({
         setup,
         record: u?.record || null,
         request,
@@ -332,7 +347,7 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
      * INICIO DE SESIÓN, segundo paso. Si la contraseña es la buena, devuelve el paquete de
      * llaves —que solo abre esa contraseña—, el certificado y el acta.
      */
-    loginEnd ({ lid, finalization, label = '' } = {}) {
+    async loginEnd ({ lid, finalization, label = '' } = {}) {
       sweepExchanges()
       const x = exchanges.get(lid)
       if (!x) throw err('no-exchange', 'that login is not in flight any more: start again')
@@ -341,7 +356,7 @@ export function createLoginDesk ({ load, save, now = () => Date.now() } = {}) {
       const u = x.known ? state.users[x.user] : null
 
       try {
-        opaque.loginFinish({ state: x.state, finalization })
+        await opaque.loginFinish({ state: x.state, finalization })
       } catch (e) {
         // Contraseña equivocada, usuario inexistente o mensaje alterado: el MISMO error.
         // Distinguirlos diría qué usuarios existen. El intento ya está contado desde
@@ -438,7 +453,7 @@ export async function registerLogin ({
   scope, unattended = false, replace = false
 } = {}) {
   if (replace) {
-    logins.registerFinish({ user, upload, blob, replace: true })
+    await logins.registerFinish({ user, upload, blob, replace: true })
     return { ok: true, user, replaced: true }
   }
   // PERMISOS, no tipos: los del scope, más `unattended` si quien lo crea lo eligió
@@ -452,7 +467,7 @@ export async function registerLogin ({
     throw Object.assign(new Error('this vault cannot add devices to the account record: no login was created'), { code: 'admit-unavailable' })
   }
   const deviceId = await deviceIdOf(pub)
-  logins.registerFinish({ user, upload, pub, encPub, deviceId, label, blob })
+  await logins.registerFinish({ user, upload, pub, encPub, deviceId, label, blob })
   try {
     const { cert } = await identity.signDelegation(pub, scopes, { label: label || `login:${user}` })
     const cn = scopeToCn(scopes)

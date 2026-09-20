@@ -1,4 +1,4 @@
-Copia vendorizada de @dotrino/vault@0.67.0 (dotrino-vault/lib/src/{index,enroll,protocol,passwordLogins,loginClient,b64}.js).
+Copia vendorizada de @dotrino/vault@0.68.0 (dotrino-vault/lib/src/{index,enroll,protocol,passwordLogins,loginClient,b64}.js).
 NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
 index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),
 @dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y

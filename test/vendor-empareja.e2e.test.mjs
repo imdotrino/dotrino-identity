@@ -154,7 +154,7 @@ test('la copia servida crea un inicio de sesión con contraseña y lo deja entra
 
   const password = 'una contraseña larga de verdad'
   const start = opaqueClient.registrationStart({ password })
-  const { response } = handle.loginRegisterBegin({ user: 'ana', request: start.request })
+  const { response } = await handle.loginRegisterBegin({ user: 'ana', request: start.request })
   const fin = opaqueClient.registrationFinish({ state: start.state, response, password })
   const device = await makeDeviceKey({ label: 'equipo prestado' })
   const r = await handle.loginRegisterFinish({
@@ -167,9 +167,9 @@ test('la copia servida crea un inicio de sesión con contraseña y lo deja entra
   assert.ok((members || []).some((m) => m.pub === device.publickey), 'el aparato no quedó en el acta')
 
   const s = opaqueClient.loginStart({ password })
-  const b = handle.loginBegin({ user: 'ana', request: s.request })
+  const b = await handle.loginBegin({ user: 'ana', request: s.request })
   const f = opaqueClient.loginFinish({ state: s.state, response: b.response, password })
-  const entrada = handle.loginEnd({ lid: b.lid, finalization: f.finalization })
+  const entrada = await handle.loginEnd({ lid: b.lid, finalization: f.finalization })
   assert.equal(entrada.blob, 'sellado:' + fin.exportKey.slice(0, 8), 'devuelve el paquete tal cual se guardó')
   assert.equal(f.exportKey, fin.exportKey, 'la llave que lo abre sale de la contraseña')
 

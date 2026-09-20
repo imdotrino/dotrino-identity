@@ -394,7 +394,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   async function handleLoginStart (from, p) {
     if (!logins) return noLogins(from)
     try {
-      const { lid, response } = logins.loginBegin({ user: p?.user, request: p?.request })
+      const { lid, response } = await logins.loginBegin({ user: p?.user, request: p?.request })
       send(from, { type: MSG.LOGIN_RESPONSE, lid, response })
     } catch (e) { loginError(from, e) }
   }
@@ -402,7 +402,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   async function handleLoginFinish (from, p) {
     if (!logins) return noLogins(from)
     try {
-      const r = logins.loginEnd({ lid: p?.lid, finalization: p?.finalization, label: p?.label })
+      const r = await logins.loginEnd({ lid: p?.lid, finalization: p?.finalization, label: p?.label })
       const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
       send(from, { type: MSG.LOGIN_OK, sid: r.sid, blob: r.blob, cert: r.cert, iss: r.iss || iss, acta })
     } catch (e) { loginError(from, e) }

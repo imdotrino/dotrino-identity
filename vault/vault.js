@@ -415,7 +415,7 @@ import { pubkeyId } from './capabilities.js'
       }
       const nombre = String(label || 'equipo prestado')
       const reg = opaque.registrationStart({ password })
-      const { response } = d.loginRegisterBegin({ user, request: reg.request })
+      const { response } = await d.loginRegisterBegin({ user, request: reg.request })
       const fin = opaque.registrationFinish({ state: reg.state, response, password })
       const device = await makeDeviceKey({ label: nombre })
       const enc = await makeDeviceEncKey()
@@ -440,15 +440,15 @@ import { pubkeyId } from './capabilities.js'
         throw Object.assign(new Error('the password must be at least 12 characters'), { code: 'weak-password' })
       }
       const start = opaque.loginStart({ password: oldPassword })
-      const begun = d.loginBegin({ user, request: start.request })
+      const begun = await d.loginBegin({ user, request: start.request })
       let fin
       try { fin = opaque.loginFinish({ state: start.state, response: begun.response, password: oldPassword }) }
       catch (_) { throw Object.assign(new Error('wrong password'), { code: 'login-failed' }) }
-      const entered = d.loginEnd({ lid: begun.lid, finalization: fin.finalization, label: 'consola' })
+      const entered = await d.loginEnd({ lid: begun.lid, finalization: fin.finalization, label: 'consola' })
       const keys = await openDeviceKeys(fin.exportKey, entered.blob)
 
       const reg = opaque.registrationStart({ password: newPassword })
-      const { response } = d.loginRegisterBegin({ user, request: reg.request, replace: true })
+      const { response } = await d.loginRegisterBegin({ user, request: reg.request, replace: true })
       const nueva = opaque.registrationFinish({ state: reg.state, response, password: newPassword })
       await d.loginRegisterFinish({
         user, upload: nueva.upload, blob: await sealDeviceKeys(nueva.exportKey, keys), replace: true
