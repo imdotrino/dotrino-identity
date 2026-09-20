@@ -38,12 +38,15 @@ export const ACTA_HISTORY_STORAGE = 'dotrino.identity.acta.history' // últimas 
 export const PENDING_JOIN_STORAGE = 'dotrino.identity.pendingJoin'  // «nací para adoptar la cuenta de otro»
 export const RENOUNCE_STORAGE = 'dotrino.identity.renounced'        // renuncias propias aún no absorbidas por el master
 export const GRANTS_STORAGE = 'dotrino.identity.grants'             // qué le concediste a cada origen (permiso por origen)
+export const LOGIN_STORAGE = 'dotrino.identity.login'               // se entró con usuario y contraseña: { user, address, sid, … }
 // Multi-perfil por dispositivo: lista de perfiles + el activo. Cada perfil tiene su propio
 // namespace `dotrino.identity.p.<id>.<suffix>` para TODAS las claves de arriba (keypair, me, etc.).
 export const PROFILES_STORAGE = 'dotrino.identity.profiles' // [{ id, name, pubkey }]
 export const CURRENT_STORAGE = 'dotrino.identity.current'   // id del perfil activo
 
 const NONCE_TTL_MS = 5 * 60 * 1000
+/** El proxio del ecosistema. No hay otro: quien quiera el suyo lo dice al llamar. */
+const DEFAULT_PROXY = 'wss://proxy.dotrino.com'
 
 // ----- crypto helpers (puros) -----
 
@@ -192,10 +195,53 @@ function sanitizeProfilePatch (patch = {}) {
  *
  * Si no se inyecta, no se concede nada nuevo: sin forma de preguntar, la respuesta es no.
  */
-export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, keyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null, askConsent = null }) {
+export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, keyStore: hostKeyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null, askConsent = null }) {
   const {
     initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
   } = peers
+
+  // ----- CUENTAS DE PASO: entrar en un equipo que NO es tuyo -----
+  //
+  // Una cuenta de paso es la que se abre con usuario y contraseña SIN marcar «Recordar»
+  // (`temporary-access.md` §3.4). No es una cuenta de este navegador: es de ESTA PESTAÑA, y
+  // desaparece —entera, con su llave— en cuanto la pestaña se va.
+  //
+  // Lo primero que se intentó fue tenerla solo en memoria, que suena mejor y no sirve: el
+  // iframe de identidad muere con cada navegación, así que entrar y pulsar el primer enlace
+  // te dejaba fuera otra vez. Así que se guarda como cualquier otra —la llave, `CryptoKey`
+  // NO EXTRAÍBLE en IndexedDB, nunca en claro— y lo que cambia es QUIÉN la ve y CUÁNTO dura:
+  //
+  //   · **no entra en la lista de perfiles del disco**, así que ninguna otra pestaña la ve
+  //     ni puede cambiarse a ella; la lista de esta pestaña la lleva en memoria;
+  //   · **no toca el puntero del perfil activo**: al cerrar, este navegador vuelve a la
+  //     cuenta que tenía, sin haberse enterado;
+  //   · **la reclama la pestaña** (`sessionStorage`, que es por pestaña y sobrevive a
+  //     navegar) y la mantiene viva un latido cada 20 s;
+  //   · **el primer arranque que vea una sin latido la borra**, con sus llaves.
+  //
+  // Lo que eso NO tapa, dicho claro: si el navegador se cierra de golpe y nadie vuelve a
+  // abrir Dotrino en esa máquina, la llave se queda ahí —cifrada y no extraíble— hasta que
+  // alguien lo haga, y ese alguien la borra antes de poder usarla. Salir la borra en el acto.
+  const VOLATILE_STORAGE = 'dotrino.identity.volatile'        // { <pid>: último latido }
+  const VOLATILE_CLAIM = 'dotrino.identity.volatile.claim'    // en sessionKv: la de ESTA pestaña
+  const VOLATILE_STALE_MS = 90_000
+  const VOLATILE_BEAT_MS = 20_000
+  const volatilePids = new Set()
+  let volatileProfiles = []
+  let volatileBeat = null
+  const rawKv = hostKv
+  const keyStore = hostKeyStore
+
+  const loadVolatile = () => { try { return JSON.parse(hostKv.getItem(VOLATILE_STORAGE) || '{}') || {} } catch (_) { return {} } }
+  const saveVolatile = (m) => hostKv.setItem(VOLATILE_STORAGE, JSON.stringify(m))
+  const beatVolatile = (pid) => { const m = loadVolatile(); m[pid] = Date.now(); saveVolatile(m) }
+  const keepBeating = (pid) => {
+    if (volatileBeat) clearInterval(volatileBeat)
+    beatVolatile(pid)
+    volatileBeat = setInterval(() => beatVolatile(pid), VOLATILE_BEAT_MS)
+    // En el navegador, que el latido no impida cerrar nada.
+    try { volatileBeat.unref?.() } catch (_) {}
+  }
 
   // ----- multi-perfil: kv SCOPEADO por el perfil activo -----
   // Todas las claves `dotrino.identity.*` (keypair, me, nonces, delegations, vault.*) se
@@ -210,8 +256,16 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     setItem: (k, v) => rawKv.setItem(_scoped(k), v),
     removeItem: (k) => rawKv.removeItem(_scoped(k))
   }
-  const loadProfiles = () => { try { return JSON.parse(rawKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { return [] } }
-  const saveProfiles = (list) => rawKv.setItem(PROFILES_STORAGE, JSON.stringify(list))
+  const loadProfiles = () => {
+    let list = []
+    try { list = JSON.parse(hostKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { list = [] }
+    return volatileProfiles.length ? [...list, ...volatileProfiles] : list
+  }
+  /** Lo volátil se queda en memoria; al disco va solo el resto. */
+  const saveProfiles = (list) => {
+    if (volatilePids.size) volatileProfiles = list.filter((p) => volatilePids.has(p.id))
+    hostKv.setItem(PROFILES_STORAGE, JSON.stringify(list.filter((p) => !volatilePids.has(p.id))))
+  }
 
   // ----- la MARCA de «este perfil nació para adoptar la cuenta de una bóveda» -----
   // Unirse a otra cuenta borra la que este perfil tenía, así que no puede pasar por
@@ -489,8 +543,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
    */
   async function openProfileInMemory (pid) {
     currentPid = pid
-    rawKv.setItem(CURRENT_STORAGE, pid)
-    await peers.setProfile?.(pid)
+    // Una cuenta volátil no deja rastro: si escribiera aquí, al cerrar la pestaña el
+    // puntero señalaría a una cuenta que ya no existe y las demás pestañas verían cambiar
+    // la suya sin haber tocado nada.
+    if (!volatilePids.has(pid)) rawKv.setItem(CURRENT_STORAGE, pid)
+    await peers.setProfile?.(pid, { volatile: volatilePids.has(pid) })
     await initPeerStorage()
     keypair = await loadOrCreateKeypair(); publickeyJwkStr = JSON.stringify(keypair.publicJwk)
     encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
@@ -636,7 +693,11 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   async function purgeProfile (id) {
     const list = loadProfiles().filter((p) => p.id !== id)
     saveProfiles(list)
-    for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations', 'vault.device', 'vault.cert', 'acta', 'renounced']) {
+    // TODO lo que escribe una cuenta. Faltaban tres —el historial de actas, lo que le
+    // concediste a cada aplicación y la marca de haber entrado con contraseña—, y en una
+    // cuenta de paso eso no es basura: es rastro en un equipo que no es tuyo.
+    for (const s of ['keypair', 'enc-keypair', 'me', 'nonces', 'delegations', 'revocations',
+      'vault.device', 'vault.cert', 'acta', 'acta.history', 'renounced', 'grants', 'login', 'pendingJoin']) {
       rawKv.removeItem(`dotrino.identity.p.${id}.${s}`)
     }
     // …y sus CryptoKeys no extractables del keyStore (IndexedDB).
@@ -933,6 +994,152 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     const { generation, sinLlave } = await Content.makeGeneration({ members: acta.members, gen })
     await sealChanges([{ op: 'keyring', generation }])
     return { gen, sinLlave }
+  }
+
+  // ----- ENTRAR CON USUARIO Y CONTRASEÑA (`temporary-access.md` §3.4) -----
+  //
+  // Lo que llega de `@dotrino/vault/login-client` es un APARATO entero: sus dos llaves
+  // privadas, el papel que firmó la bóveda y el acta. Aquí se le da sitio en este navegador
+  // como una cuenta más, y desde ese momento este navegador ES ese aparato: firma con su
+  // llave y lo que puede lo dice el acta, igual que una máquina enrolada.
+  //
+  // No se parece a `createProfile` en lo importante: ahí nace una llave nueva, aquí se
+  // ADOPTA una que ya existe y ya está en el acta. Por eso las llaves se escriben ANTES de
+  // abrir la cuenta — si se abriera primero, `loadOrCreateKeypair` estrenaría una llave que
+  // esa cuenta no reconoce y el aparato quedaría fuera de su propio perfil.
+
+  /** Lo que quedó anotado de un inicio de sesión con contraseña, para cerrarlo o enseñarlo. */
+  const loginMetaOf = (pid) => {
+    try {
+      const raw = pid === currentPid
+        ? kv.getItem(LOGIN_STORAGE)
+        : rawKv.getItem(`dotrino.identity.p.${pid}.login`)
+      return raw ? JSON.parse(raw) : null
+    } catch (_) { return null }
+  }
+
+  const deviceIdDe = async (pub) => (await pubkeyIdOf(pub)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2')
+
+  /**
+   * @param {object} entrada  lo que devuelve `loginWithPassword` del pilar
+   * @param {boolean} remember  `false` = cuenta VOLÁTIL (se va con la pestaña)
+   */
+  async function adoptLogin (entrada, { remember = false, proxy = null } = {}) {
+    // LO MÍNIMO QUE ESTA CASA TIENE QUE COMPROBAR ANTES DE ADOPTAR NADA. Quien entró ya
+    // verificó la conversación entera (OPAQUE, la dirección, el papel); esto es otra cosa y
+    // es suya: que la llave que se va a instalar SEA de esta cuenta. Sin ello, el navegador
+    // se quedaría con una identidad que ningún acta reconoce — y sin forma de notarlo.
+    const v = await Acta.verifyActa({ acta: entrada?.acta })
+    if (!v.ok) throw Object.assign(new Error('the account record does not verify: ' + v.reason), { code: 'bad-acta' })
+    if (!(entrada.acta.members || []).some((m) => m?.pub === entrada.publickey)) {
+      throw Object.assign(new Error('that key is not a member of the account record'), { code: 'not-a-member' })
+    }
+
+    const pid = 'p' + crypto.randomUUID().slice(0, 8)
+    const veniaDe = currentPid
+    if (!remember) {
+      volatilePids.add(pid)
+      try { sessionKv?.setItem(VOLATILE_CLAIM, pid) } catch (_) {}
+      keepBeating(pid)   // mientras esta pestaña viva, nadie la barre
+    }
+    currentPid = pid     // desde aquí, `kv` escribe en el namespace de la cuenta nueva
+
+    try {
+      // Las públicas se toman TAL CUAL las escribe el acta: es la cadena exacta con la que
+      // esa llave es miembro, y una que se re-serialice distinta deja de coincidir.
+      //
+      // `key_ops` se quita: dice para qué la generó QUIEN la creó (la llave de cifrado nace
+      // con `deriveBits` a secas), y aquí hace falta además `deriveKey`. Es lo mismo que ya
+      // se hace al generar una propia — quién puede hacer qué con esta llave lo decide esta
+      // casa, no una etiqueta que viajó dentro del paquete.
+      const sinTopes = (jwk) => { const { key_ops: _o, ...resto } = jwk || {}; return resto }
+      await adoptJwkPair('sign', KEY_STORAGE, sinTopes(entrada.keys.sign), JSON.parse(entrada.publickey))
+      if (entrada.keys.enc && entrada.encPublickey) {
+        await adoptJwkPair('enc', ENC_KEY_STORAGE, sinTopes(entrada.keys.enc), JSON.parse(entrada.encPublickey))
+      }
+      saveActa(entrada.acta)
+      kv.setItem(ACTA_HISTORY_STORAGE, '[]')
+      kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: entrada.publickey }))
+      kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({
+        cert: entrada.cert, master: entrada.iss, proxy: proxy || DEFAULT_PROXY,
+        deviceId: await deviceIdDe(entrada.publickey), pairedAt: Date.now()
+      }))
+      kv.setItem(LOGIN_STORAGE, JSON.stringify({
+        user: entrada.user, address: entrada.address, code: entrada.code, sid: entrada.sid,
+        vault: entrada.iss, proxy: proxy || DEFAULT_PROXY, volatile: !remember, at: Date.now()
+      }))
+
+      await openProfileInMemory(pid)   // carga las llaves recién adoptadas; no estrena ninguna
+      if (publickeyJwkStr !== entrada.publickey) {
+        throw Object.assign(new Error('the adopted key is not the one the record names'), { code: 'bad-keys' })
+      }
+      me = { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, nickname: entrada.user }
+      saveMe(me)
+      const list = loadProfiles()
+      list.push({ id: pid, name: entrada.user, pubkey: publickeyJwkStr })
+      saveProfiles(list)
+      emitVault({ phase: 'login', address: entrada.address, volatile: !remember })
+      return { id: pid, name: entrada.user, address: entrada.address, user: entrada.user, sid: entrada.sid, volatile: !remember }
+    } catch (e) {
+      // NADA DE MEDIAS CUENTAS: si algo falla, no se queda una identidad a medio adoptar en
+      // este navegador. Se deshace y se vuelve a donde estabas.
+      try { await purgeProfile(pid) } catch (_) {}
+      forgetVolatile(pid)
+      if (veniaDe && loadProfiles().some((x) => x.id === veniaDe)) await openProfileInMemory(veniaDe)
+      throw e
+    }
+  }
+
+  /** Deja de tener por nuestra una cuenta de paso: ni en la lista, ni reclamada, ni latiendo. */
+  function forgetVolatile (pid) {
+    volatilePids.delete(pid)
+    volatileProfiles = volatileProfiles.filter((x) => x.id !== pid)
+    const m = loadVolatile()
+    if (m[pid]) { delete m[pid]; saveVolatile(m) }
+    try { if (sessionKv?.getItem(VOLATILE_CLAIM) === pid) sessionKv.removeItem(VOLATILE_CLAIM) } catch (_) {}
+    if (volatileBeat) { clearInterval(volatileBeat); volatileBeat = null }
+  }
+
+  /** Borra una cuenta de paso —con sus llaves— y vuelve a la que este navegador tenía. */
+  async function dropVolatile (pid) {
+    forgetVolatile(pid)
+    await purgeProfile(pid)
+    const list = loadProfiles()
+    const back = hostKv.getItem(CURRENT_STORAGE)
+    const destino = list.find((x) => x.id === back) || list[0]
+    if (destino) await openProfileInMemory(destino.id)
+    return { ok: true, current: destino?.id || null }
+  }
+
+  /**
+   * SALIR: se le dice a la bóveda que suelte la plaza y se borra la cuenta de aquí.
+   *
+   * Avisar es «mejor esfuerzo» —con la bóveda apagada, salir de este equipo no puede quedarse
+   * colgado esperándola—, pero borrar la cuenta de este navegador no lo es: eso pasa siempre.
+   * La plaza que quede abierta allí se cierra desde la consola, y así está dicho en el diseño.
+   */
+  async function closeLoginOn (meta) {
+    if (!meta?.user || !meta?.sid) return { ok: false, reason: 'sin-inicio-de-sesion' }
+    let client = null
+    try {
+      const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+      const { closeLogin } = await import('@dotrino/vault/login-client')
+      const { vaultChannel } = await import('@dotrino/vault/password-logins')
+      client = new WebSocketProxyClient({ url: meta.proxy || DEFAULT_PROXY, enableWebRTC: false, autoReconnect: false })
+      await client.connect()
+      // El token de la bóveda cambia con cada reconexión suya, así que se vuelve a mirar el
+      // canal en vez de guardarlo: el de hace una hora ya no es de nadie.
+      for (const token of await client.list(vaultChannel(meta.code))) {
+        const r = await closeLogin({
+          transport: client, token, user: meta.user, sid: meta.sid,
+          publickey: publickeyJwkStr, privateKey: keypair?.privateKey
+        })
+        if (r.ok) return r
+      }
+      return { ok: false, reason: 'no-vault' }
+    } catch (e) {
+      return { ok: false, reason: e?.code || 'no-answer' }
+    } finally { try { client?.close() } catch (_) {} }
   }
 
   /**
@@ -1538,7 +1745,10 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
   // nada que lea datos o firme).
   const LOCK_EXEMPT = new Set([
     'profileLockStatus', 'unlockProfile', 'listProfiles', 'currentProfile',
-    'switchProfile', 'createProfile',
+    // Entrar con usuario y contraseña abre OTRA cuenta: que la de aquí esté bajo llave no
+    // tiene nada que ver, y exigir abrirla primero dejaría fuera a quien viene a entrar en
+    // la suya desde un equipo prestado.
+    'switchProfile', 'createProfile', 'loginWithPassword',
     'profileActa', 'profileMembers', 'myMembership', 'isMaster', 'sealerChain'
   ])
 
@@ -2029,7 +2239,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
           vault = !!v?.cert
           approve = vault && (v.cert.scope || []).includes('vault:approve')
         } catch (_) {}
-        return { id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid, pendingJoin: !!p.pendingJoin, vault, approve }
+        // Un inicio de sesión con contraseña se enseña como lo que es: el menú del botón de
+        // perfil pone su «Salir» al lado, que es lo único que lo cierra desde aquí.
+        const login = loginMetaOf(p.id)
+        return {
+          id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid,
+          pendingJoin: !!p.pendingJoin, vault, approve,
+          ...(login ? { login: { user: login.user, address: login.address, volatile: !!login.volatile } } : {})
+        }
       })
     },
     async currentProfile () {
@@ -2060,6 +2277,14 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
     },
     async switchProfile ({ id } = {}) {
       if (!loadProfiles().find((p) => p.id === id)) throw new Error('profile does not exist')
+      // Una cuenta volátil no puede ser «la activa» de este navegador: vive en la memoria de
+      // esta pestaña y no sobreviviría a la recarga que viene justo después.
+      if (volatilePids.has(id)) {
+        throw Object.assign(new Error('that account only lives in this tab'), { code: 'volatile-profile' })
+      }
+      // Y cambiarse DESDE una volátil es dejarla: se suelta la plaza en la bóveda en vez de
+      // dejar un inicio de sesión abierto sin nadie dentro.
+      if (volatilePids.has(currentPid)) { try { await handlers.logoutLogin({}) } catch (_) {} }
       rawKv.setItem(CURRENT_STORAGE, id) // la app recarga la página → re-init con el nuevo perfil
       return { id }
     },
@@ -2078,6 +2303,53 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       if (list.length <= 1) throw new Error('cannot delete the only profile')
       if (!list.find((p) => p.id === id)) throw new Error('profile does not exist')
       return purgeProfile(id)
+    },
+
+    // ----- ENTRAR CON USUARIO Y CONTRASEÑA -----
+
+    /**
+     * ENTRAR en un aparato de tu cuenta desde un navegador que no te conoce, con
+     * `nombre@AB12-CD34-EF56` y la contraseña. Al volver, ESTE navegador es ese aparato y la
+     * app tiene que RECARGAR, como con cualquier cambio de cuenta.
+     *
+     * `remember: false` (lo normal en un equipo prestado) deja la cuenta en MEMORIA: se va
+     * al cerrar o recargar esta pestaña, y el disco de esa máquina queda como estaba. Con
+     * `true` se guarda como cualquier otra cuenta de este navegador —la llave como
+     * `CryptoKey` no extraíble, nunca en claro— hasta que salgas.
+     *
+     * La contraseña NO viaja: lo que viaja son los mensajes de OPAQUE, que no la llevan ni
+     * dejan adivinarla (`@dotrino/vault/login-client`).
+     */
+    async loginWithPassword ({ address, password, remember = false, label = '', proxyUrl = null } = {}) {
+      const url = proxyUrl || DEFAULT_PROXY
+      const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
+      const { loginWithPassword: entrar } = await import('@dotrino/vault/login-client')
+      const client = new WebSocketProxyClient({ url, enableWebRTC: false, autoReconnect: false })
+      await client.connect()
+      let entrada
+      try {
+        entrada = await entrar({ transport: client, address, password, label })
+      } finally { try { client.close() } catch (_) {} }
+      return adoptLogin(entrada, { remember, proxy: url })
+    },
+
+    /**
+     * SALIR del inicio de sesión con contraseña: se le dice a la bóveda que suelte la plaza
+     * y la cuenta desaparece de este navegador. Sin `id`, el activo.
+     */
+    async logoutLogin ({ id = null } = {}) {
+      const pid = id || currentPid
+      const meta = loginMetaOf(pid)
+      if (!meta) throw Object.assign(new Error('that account was not entered with a password'), { code: 'not-a-login' })
+      if (pid !== currentPid) throw Object.assign(new Error('switch to that account before leaving it'), { code: 'not-current' })
+      const avisado = await closeLoginOn(meta)
+      if (volatilePids.has(pid)) {
+        const r = await dropVolatile(pid)   // borra la cuenta entera, llaves incluidas
+        return { ok: true, told: avisado.ok, current: r.current }
+      }
+      const r = await purgeProfile(pid)
+      if (r.current && r.current !== pid) await openProfileInMemory(r.current)
+      return { ok: true, told: avisado.ok, current: r.current }
     },
 
     // ----- ACTA DE PERFIL -----
@@ -3009,7 +3281,38 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       rawKv.setItem(CURRENT_STORAGE, currentPid)
     }
   }
-  await peers.setProfile?.(currentPid)
+  // ----- CUENTAS DE PASO: barrer las abandonadas y recuperar la de ESTA pestaña -----
+  //
+  // Va después de elegir el perfil activo y antes de abrir ninguna llave: si esta pestaña
+  // reclama una, es ESA la que se abre, y las que nadie mantiene vivas se van antes de que
+  // nada las pueda usar.
+  {
+    const vivas = loadVolatile()
+    const reclamada = (() => { try { return sessionKv?.getItem(VOLATILE_CLAIM) || null } catch (_) { return null } })()
+    const ahora = Date.now()
+    let cambio = false
+    for (const [pid, visto] of Object.entries(vivas)) {
+      if (pid === reclamada || (ahora - visto) < VOLATILE_STALE_MS) continue
+      try { await purgeProfile(pid) }
+      catch (e) { console.warn('[identity] could not sweep an abandoned walk-in account:', e?.message || e) }
+      delete vivas[pid]; cambio = true
+    }
+    if (cambio) saveVolatile(vivas)
+
+    const sigueAhi = reclamada && vivas[reclamada] && rawKv.getItem(`dotrino.identity.p.${reclamada}.login`)
+    if (sigueAhi) {
+      volatilePids.add(reclamada)
+      let suyo = null
+      try { suyo = JSON.parse(rawKv.getItem(`dotrino.identity.p.${reclamada}.me`) || 'null') } catch (_) {}
+      volatileProfiles = [{ id: reclamada, name: suyo?.nickname || '', pubkey: suyo?.publickey || null }]
+      currentPid = reclamada
+      keepBeating(reclamada)
+    } else if (reclamada) {
+      try { sessionKv?.removeItem(VOLATILE_CLAIM) } catch (_) {}
+    }
+  }
+
+  await peers.setProfile?.(currentPid, { volatile: volatilePids.has(currentPid) })
 
   keypair = await loadOrCreateKeypair()
   publickeyJwkStr = JSON.stringify(keypair.publicJwk)
@@ -3097,6 +3400,13 @@ export async function createIdentityCore ({ kv: rawKv, peers, makeSync = null, k
       return { locked: !keypair?.privateKey }
     },
     sync,
+    /**
+     * Adoptar un aparato que acaba de entrar con usuario y contraseña. Lo normal es llamar
+     * al handler `loginWithPassword`, que primero HABLA con la bóveda; esto es solo la
+     * segunda mitad —instalar lo que salió de ahí—, y vive en el objeto del núcleo (no en
+     * `handlers`) porque ninguna aplicación tiene por qué poder instalar una identidad.
+     */
+    adoptLogin,
     onSyncStatus (fn) { if (sync) sync.onStatus(fn) },
     onVaultEvent (fn) { vaultListeners.add(fn); return () => vaultListeners.delete(fn) }
   }

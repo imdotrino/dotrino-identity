@@ -591,6 +591,28 @@ export class Identity {
   /** Borra un perfil y sus datos (no el único). */
   async deleteProfile (id) { return this._call('deleteProfile', { id }) }
 
+  // ----- entrar con usuario y contraseña (`temporary-access.md`) -----
+
+  /**
+   * ENTRAR en un aparato de tu cuenta desde un navegador que no te conoce, con la dirección
+   * `nombre@AB12-CD34-EF56` y su contraseña. Devuelve `{ id, name, address, user, sid,
+   * volatile }` y la app debe **recargar**: este navegador pasa a ser ese aparato.
+   *
+   * `remember: false` (lo normal en un equipo prestado) deja la cuenta en MEMORIA —se va al
+   * cerrar o recargar la pestaña y no toca el disco de esa máquina—; `true` la guarda como
+   * cualquier otra de este navegador, con la llave no extraíble, hasta que salgas.
+   *
+   * La contraseña no sale de aquí: se comprueba con OPAQUE, que no la manda ni deja
+   * adivinarla. Los errores llegan con su `code`: `login-failed` (dirección o contraseña),
+   * `too-many-tries` (con `waitMs`), `no-vault` (ninguna bóveda encendida en esa dirección).
+   */
+  async loginWithPassword ({ address, password, remember = false, label = '', proxyUrl = null } = {}) {
+    return this._call('loginWithPassword', { address, password, remember, label, proxyUrl }, 60000)
+  }
+
+  /** SALIR del inicio de sesión con contraseña (el activo, o el que digas). Recargar después. */
+  async logoutLogin (id = null) { return this._call('logoutLogin', { id }, 30000) }
+
   /**
    * Merge endorsements (signed ratings from third parties) about a subject
    * into the local peer book. Returns { merged, total }.

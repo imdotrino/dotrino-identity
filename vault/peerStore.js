@@ -32,12 +32,23 @@ let _idb = null
 let _writeChain = Promise.resolve()
 let _markDirty = null
 let _pid = null
+/**
+ * La cuenta abierta es VOLÁTIL (se entró con usuario y contraseña sin «Recordar»): sus
+ * contactos viven en memoria y no se escriben en ninguna parte. Dejar el libro de contactos
+ * de alguien en el disco de un equipo prestado sería justo lo que esa forma de entrar
+ * promete no hacer.
+ */
+let _volatile = false
 
 /** Registra el callback que marca el estado como "sucio" para el sync. */
 export function onDirty (fn) { _markDirty = fn }
 
 /** Multi-perfil: namespacea el peer book por perfil. El core lo llama antes de initPeerStorage. */
-export function setProfile (pid) { _pid = pid || null }
+export function setProfile (pid, { volatile: esVolatil = false } = {}) {
+  _pid = pid || null
+  _volatile = !!esVolatil
+  if (_volatile) _peers = {}   // se entra sin contactos y se sale sin dejarlos
+}
 function peersKey () { return _pid ? `peers.${_pid}.v1` : IDB_PEERS_KEY }
 
 /** Migración: copia el peer book VIEJO (pre-multi-perfil, sin namespace) al perfil `pid`. */
@@ -91,6 +102,7 @@ function readLocalPeers () {
 export async function initPeerStorage () {
   try { if (typeof navigator !== 'undefined' && navigator.storage?.persist) await navigator.storage.persist() }
   catch (_) { /* best-effort */ }
+  if (_volatile) { _peers = {}; return _peers }
   try {
     _idb = await openIdb()
     const stored = await idbGet(_idb, peersKey()) // peer book DEL perfil activo (namespaceado)
@@ -106,6 +118,7 @@ export async function initPeerStorage () {
 }
 
 function persistPeers () {
+  if (_volatile) return _writeChain   // cuenta volátil: en memoria y en ningún disco
   const key = peersKey()
   if (_fallback || !_idb) {
     try { localStorage.setItem(key, JSON.stringify(_peers)) }
@@ -147,5 +160,5 @@ export function upsertPeer (publickey, patch) {
 // Sólo para tests: resetea el estado del módulo (y cierra la conexión IDB).
 export function _resetForTest () {
   try { if (_idb && _idb.close) _idb.close() } catch (_) {}
-  _peers = {}; _fallback = false; _idb = null; _writeChain = Promise.resolve(); _markDirty = null; _pid = null
+  _peers = {}; _fallback = false; _idb = null; _writeChain = Promise.resolve(); _markDirty = null; _pid = null; _volatile = false
 }

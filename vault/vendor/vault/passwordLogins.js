@@ -25,6 +25,7 @@
  * final, porque hace falta la identidad que firma.
  */
 import { server as opaque, suiteId } from '@dotrino/opaque'
+import { pubkeyId } from '@dotrino/identity/capabilities'
 import { deviceIdOf, scopeToCaps, scopeToCn } from './enroll.js'
 import { SCOPE } from './protocol.js'
 import { bytesToB64url, b64urlToBytes } from './b64.js'
@@ -52,6 +53,43 @@ export function accountCode (fingerprint) {
   return hex.slice(0, ACCOUNT_CODE_HEX).match(/.{4}/g).join('-')
 }
 export const loginAddress = (user, fingerprint) => `${user}@${accountCode(fingerprint)}`
+
+/**
+ * LA HUELLA DE LA CUENTA, que es de la CUENTA y no de la bóveda que la atiende.
+ *
+ * Sale del `profileId` del acta —la llave del génesis, la que no cambia nunca—, y por eso
+ * la dirección sobrevive a que la bóveda se mude, se replique o adopte la cuenta de otro
+ * aparato. Derivarla de la llave de la bóveda daba una dirección distinta en cada réplica
+ * y ninguna en la segunda bóveda de un multivault.
+ *
+ * Es la MISMA cuenta para todas las bóvedas de esa cuenta, que es justo lo que hace que el
+ * canal las junte a todas.
+ */
+export async function accountFingerprint (identity) {
+  const pid = (await identity?.profileActa?.().catch(() => null))?.acta?.profileId
+  if (!pid) throw err('no-acta', 'this vault has no account record yet: there is no address to build')
+  return (await pubkeyId(pid)).slice(0, 16)
+}
+
+/**
+ * Lee `nombre@AB12-CD34-EF56`. Es lo que TECLEA una persona en un equipo prestado, así que
+ * se le perdona el formato —mayúsculas, espacios, guiones de más o de menos— pero no el
+ * contenido: el código son 12 dígitos hexadecimales, ni uno más ni uno menos.
+ *
+ * Lo que NO se perdona tiene su razón: un código corto de menos no es «casi» la dirección,
+ * es otra cuenta con la que se colisiona antes, y aceptarlo sería quitarle los bits que lo
+ * atan a tu cuenta (§3.2 de `temporary-access.md`).
+ */
+export function parseLoginAddress (address) {
+  const raw = String(address || '').trim()
+  const at = raw.lastIndexOf('@')
+  if (at <= 0) throw err('bad-address', 'an address looks like name@AB12-CD34-EF56')
+  const user = raw.slice(0, at).trim().toLowerCase()
+  const hex = raw.slice(at + 1).replace(/[^0-9a-fA-F]/g, '').toUpperCase()
+  if (!isValidUser(user)) throw err('bad-user', 'a user name is lowercase letters, digits, dot, dash or underscore (1-32)')
+  if (hex.length !== ACCOUNT_CODE_HEX) throw err('bad-address', `the account code is ${ACCOUNT_CODE_HEX} hex digits: AB12-CD34-EF56`)
+  return { user, code: accountCode(hex), address: `${user}@${accountCode(hex)}` }
+}
 
 /**
  * EL CANAL DONDE SE ANUNCIA CADA BÓVEDA DE ESA CUENTA, réplicas incluidas.

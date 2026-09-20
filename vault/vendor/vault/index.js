@@ -31,6 +31,10 @@ import { createEnrollDesk, deviceIdOf, DEVICE_TTL_MS, FRESH_WINDOW_MS } from './
 // Las constantes del protocolo salen del MISMO módulo que usa el daemon: si la lista
 // local se queda corta, el dispositivo deja de handle mensajes sin que nadie lo note.
 import { MSG, SCOPE } from './protocol.js'
+// El canal donde se anuncia esta cuenta y la huella que lo nombra: la MISMA pieza que usa
+// el daemon y que lee quien entra con usuario y contraseña. Un canal que se escriba distinto
+// en cada bóveda no es el mismo canal.
+import { vaultChannel, accountFingerprint } from './passwordLogins.js'
 
 const SIGN_SCOPE = SCOPE.SIGN
 const RENEW_TTL_MS = DEVICE_TTL_MS             // la renovación extiende la misma ventana (30 días)
@@ -100,10 +104,35 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   })()
 
   const selfCert = await getSelfCert()
+
+  /**
+   * ANUNCIARSE EN EL CANAL DE LA CUENTA, igual que el daemon del PC (`src/transport.js`).
+   *
+   * Sin esto, una bóveda-pestaña no existe para quien entra con usuario y contraseña: ese
+   * equipo no tiene ninguna llave, solo el código de la dirección, y el canal es lo único
+   * que puede convertirlo en «con quién hablo». Faltaba, así que quien tenía su bóveda solo
+   * en una pestaña no era encontrable por dirección — y la pestaña sí sabe atender el
+   * inicio de sesión desde que existe `logins`.
+   *
+   * Va DESPUÉS de identificarse y en cada token nuevo, porque el canal guarda el token y el
+   * token cambia con cada reconexión. Y no bloquea el arranque: una bóveda que no consigue
+   * anunciarse sigue sirviendo a sus aparatos, que es casi todo lo que hace.
+   */
+  const announce = async () => {
+    if (!logins || !client.token || typeof client.publish !== 'function') return
+    try {
+      const canal = vaultChannel(await accountFingerprint(identity))
+      await client.publish(canal)
+    } catch (e) {
+      console.warn('[device-vault] could not announce this account on the proxy:', e?.message || e)
+    }
+  }
+
   const identify = async () => {
     if (!client.token) return
     // El sobre lo arma el pilar (`identifyAs`), que le pone el destinatario.
     await client.identifyAs({ publickey: iss, sign: (d) => identity.signData(d), cert: selfCert })
+    await announce()
   }
   await identify()
   client.on('token', () => identify().catch(() => {}))

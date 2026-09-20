@@ -1124,7 +1124,23 @@ export class WebSocketProxyClient {
       // tienen autoReconnect=false (puesto por close()), así que este guard no
       // filtra desconexiones pedidas por la app. Sin esto, un restart del proxy
       // deja a clientes de larga duración (bots, apps abiertas) zombis para siempre.
-      if (wasConnected && this.autoReconnect) {
+      //
+      // Y TAMBIÉN CUANDO EL INTENTO NI LLEGÓ A ABRIRSE (`reintentando`). Ese era el
+      // agujero, y costó 36 horas de bóveda muda el 2026-09-16: un socket que falla al
+      // conectar cierra con `_connected` en false, así que con solo `wasConnected` no se
+      // programaba el siguiente intento. O sea que el cliente hacía UN reintento —el de
+      // la caída— y si ese caía en un momento en que la red seguía mal, se rendía para
+      // siempre, en silencio y con `maxReconnectAttempts` en 100000. Justo el caso normal:
+      // cuando se cae la red, el primer reintento a los pocos segundos tampoco encuentra a
+      // nadie.
+      //
+      // Los eventos que se veían: `disconnect reconnecting#1 disconnect` y nada más.
+      //
+      // `_reconnectAttempts` vuelve a 0 al abrir, así que esto NO convierte un `connect()`
+      // inicial fallido en un bucle de fondo: ahí vale 0 y la promesa se rechaza como
+      // siempre.
+      const reintentando = this._reconnectAttempts > 0
+      if ((wasConnected || reintentando) && this.autoReconnect) {
         this._scheduleReconnect()
       }
     })
@@ -1178,6 +1194,12 @@ export class WebSocketProxyClient {
     this._reconnectAttempts++
     this._emit('reconnecting', this._reconnectAttempts, this.maxReconnectAttempts)
     this._reconnectTimer = setTimeout(() => this._open(), this.reconnectDelay)
+    // UN REINTENTO PENDIENTE NO MANTIENE VIVO EL PROCESO. Desde que se reintenta de verdad
+    // —antes la cadena se cortaba sola al primer fallo—, este temporizador basta para que un
+    // programa de Node que se olvidó de cerrar el cliente no termine nunca. Lo de siempre:
+    // esto es mantenimiento de fondo, y quién se va es decisión de la app. En el navegador
+    // `unref` no existe y no hace falta.
+    this._reconnectTimer.unref?.()
   }
 
   _handleFrame (raw) {

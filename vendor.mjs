@@ -36,13 +36,15 @@ export const VENDORED = [
     pkg: 'dotrino-vault/lib/package.json',
     from: 'dotrino-vault/lib/src',
     to: 'vault/vendor/vault',
-    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'b64.js'],
+    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'loginClient.js', 'b64.js'],
     note: [
       'index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),',
       '@dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y',
       '@dotrino/proxy-client (= ../proxy-client/), todos por el import map de index.html.',
       'passwordLogins.js es el aparato que se abre con usuario y contraseña: lo carga',
       'vault.js SOLO cuando esta pestaña es bóveda, porque arrastra el OPAQUE en WASM.',
+      'loginClient.js es la otra mitad —el que ENTRA con esa contraseña— y lo carga core.js',
+      'solo al entrar, por lo mismo: arrastra el OPAQUE.',
     ],
   },
   // OPAQUE: comprobar una contraseña sin verla nunca. Solo lo carga la pestaña que es
