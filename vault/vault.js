@@ -405,7 +405,7 @@ import { pubkeyId } from './capabilities.js'
      * la bóveda guarda un paquete que no puede abrir. Es el mismo camino que `logins add`
      * del binario, con la misma pieza compartida.
      */
-    selfVaultLoginAdd: async ({ user, password, label = '', scope = null, unattended = false } = {}) => {
+    selfVaultLoginAdd: async ({ user, password, label = '', caps } = {}) => {
       const d = pidaDaemon()
       const { client: opaque } = await import('@dotrino/opaque')
       const { makeDeviceKey, makeDeviceEncKey } = await import('@dotrino/identity/capabilities')
@@ -422,7 +422,8 @@ import { pubkeyId } from './capabilities.js'
       const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.encPrivateJwk })
       const r = await d.loginRegisterFinish({
         user, upload: fin.upload, pub: device.publickey, encPub: enc.encPublickey,
-        label: nombre, blob, ...(Array.isArray(scope) && scope.length ? { scope } : {}), unattended: !!unattended
+        // Los PERMISOS del acta, cualquiera de ellos: los traduce a scopes el pilar del vault.
+        label: nombre, blob, ...(caps ? { caps } : {})
       })
       return { ...r, address: loginAddress(user, await accountFingerprint(selfIdentity)) }
     },

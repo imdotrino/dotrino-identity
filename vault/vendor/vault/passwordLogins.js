@@ -26,8 +26,8 @@
  */
 import { server as opaquePorDefecto, suiteId as suitePorDefecto } from '@dotrino/opaque'
 import { pubkeyId } from '@dotrino/identity/capabilities'
-import { deviceIdOf, scopeToCaps, scopeToCn } from './enroll.js'
-import { SCOPE } from './protocol.js'
+import { DEVICE_CAPS, capScope } from '@dotrino/identity/acta'
+import { deviceIdOf } from './enroll.js'
 import { bytesToB64url, b64urlToBytes } from './b64.js'
 
 /** Un usuario es la parte de antes de la `@` en `nombre@AB12-CD34-EF56`. */
@@ -445,24 +445,35 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
  * @param {object} opts
  *   `identity` la identidad que firma (`signDelegation`, `admitMember`)
  *   `logins`   el escritorio de `createLoginDesk`
- *   `scope`    permisos del aparato; por defecto firmar, leer y guardar
- *   `unattended` si además puede trabajar sin que nadie apruebe
+ *   `caps`     los PERMISOS del acta que lleva el aparato, cualquiera de `DEVICE_CAPS`;
+ *              por defecto firmar, leer y guardar
  */
 export async function registerLogin ({
   identity, logins, user, upload, pub, encPub = null, label = '', blob,
-  scope, unattended = false, replace = false
+  caps = ['sign', 'read', 'store'], scope, replace = false
 } = {}) {
   if (replace) {
     await logins.registerFinish({ user, upload, blob, replace: true })
     return { ok: true, user, replaced: true }
   }
-  // PERMISOS, no tipos: los del scope, más `unattended` si quien lo crea lo eligió
-  // (temporary-access.md §3.1). `passwords` no entra todavía — hasta que existan las
-  // contraseñas selladas, este aparato se llevaría TODAS (sealed-passwords.md).
-  const scopes = Array.isArray(scope) && scope.length ? scope : [SCOPE.SIGN, SCOPE.READ, SCOPE.STORE]
-  if (scopes.includes(SCOPE.PASSWORDS)) {
-    throw Object.assign(new Error('a password login cannot take `contrasenas` yet: the sealed passwords come first'), { code: 'passwords-not-yet' })
+  // CUALQUIER PERMISO, y todos por el mismo camino (dueño, 2026-09-21: «al crear debe
+  // poder asignársele cualquier permiso»; regla dura «simplificar los procesos»). Antes
+  // llegaban como scopes del certificado con `unattended` aparte, `passwords` se rechazaba
+  // con `passwords-not-yet` y `passkeys` —que no tiene scope— no se podía asignar.
+  //
+  // `scope` ya no se acepta, y se dice: ignorarlo daría al aparato los permisos por defecto
+  // en vez de los que se eligieron, y nadie lo notaría.
+  if (scope !== undefined) {
+    throw Object.assign(new Error('registerLogin takes `caps` (account record permissions), not `scope`'), { code: 'use-caps' })
   }
+  const pedidos = [...new Set(Array.isArray(caps) ? caps : [])]
+  const raros = pedidos.filter((c) => !DEVICE_CAPS.includes(c))
+  if (!pedidos.length || raros.length) {
+    throw Object.assign(new Error(`not device permissions: ${raros.join(', ') || '(none)'} — expected any of ${DEVICE_CAPS.join(', ')}`), { code: 'bad-caps' })
+  }
+  // El certificado lleva el scope de los permisos que lo tienen; los demás (`unattended`,
+  // `passkeys`) viven solo en el acta, que es quien decide.
+  const scopes = pedidos.map((c) => capScope(c)).filter(Boolean)
   if (typeof identity?.admitMember !== 'function') {
     throw Object.assign(new Error('this vault cannot add devices to the account record: no login was created'), { code: 'admit-unavailable' })
   }
@@ -470,11 +481,9 @@ export async function registerLogin ({
   await logins.registerFinish({ user, upload, pub, encPub, deviceId, label, blob })
   try {
     const { cert } = await identity.signDelegation(pub, scopes, { label: label || `login:${user}` })
-    const cn = scopeToCn(scopes)
-    const caps = [...new Set([...scopeToCaps(scopes), ...(unattended ? ['unattended'] : [])])]
-    await identity.admitMember({ pub, encPub, label: label || `login:${user}`, cn, caps, cert })
+    await identity.admitMember({ pub, encPub, label: label || `login:${user}`, cn: null, caps: pedidos, cert })
     logins.setCert({ user, cert, iss: identity.me?.publickey || null })
-    return { ok: true, user, deviceId, cert, caps }
+    return { ok: true, user, deviceId, cert, caps: pedidos }
   } catch (e) {
     // NADA DE MEDIAS ALTAS: si no entra en el acta, no queda un usuario que pueda entrar a
     // una cuenta que no lo reconoce. Se deshace y se dice.

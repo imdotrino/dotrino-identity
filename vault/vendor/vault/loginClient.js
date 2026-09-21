@@ -34,7 +34,7 @@
  * Si algo de eso falla, se PARA con un `code` propio. No hay repliegue: entrar «a medias»
  * en una cuenta es peor que no entrar.
  */
-import { client as opaque } from '@dotrino/opaque'
+import { client as opaquePorDefecto } from '@dotrino/opaque'
 import { pubkeyId, verifyDeviceSig, signWithDevice } from '@dotrino/identity/capabilities'
 import { checkVaultReply } from '@dotrino/identity/acta'
 import { MSG } from './protocol.js'
@@ -82,11 +82,16 @@ const parseJson = (s) => { try { return JSON.parse(s) } catch (_) { return null 
  * @param {string} opts.password
  * @param {string} [opts.label]    de dónde se entra («el cyber de la esquina»): es lo que
  *   el dueño va a leer en su consola para decidir si cerrarlo.
+ * @param {object} [opts.opaque]   el OPAQUE a usar. Por defecto el de casa, que va en este
+ *   mismo hilo. Se inyecta porque en una EXTENSIÓN el WASM vive en una página sandbox, al
+ *   otro lado de un `postMessage`, y entonces sus métodos devuelven promesas — igual que en
+ *   `createLoginDesk`, y por el mismo motivo. Aquí se espera siempre: esperar a algo que no
+ *   es una promesa no cuesta nada, y dos firmas serían dos clientes.
  * @returns {Promise<{user:string,address:string,code:string,sid:string,cert:object,
  *   iss:string,acta:object,vaultToken:string,publickey:string,encPublickey:(string|null),
  *   keys:{sign:object,enc:(object|null)}}>}
  */
-export async function loginWithPassword ({ transport, address, password, label = '', timeoutMs = REPLY_TIMEOUT_MS } = {}) {
+export async function loginWithPassword ({ transport, address, password, label = '', timeoutMs = REPLY_TIMEOUT_MS, opaque = opaquePorDefecto } = {}) {
   if (!transport || typeof transport.on !== 'function' || typeof transport.send !== 'function') {
     throw err('no-transport', 'loginWithPassword: a connected transport is required')
   }
@@ -104,7 +109,7 @@ export async function loginWithPassword ({ transport, address, password, label =
   let ultimo = null
   for (const token of tokens) {
     try {
-      return await unIntento({ transport, token, user, code, dir, password, label, timeoutMs })
+      return await unIntento({ transport, token, user, code, dir, password, label, timeoutMs, opaque })
     } catch (e) {
       // Se para: son cosas del que entra, y probar con otra bóveda no las arregla.
       if (e?.code === 'login-failed' || e?.code === 'too-many-tries' || e?.code === 'wrong-account' ||
@@ -115,15 +120,15 @@ export async function loginWithPassword ({ transport, address, password, label =
   throw ultimo || err('no-vault', 'none of the vaults on that address could let you in')
 }
 
-async function unIntento ({ transport, token, user, code, dir, password, label, timeoutMs }) {
-  const start = opaque.loginStart({ password })
+async function unIntento ({ transport, token, user, code, dir, password, label, timeoutMs, opaque }) {
+  const start = await opaque.loginStart({ password })
   transport.send(token, { type: MSG.LOGIN_START, user, request: start.request })
   const r1 = await waitFor(transport, token, (p) => p.type === MSG.LOGIN_RESPONSE || p.type === MSG.ERROR, timeoutMs)
   if (r1.type === MSG.ERROR) throw deVuelta(r1)
 
   let fin
   try {
-    fin = opaque.loginFinish({ state: start.state, response: r1.response, password })
+    fin = await opaque.loginFinish({ state: start.state, response: r1.response, password })
   } catch (_) {
     // OPAQUE comprueba a las dos partes: aquí se sabe que el otro lado NO conoce el
     // registro de este usuario. Contraseña equivocada, usuario que no existe o una bóveda
@@ -198,11 +203,26 @@ function deVuelta (p) {
  * quedarse bloqueado esperándola. La sesión sigue abierta allí hasta que se cierre desde la
  * consola, y eso ya está dicho en el diseño (§3.2).
  */
-export async function closeLogin ({ transport, token, user, sid, publickey, privateJwk, privateKey, timeoutMs = REPLY_TIMEOUT_MS } = {}) {
+export async function closeLogin ({ transport, token, user, sid, publickey, privateJwk, privateKey, sign, timeoutMs = REPLY_TIMEOUT_MS } = {}) {
   if (!transport || typeof transport.send !== 'function') throw err('no-transport', 'closeLogin: transport required')
   if (!token || !user || !sid || !publickey) throw err('bad-input', 'closeLogin: token, user, sid and publickey are required')
   const data = { op: 'login.close', publickey, user, sid, ts: Date.now() }
-  const { signature } = await signWithDevice({ privateJwk, privateKey, publickey, data })
+  // CON LA LLAVE O CON QUIEN LA TIENE. `sign(data)` es lo normal en el ecosistema —el
+  // transporte se identifica con `identity.signData` y no con una llave suelta— y aquí hace
+  // falta de verdad: en una extensión la llave vive en el service worker y quien tiene el
+  // socket es la página, así que o se firma a distancia o la llave privada tendría que
+  // cruzar para nada. Sin ninguna de las dos no se firma, y salir no se puede fingir.
+  //
+  // Se comprueba ANTES de firmar: sin nada con qué hacerlo, WebCrypto revienta con un error
+  // suyo que no dice qué falta («code: 0»), y el de arriba es el que se puede buscar.
+  if (typeof sign !== 'function' && !privateJwk && !privateKey) {
+    throw err('no-signature', 'closeLogin: give it the device key (privateJwk/privateKey) or a sign(data)')
+  }
+  const firmado = typeof sign === 'function'
+    ? await sign(data)
+    : await signWithDevice({ privateJwk, privateKey, publickey, data })
+  const signature = typeof firmado === 'string' ? firmado : firmado?.signature
+  if (typeof signature !== 'string') throw err('no-signature', 'closeLogin: sign(data) returned no signature')
   transport.send(token, { type: MSG.LOGIN_CLOSE, data, signature })
   try {
     const r = await waitFor(transport, token, (p) => p.type === MSG.LOGIN_CLOSED || p.type === MSG.ERROR, timeoutMs)
