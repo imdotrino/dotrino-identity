@@ -18,7 +18,7 @@
  * vault, compartida por todos los runtimes.
  */
 
-import { signDelegationWith } from './capabilities.js'
+import { signDelegationWith, LEGACY_CERTS_UNTIL } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_TTL_MS } from './assertion.js'
@@ -1007,6 +1007,62 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     return { gen, sinLlave }
   }
 
+  /**
+   * LOS APARATOS MUERTOS SALEN DEL ACTA al abrir la bóveda (dueño, 2026-09-22: *«si se abre
+   * el vault y hay un aparato expirado debe quitarlo del acta en una nueva acta»*).
+   *
+   * Muerto es un aparato cuyo papel no tiene vuelta atrás: todos los certificados que ESTA
+   * bóveda le dio son del modelo viejo (sin `seq`) y ya no valen — vencidos, o pasado
+   * `LEGACY_CERTS_UNTIL`, que los retira a todos. Renovar tampoco lo salva: la renovación
+   * viaja firmada con ese mismo papel, y la bóveda lo rechaza (`unauthorized: expired`).
+   * Hasta ahora se quedaban en el acta para siempre, como miembros que nadie podía usar.
+   *
+   * Lo que NO se toca, porque no hay datos para juzgarlo:
+   *   · un miembro sin certificados de esta bóveda (se los pudo dar otra);
+   *   · un papel viejo sin `exp` antes del corte;
+   *   · esta misma llave.
+   *
+   * Todo sale en UNA acta: las bajas y la clave de contenido nueva van en el mismo sello,
+   * así que la bajada de `seq` es una y no una por aparato. Solo con la maestra en memoria:
+   * cerrada no firma nada (`CLAUDE.md`, «la maestra tiene dos trabajos»), y cambiar el acta
+   * al abrir es justo uno de ellos.
+   */
+  async function pruneExpiredDevices (now = Date.now()) {
+    if (!keypair?.privateKey) return { removed: [], seq: null }
+    const acta = loadActa()
+    if (!acta) return { removed: [], seq: null }
+    const store = loadDelegations(); const rev = loadRevocations()
+    const porSub = new Map()
+    for (const d of Object.values(store)) {
+      if (!d?.sub || d.revokedAt || rev[d.nonce]) continue
+      if (!porSub.has(d.sub)) porSub.set(d.sub, [])
+      porSub.get(d.sub).push(d)
+    }
+    const muerto = (d) => typeof d.seq !== 'number' &&
+      (now > LEGACY_CERTS_UNTIL || (typeof d.exp === 'number' && now > d.exp))
+    const muertos = [...porSub]
+      .filter(([sub, ds]) => sub !== publickeyJwkStr && ds.every(muerto))
+      .map(([sub, ds]) => ({ pub: sub, label: ds[0]?.label || '' }))
+    if (!muertos.length) return { removed: [], seq: acta.seq }
+
+    const fuera = new Set(muertos.map((m) => m.pub))
+    const miembros = (acta.members || []).filter((m) => fuera.has(m.pub)).map((m) => m.pub)
+    let seq = acta.seq
+    if (miembros.length) {
+      // La clave de contenido rota en la misma acta: quien sale no se lleva lo que venga.
+      const quedan = acta.members.filter((m) => !fuera.has(m.pub))
+      const gen = ((acta.keyring || []).at(-1)?.gen || 0) + 1
+      const { generation } = await Content.makeGeneration({ members: quedan, gen })
+      const sealed = await sealChanges([
+        ...miembros.map((pub) => ({ op: 'remove', pub })),
+        { op: 'keyring', generation },
+      ])
+      seq = sealed.seq
+    }
+    for (const { pub } of muertos) revokePriorCertsFor(pub, null)
+    return { removed: muertos, seq }
+  }
+
   // ----- ENTRAR CON USUARIO Y CONTRASEÑA (`temporary-access.md` §3.4) -----
   //
   // Lo que llega de `@dotrino/vault/login-client` es un APARATO entero: sus dos llaves
@@ -1310,7 +1366,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // él se va la última razón por la que la maestra tenía que estar disponible sin nadie
       // delante. Renovar pasa a ocurrir justo cuando ya hay una selladora abierta, porque
       // cambiar el acta ES tenerla abierta.
-      if (!certDesfasadoDelActa()) return
+      // Y LA MIGRACIÓN: un papel del modelo viejo (sin `seq`) que todavía vale se cambia por
+      // uno nuevo. Sin esto moría en su fecha aunque el aparato se usara a diario, y ya no
+      // tenía arreglo — el teléfono que aprueba se quedó así el 2026-09-22. Caduca sola: a
+      // partir de `LEGACY_CERTS_UNTIL` no queda ningún papel viejo que valga.
+      const legadoVivo = typeof v.cert.seq !== 'number' && typeof v.cert.exp === 'number' &&
+        now < v.cert.exp && now < LEGACY_CERTS_UNTIL
+      if (!legadoVivo && !certDesfasadoDelActa()) return
       if (now - renewLastTry < RENEW_RETRY_MS) return
       renovarCert().catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
     } catch (_) {}
@@ -1847,6 +1909,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       kv.removeItem('dotrino.identity.pwd.tries')
       try { sessionKv?.setItem(_scoped(PWD_SESSION), proof) } catch (_) {}
       locked = false
+      // Abrir es cuando se limpia el acta de aparatos muertos. Por detrás: abrir no puede
+      // esperar a sellar, y si falla se dice, no se calla.
+      pruneExpiredDevices().catch((e) => console.warn('[identity] could not remove expired devices:', e.message))
       return { ok: true, locked: false }
     },
     // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
@@ -2206,7 +2271,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // `issued` = lo que HOY sirve para entrar. Antes devolvía el almacén entero, revocados
     // incluidos (revocar solo estampa `revokedAt`), así que la consola seguía pintando como
     // activo un cert ya retirado: pulsabas «quitar» y la fila no se movía. Los caducados ya
-    // los poda `loadDelegations`. El histórico retirado va aparte, en `revokedCerts`.
+    // los quita del acta `pruneExpiredDevices` al abrir la bóveda. El histórico retirado va aparte, en `revokedCerts`.
     async listDelegations () {
       const store = loadDelegations(); const rev = loadRevocations()
       const all = Object.values(store).sort((a, b) => (b.iat || 0) - (a.iat || 0))
@@ -3404,6 +3469,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     get masterLocked () { return !keypair?.privateKey },
     /** Echa el candado a la maestra que ya existía (al abrir el perfil). Idempotente. */
     sealMasterKey,
+    /** Quita del acta, en una sola, los aparatos cuyo papel ya no tiene vuelta atrás. */
+    pruneExpiredDevices,
     /** Recarga el par tras abrir el candado, sin reabrir la identidad entera. */
     async reloadMasterKey () {
       keypair = await loadOrCreateKeypair()

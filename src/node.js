@@ -149,6 +149,8 @@ export class Identity {
   sealMasterKey () { return this._core?.sealMasterKey?.() }
   /** Vuelve a cargar el par tras abrir el candado, sin reabrir la identidad. */
   reloadMasterKey () { return this._core?.reloadMasterKey?.() }
+  /** Ver `core.js`: al abrir, los aparatos muertos salen del acta en una sola. */
+  pruneExpiredDevices (now) { return this._core?.pruneExpiredDevices?.(now) }
 
   _h (method, params = {}) {
     if (!this._core) throw new Error('Identity not ready — call ready()/connect() first')
