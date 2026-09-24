@@ -270,6 +270,7 @@ const REVOKE_GRACE_MS = 1500
 function vaultError (p) {
   const e = new Error(p?.error || 'vault error')
   if (p?.code) e.code = p.code
+  if (p?.reason) e.reason = p.reason
   if (p?.tries != null) e.tries = p.tries
   if (p?.waitSec != null) e.waitSec = p.waitSec
   return e

@@ -1336,6 +1336,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // Un cert YA vencido o revocado no puede renovarse (ahí sí, re-emparejar).
   // Ya no hay ventana de caducidad: el papel no vence. Lo único que obliga a pedir uno
   // nuevo es que el ACTA diga algo distinto de lo que lleva escrito.
+  /** Rechazos de la bóveda que se arreglan con un papel nuevo (el mismo juego que la app nativa). */
+  const PAPER_REASONS = new Set(['scope', 'acta-vieja', 'untrusted-issuer', 'expired', 'legacy-cert-retirado', 'no-acta'])
   const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
   let renewLastTry = 0
   /**
@@ -3007,8 +3009,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
+      const ask = (cert) => remoteApproval({ master: v.master, proxy: v.proxy, device, cert, op, id, onRevoked: wipeVaultLink })
       try {
-        const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, onRevoked: wipeVaultLink })
+        let r
+        try { r = await ask(v.cert) } catch (e) {
+          // PAPEL VIEJO: tras `caps <ID> +aprueba` el papel que tengo no trae `vault:approve`,
+          // y si el aviso del acta nueva no llegó (o llegó y el freno de una hora ya había
+          // gastado su intento) no se renovaba nunca: el aprobador se quedaba en
+          // «unauthorized: scope» para siempre. Se renueva UNA vez y se reintenta; la bóveda
+          // decide qué papel toca según SU acta. Un aparato revocado o sin el permiso no se
+          // reintenta: renovar no lo arregla y esconder el motivo sería peor.
+          if (e?.code !== 'unauthorized' || !PAPER_REASONS.has(e.reason)) throw e
+          r = await ask(await renovarCert())
+        }
         // El comando de cada pedido viene sellado a este aparato: se abre aquí, que es
         // donde está la llave, y sale ya legible.
         if (Array.isArray(r?.items)) return { ...r, items: await abrirContextos(r.items, currentPid) }
