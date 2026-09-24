@@ -437,6 +437,12 @@ export class WebSocketProxyClient {
    * señalización WebRTC, presencia—: entregar eso mañana no es tarde, es
    * incorrecto (reinicia negociaciones imposibles y muestra movimientos fuera de
    * contexto). NO lo uses para mensajes de chat, que sí quieren esperar.
+   *
+   * `opts.quiet` hace lo contrario de despertar: el mensaje SE GUARDA en la cola igual,
+   * pero el proxio no toca el timbre push del destinatario. Úsalo para lo que puede
+   * esperar a que la otra punta abra por su cuenta —un aviso de que algo cambió—. Sin
+   * él, cada aviso hace sonar el teléfono, y un timbre que no trae nada que hacer
+   * enseña a ignorar el siguiente, que sí lo trae.
    */
   /**
    * Seal a payload towards a peer's encryption key and send it. This is what an app
@@ -708,6 +714,7 @@ export class WebSocketProxyClient {
       message: typeof payload === 'string' ? payload : JSON.stringify(payload)
     }
     if (opts.ephemeral) msg.ephemeral = true
+    if (opts.quiet) msg.quiet = true
     this._sendRaw(msg)
   }
 

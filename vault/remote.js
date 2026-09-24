@@ -75,7 +75,7 @@ export async function isAuthenticRevoke ({ body, signature, master, devicePubkey
 async function identifyAsDevice (client, device, { cert = null, acta = null } = {}) {
   if (!client.token) return
   const data = { op: 'identify', publickey: device.publickey, token: client.token, ts: Date.now() }
-  const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
+  const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data })
   // cert → el proxy enruta lo dirigido a la maestra; acta → lo dirigido a la PERSONA.
   await client.identify({ data, signature, cert, acta })
 }
@@ -169,7 +169,8 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
       ...(adopting && profileId ? { profileId } : {}),
       ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {})
     }
-    const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, data })
+    // `dev.sign`: la llave vive fuera (el chip del teléfono) y solo se le pide la firma.
+    const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, sign: dev.sign, data })
 
     const enrolled = new Promise((resolve, reject) => {
       let sellando = false
@@ -272,14 +273,14 @@ function vaultError (p) {
 }
 
 async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey) || !cert) throw new Error('missing pairing data')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function') || !cert) throw new Error('missing pairing data')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
   try {
     try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
     const signed = { ...data, publickey: device.publickey, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data: signed })
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data: signed })
     const pending = new Promise((resolve, reject) => {
       let graceTimer = null
       const off = client.on('message', (_f, p) => {
@@ -325,7 +326,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
  * nada, como cualquier otro mensaje sin firma.
  */
 export async function checkMembership ({ master, proxy, device, onRevoked, timeoutMs = 12000 } = {}) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey)) throw new Error('missing device data')
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function')) throw new Error('missing device data')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
@@ -334,7 +335,7 @@ export async function checkMembership ({ master, proxy, device, onRevoked, timeo
     // estaba apagado, si todavía está dentro de las 24 h).
     try { await identifyAsDevice(client, device) } catch (_) {}
     const data = { op: 'check', publickey: device.publickey, ts: Date.now() }
-    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, data })
+    const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data })
     const res = await new Promise((resolve) => {
       let settled = false
       const done = (v) => { if (!settled) { settled = true; cleanup(); resolve(v) } }

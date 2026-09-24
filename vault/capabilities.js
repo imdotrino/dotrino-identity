@@ -210,7 +210,18 @@ export async function signDelegationWith (privateKey, iss, { sub, scope, iat, se
  * Firma datos con la clave de DISPOSITIVO (formato byte-idéntico a `signData` del
  * vault → lo que el dispositivo/bridge usa para firmar cada pin/acción).
  */
-export async function signWithDevice ({ privateJwk, privateKey, publickey, data }) {
+export async function signWithDevice ({ privateJwk, privateKey, publickey, data, sign }) {
+  // UNA LLAVE QUE NO VIVE AQUÍ (la del chip del teléfono, en la app nativa): se le pasa el
+  // texto canónico y devuelve la firma P1363 en base64. La privada no entra en este proceso
+  // en ningún momento. Con firmador externo es obligatorio decir de quién es la llave.
+  if (typeof sign === 'function') {
+    if (!publickey) throw new Error('signWithDevice: publickey is required with an external sign()')
+    const signature = await sign(canonicalStringify(data))
+    if (typeof signature !== 'string' || !signature) {
+      throw Object.assign(new Error('signWithDevice: the external sign() returned no signature'), { code: 'no-signature' })
+    }
+    return { signature, publickey }
+  }
   // `privateKey` (CryptoKey, posiblemente NO extractable) tiene prioridad: firma
   // sin tocar bytes de la privada. Con CryptoKey es obligatorio pasar `publickey`.
   if (privateKey) {
