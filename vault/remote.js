@@ -128,7 +128,7 @@ async function askVault (client, qr) {
  * @param {(c:{deviceId:string, code:string})=>void} [opts.onChallenge]  Para mostrar el código a tipear en el PC.
  * @param {string} [opts.label]
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
- * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string}>}
+ * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string, account:string}>}
  */
 export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null } = {}) {
   if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('invalid qr: missing vault or nonce')
@@ -206,7 +206,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     if (adopting) {
       if (!res.acta) throw new Error('the vault did not return the adopted record')
       if (res.acta.sealer !== qr.iss) throw new Error('the record is sealed by a vault other than the one you saw')
-      return { device: dev, cert: null, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta, adopted: true }
+      return { device: dev, cert: null, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta, adopted: true, account: qr.acct || '' }
     }
 
     // Validación estricta antes de guardar (cierra inyección de cert / sustitución de maestra).
@@ -225,7 +225,10 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // emparejaba con una segunda bóveda o con una que adoptó la cuenta (`checkVaultReply`).
     const chk = await checkVaultReply({ acta: res.acta, cert: res.cert, vault: qr.iss, sub: dev.publickey, justSealed: true })
     if (!chk.ok) throw new Error('the vault reply does not check out: ' + chk.reason)
-    return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null }
+    // `account`: el nombre que la bóveda dio a la cuenta. Con la invitación corta no viene en
+    // el QR sino en el `hello`, así que solo lo sabe esto — y sin él, quien tiene varias
+    // cuentas en un aparato no sabe de cuál es cada cosa.
+    return { device: dev, cert: res.cert, master: qr.iss, proxy: qr.proxy, deviceId, acta: res.acta || null, account: qr.acct || '' }
   } finally { try { client.close() } catch (_) {} }
 }
 
