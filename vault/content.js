@@ -37,8 +37,11 @@ const fromB64 = (str) => {
 }
 
 async function sharedKey (privateKey, peerPubJwkStr) {
-  const pub = await subtle.importKey('jwk', JSON.parse(peerPubJwkStr), ECDH, false, [])
-  const bits = await subtle.deriveBits({ name: 'ECDH', public: pub }, privateKey, 256)
+  // Llave EXTERNA: el acuerdo ECDH lo hace el chip y devuelve los 32 bytes del secreto
+  // (lo mismo que `deriveBits(…, 256)`); la privada no sale de allí.
+  const bits = privateKey?.external
+    ? await privateKey.deriveBits(peerPubJwkStr)
+    : await subtle.deriveBits({ name: 'ECDH', public: await subtle.importKey('jwk', JSON.parse(peerPubJwkStr), ECDH, false, []) }, privateKey, 256)
   return subtle.importKey('raw', bits, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 

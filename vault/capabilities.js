@@ -52,6 +52,9 @@ export const LEGACY_CERTS_UNTIL = Date.parse('2026-10-01T00:00:00Z')
 const enc = (s) => new TextEncoder().encode(s)
 
 async function rawSign (privateKey, bytes) {
+  // Una llave EXTERNA (el chip del teléfono, `vault/vault.js`) firma ella misma: aquí no
+  // hay CryptoKey que pasarle a WebCrypto. Devuelve la misma firma P1363 en base64.
+  if (privateKey?.external) return privateKey.sign(bytes)
   return bufToBase64(await crypto.subtle.sign(SIGN, privateKey, bytes))
 }
 async function rawVerify (publicJwkStr, bytes, sigB64) {

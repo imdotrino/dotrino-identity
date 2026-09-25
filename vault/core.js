@@ -88,6 +88,13 @@ async function importPeerEncPubkey (jwkStr) {
 }
 
 async function deriveSharedAesKey (myPriv, peerPub) {
+  if (myPriv?.external) {
+    // Llave EXTERNA: el chip da los 32 bytes del secreto ECDH, que es exactamente lo que
+    // `deriveKey` ECDH→AES-256 usa por dentro. Mismo AES, sin que la privada salga.
+    const { kty, crv, x, y } = await crypto.subtle.exportKey('jwk', peerPub)
+    const bits = await myPriv.deriveBits(JSON.stringify({ kty, crv, x, y }))
+    return crypto.subtle.importKey('raw', bits, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+  }
   return crypto.subtle.deriveKey(
     { name: 'ECDH', public: peerPub },
     myPriv,
@@ -98,6 +105,7 @@ async function deriveSharedAesKey (myPriv, peerPub) {
 }
 
 async function signBytes (privateKey, bytes) {
+  if (privateKey?.external) return privateKey.sign(bytes) // el chip del teléfono (ver rawSign)
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: { name: 'SHA-256' } }, privateKey, bytes)
   return bufToBase64(sig)
 }
@@ -329,6 +337,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           kv.removeItem(storageKey)
           return { privateKey, publicKey: await importPub(publicJwk), publicJwk }
         } catch (_) {}
+      }
+      // El ANFITRIÓN puede crear la llave fuera (dentro de la app de Android: en el chip del
+      // teléfono, `vault/vault.js`). Guarda él su registro y devuelve un asa externa. Sin
+      // `create` —el navegador y las ~30 apps— el camino es el de siempre.
+      if (keyStore.create) {
+        const made = await keyStore.create(kind, name)
+        return { privateKey: made.privateKey, publicKey: await importPub(made.publicJwk), publicJwk: made.publicJwk }
       }
       const pair = await crypto.subtle.generateKey(algo, false, pairUses) // privada NO extractable
       const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
@@ -1282,6 +1297,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
     const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
     emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
+    // LA LLAVE ES DEL CHIP DEL TELÉFONO (app de Android): la app guarda la cuenta para su
+    // pantalla nativa de Pedidos, con el MISMO papel. Así el teléfono es un solo aparato en
+    // el acta. Si la app no la guarda, se dice: el emparejamiento en sí ya está hecho.
+    if (keypair?.privateKey?.external) {
+      keypair.privateKey.paired({
+        cert: res.cert, vault: res.master, proxy: res.proxy, deviceId: res.deviceId,
+        name: res.account || res.acta?.name || '', profileId: res.acta?.profileId || null
+      }).then(
+        () => emitVault({ phase: 'native-account', ok: true }),
+        (e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
+      )
+    }
     pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
     return { ok: true, deviceId: res.deviceId, master: res.master, seq: res.cert.seq, scope: res.cert.scope, join: unido }
   }
