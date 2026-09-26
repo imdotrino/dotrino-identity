@@ -40,6 +40,14 @@ let _pid = null
  */
 let _volatile = false
 
+/**
+ * Otro almacén para el libro, en vez del IndexedDB de la página: el de la app de iOS
+ * (`nativeStore.js`), que es uno para todas las páginas. `{ get(key), put(key, val) }`.
+ * Se pone antes de `initPeerStorage`.
+ */
+let _backend = null
+export function useBackend (b) { _backend = b || null }
+
 /** Registra el callback que marca el estado como "sucio" para el sync. */
 export function onDirty (fn) { _markDirty = fn }
 
@@ -53,6 +61,7 @@ function peersKey () { return _pid ? `peers.${_pid}.v1` : IDB_PEERS_KEY }
 
 /** Migración: copia el peer book VIEJO (pre-multi-perfil, sin namespace) al perfil `pid`. */
 export async function adoptLegacy (pid) {
+  if (_backend) return   // el almacén de la app nació después: no hay libro viejo que adoptar
   try {
     _idb = _idb || await openIdb()
     let legacy = await idbGet(_idb, IDB_PEERS_KEY) // 'peers.v1' (viejo)
@@ -103,6 +112,11 @@ export async function initPeerStorage () {
   try { if (typeof navigator !== 'undefined' && navigator.storage?.persist) await navigator.storage.persist() }
   catch (_) { /* best-effort */ }
   if (_volatile) { _peers = {}; return _peers }
+  if (_backend) {
+    const stored = await _backend.get(peersKey())
+    _peers = (stored && typeof stored === 'object') ? stored : {}
+    return _peers
+  }
   try {
     _idb = await openIdb()
     const stored = await idbGet(_idb, peersKey()) // peer book DEL perfil activo (namespaceado)
@@ -120,6 +134,13 @@ export async function initPeerStorage () {
 function persistPeers () {
   if (_volatile) return _writeChain   // cuenta volátil: en memoria y en ningún disco
   const key = peersKey()
+  if (_backend) {
+    const snapshot = _peers
+    _writeChain = _writeChain
+      .then(() => _backend.put(key, snapshot))
+      .catch(e => console.warn('[cc-identity] persist (app) failed:', e?.message))
+    return _writeChain
+  }
   if (_fallback || !_idb) {
     try { localStorage.setItem(key, JSON.stringify(_peers)) }
     catch (e) { console.warn('[cc-identity] persist (ls) failed:', e?.message) }

@@ -15,10 +15,20 @@ import {
 import { createIdentityCore } from './core.js'
 import { pubkeyId } from './capabilities.js'
 import { withExternalKeys, appBridge } from './externalKeys.js'
+import { nativeBackends } from './nativeStore.js'
+import { useBackend as usePeerBackend } from './peerStore.js'
 
 ;(async () => {
+  // DENTRO DE LA APP, el puente con el teléfono. En un navegador no está y nada cambia.
+  const idKeys = typeof window !== 'undefined' ? window.DotrinoIdentityKeys : null
+  const bridge = idKeys ? appBridge(idKeys) : null
+  // Y si la app GUARDA la identidad (`storage`, la de iOS): todo vive allí, uno para todas
+  // las páginas, porque WebKit parte el almacén de este iframe por página (`./nativeStore.js`).
+  const native = bridge && idKeys.storage === true ? await nativeBackends(bridge) : null
+  if (native) usePeerBackend(native.peers)
+
   // kv estilo localStorage (síncrono) para me, nonces, delegaciones, certs.
-  const kv = {
+  const kv = native ? native.kv : {
     getItem: (k) => localStorage.getItem(k),
     setItem: (k, v) => localStorage.setItem(k, v),
     removeItem: (k) => localStorage.removeItem(k)
@@ -28,7 +38,7 @@ import { withExternalKeys, appBridge } from './externalKeys.js'
   // IndexedDB (clonado estructurado). Nadie —ni este código, ni un XSS en este
   // origen— puede leer sus bytes; solo firmar/derivar con ellas. Las llaves
   // planas (JWK) viejas de localStorage se migran y se borran (core.js).
-  const baseKeyStore = await (() => new Promise((resolve) => {
+  const baseKeyStore = native ? native.keyStore : await (() => new Promise((resolve) => {
     const req = indexedDB.open('dotrino-identity-keys', 1)
     req.onupgradeneeded = () => req.result.createObjectStore('keys')
     req.onsuccess = () => {
@@ -47,11 +57,10 @@ import { withExternalKeys, appBridge } from './externalKeys.js'
     }
     req.onerror = () => resolve(null) // sin IDB (raro): cae al modo kv legado
   }))()
-  // DENTRO DE LA APP DE ANDROID, las llaves nuevas nacen en el chip del teléfono: una sola
+  // DENTRO DE LA APP (Android e iOS), las llaves nuevas nacen en el chip del teléfono: una sola
   // llave por cuenta, la misma que aprueba en la pantalla nativa (`./externalKeys.js`). El
   // puente solo existe en este origen; en un navegador no está y nada cambia.
-  const idKeys = typeof window !== 'undefined' ? window.DotrinoIdentityKeys : null
-  const keyStore = idKeys && baseKeyStore ? withExternalKeys(baseKeyStore, appBridge(idKeys)) : baseKeyStore
+  const keyStore = bridge && baseKeyStore ? withExternalKeys(baseKeyStore, bridge) : baseKeyStore
 
   // sessionKv: la prueba de desbloqueo del candado por contraseña vive en
   // sessionStorage — POR PESTAÑA: sobrevive al refresco, muere al cerrarla.
