@@ -15,7 +15,7 @@ import {
 import { createIdentityCore } from './core.js'
 import { pubkeyId } from './capabilities.js'
 import { withExternalKeys, appBridge } from './externalKeys.js'
-import { nativeBackends, adoptPageProfiles, readPageStorage } from './nativeStore.js'
+import { nativeBackends } from './nativeStore.js'
 import { useBackend as usePeerBackend } from './peerStore.js'
 
 ;(async () => {
@@ -25,14 +25,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   // Y si la app GUARDA la identidad (`storage`, la de iOS): todo vive allí, uno para todas
   // las páginas, porque WebKit parte el almacén de este iframe por página (`./nativeStore.js`).
   const native = bridge && idKeys.storage === true ? await nativeBackends(bridge) : null
-  if (native) {
-    usePeerBackend(native.peers)
-    // Lo que se emparejó cuando la identidad aún vivía en la página, a la app. Si no se puede
-    // leer el almacén de la página se dice (con su error) y se sigue: la identidad de la app
-    // funciona igual, solo que sin ese perfil.
-    try { await adoptPageProfiles(native, bridge, await readPageStorage()) }
-    catch (e) { console.error('[cc-identity] could not bring this page\'s profiles into the app:', e?.message || e) }
-  }
+  if (native) usePeerBackend(native.peers)
 
   // kv estilo localStorage (síncrono) para me, nonces, delegaciones, certs.
   const kv = native ? native.kv : {
