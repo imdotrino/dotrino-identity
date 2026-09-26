@@ -159,6 +159,7 @@ test('la clave de contenido: nace con el perfil, se comparte al admitir y rota a
 
   const acta = (await id.profileActa()).acta
   assert.ok(acta.keyring.at(-1).wraps[otro.publickey], 'tiene su envoltura')
+  assert.equal(acta.seq, 2, 'admitir y envolver van en la MISMA acta, no en dos')
 
   // Al expulsarlo se rota: generación nueva, y él ya no está en ninguna.
   const out = await id.removeMember(otro.publickey)
@@ -330,5 +331,30 @@ test('a quien le quitaste `firma`, sus firmas dejan de contar', async () => {
   const r = await verifySignedBy({ data: post, signature, publickey: tel.publickey, chain: await pc.sealerChain() })
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'firmante-no-autorizado', 'con la cadena nueva, ya no cuenta')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/**
+ * VARIOS APARATOS, UNA ACTA (dueño, 2026-09-26: «con esto me evito más actas inútiles»).
+ */
+test('setCapsMany: cambia los permisos de varios aparatos en una sola acta', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const a = await makeDeviceKey({ label: 'A' })
+  const b = await makeDeviceKey({ label: 'B' })
+  await id.admitMember({ pub: a.publickey, caps: ['read'] })
+  await id.admitMember({ pub: b.publickey, caps: ['read'] })
+  const antes = (await id.profileMembers()).seq
+
+  const r = await id.setCapsMany([
+    { pub: a.publickey, caps: ['read', 'store', 'admin'] },
+    { pub: b.publickey, caps: ['sign', 'approve'] }
+  ])
+  assert.equal(r.seq, antes + 1, 'una sola acta')
+  const { members } = await id.profileMembers()
+  assert.deepEqual(members.find((m) => m.pub === a.publickey).caps.sort(), ['admin', 'read', 'store'])
+  assert.deepEqual(members.find((m) => m.pub === b.publickey).caps.sort(), ['approve', 'sign'])
+
+  await assert.rejects(() => id.setCapsMany([]), /no changes/)
   fs.rmSync(dir, { recursive: true, force: true })
 })

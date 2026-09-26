@@ -973,19 +973,6 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
   })
 
-  /** Envuelve la clave vigente para un miembro recién admitido (no hace falta rotar). */
-  async function wrapForNewMember (pub) {
-    const acta = loadActa()
-    const gen = (acta?.keyring || []).at(-1)
-    const m = acta?.members.find((x) => x.pub === pub)
-    if (!gen || !m?.encPub) return false
-    const mine = await myCek()
-    if (!mine) return false
-    const wrap = await Content.wrapForMember({ cek: mine.cek, memberEncPub: m.encPub })
-    await sealChanges([{ op: 'wrap', gen: mine.gen, pub, wrap }])
-    return true
-  }
-
   /**
    * QUITAR UN APARATO, entero y de una vez.
    *
@@ -2571,16 +2558,37 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // `cn`: si viene, este miembro es un SERVICIO y su único permiso es abrir el cajón de
       // secretos de ESE nombre — no ve nada más del usuario. Sin `cn` es un dispositivo.
       const finales = caps || (cn ? ['secrets'] : ['store', 'read'])
-      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity } }])
       // Que entre al perfil incluye poder LEER lo que ya hay: se le envuelve la clave
       // vigente (no hace falta rotar; rotar es para cuando alguien SALE).
-      let wrapped = false
-      try { wrapped = await wrapForNewMember(pub) } catch (_) {}
-      return { ok: true, seq: acta.seq, wrapped }
+      //
+      // EN LA MISMA ACTA que la admisión (dueño, 2026-09-26: nada de actas inútiles). Antes
+      // se sellaba una para admitir y otra para envolver, y cada acta es un aviso a todos
+      // los aparatos. La envoltura solo necesita la llave de cifrado del que entra, que ya
+      // viene aquí. Si no se puede envolver (sin clave propia, sin `encPub`), entra igual y
+      // `wrapped` lo dice — lo mismo que antes.
+      let wrap = null
+      try {
+        const mine = encPub ? await myCek() : null
+        if (mine) wrap = { op: 'wrap', gen: mine.gen, pub, wrap: await Content.wrapForMember({ cek: mine.cek, memberEncPub: encPub }) }
+      } catch (_) { wrap = null }
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity } }, ...(wrap ? [wrap] : [])])
+      return { ok: true, seq: acta.seq, wrapped: !!wrap }
     },
 
     async setCaps ({ pub, caps } = {}) {
       const acta = await sealChanges([{ op: 'caps', pub, caps }])
+      return { ok: true, seq: acta.seq }
+    },
+
+    /**
+     * LOS PERMISOS DE VARIOS APARATOS EN UNA SOLA ACTA (dueño, 2026-09-26). Editar tres
+     * aparatos eran tres actas y tres avisos; ahora el borrador entero se sella de golpe.
+     * `changes`: `[{ pub, caps }]`, cada `caps` la lista COMPLETA de ese aparato.
+     * @param {{ changes?: Array<{ pub: string, caps: string[] }> }} [args]
+     */
+    async setCapsMany ({ changes } = {}) {
+      if (!Array.isArray(changes) || !changes.length) throw new Error('setCapsMany: no changes')
+      const acta = await sealChanges(changes.map(({ pub, caps }) => ({ op: 'caps', pub, caps })))
       return { ok: true, seq: acta.seq }
     },
 

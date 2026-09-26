@@ -30,7 +30,7 @@
  * `docs/pairing-protocol.md`).
  */
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
-import { verifyContinuity, canSeal } from '@dotrino/identity/acta'
+import { verifyContinuity, canSeal, DEVICE_CAPS } from '@dotrino/identity/acta'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -159,8 +159,24 @@ export function createEnrollDesk ({
    *   · `account`       → cómo se llama la cuenta de la bóveda, para nombrarla en el
    *                       aviso. Es ORIENTATIVO (un nombre que puso su dueño); la
    *                       identidad de verdad de la cuenta es `iss`.
+   *   · `caps`          → LOS PERMISOS con los que entra al acta, elegidos por quien
+   *                       empareja (dueño, 2026-09-26: «al emparejar debería escoger los
+   *                       permisos, caso contrario estoy obligado a hacer dos actas»). Sin
+   *                       esto el aparato entraba con lo que da el scope y cualquier otro
+   *                       permiso —`admin`, `approve`…— costaba una segunda acta. Se quedan
+   *                       AQUÍ, en la sesión de la bóveda: NO viajan en el QR, así que la
+   *                       invitación que circula no concede nada; lo concede quien teclea
+   *                       el código, igual que hacía `caps` después.
    */
-  async function startPairing ({ scope = defaultScope, ttlMs = defaultTtlMs, label = '', mode = 'join', account = '' } = {}) {
+  async function startPairing ({ scope = defaultScope, ttlMs = defaultTtlMs, label = '', mode = 'join', account = '', caps = null } = {}) {
+    if (caps != null) {
+      if (!Array.isArray(caps)) throw Object.assign(new Error('caps must be a list'), { code: 'bad-caps' })
+      const cn = scopeToCn(scope)
+      const bad = caps.filter((c) => !(DEVICE_CAPS.includes(c) || (c === 'secrets' && cn)))
+      if (bad.length) throw Object.assign(new Error('unknown permission(s): ' + bad.join(', ')), { code: 'bad-caps' })
+      if (!caps.length) throw Object.assign(new Error('the pairing grants no permission'), { code: 'empty-scope' })
+      caps = [...new Set(caps)]
+    }
     pending.clear() // uno a la vez: una sesión nueva supersede a la anterior
     const acct = String(account || '').slice(0, 40)
     // INVITACIÓN CORTA: si sabemos cómo alcanzarnos, el QR lleva solo eso y el
@@ -176,12 +192,12 @@ export function createEnrollDesk ({
     const conn = typeof connToken === 'function' ? await connToken() : connToken
     if (conn) {
       const sn = randToken(8)
-      pending.set(sn, { token: sn, exp: Date.now() + PAIRING_TTL_MS, scope, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
+      pending.set(sn, { token: sn, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
       return { token: sn, qr: { v: 2, conn, sn, m: mode, proxy }, expiresInMs: PAIRING_TTL_MS }
     }
     const token = randToken(PAIR_TOKEN_BYTES)
     const sn = randToken(PAIR_TOKEN_BYTES)
-    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
+    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
     return { token, qr: { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }, expiresInMs: PAIRING_TTL_MS }
   }
 
@@ -364,8 +380,10 @@ export function createEnrollDesk ({
     // PERMISOS, no tipos (2026-08-22): las capacidades son las del scope ENTERO. Un
     // cajón (`secrets:<ns>`) suma `secrets` y fija el CN; no borra lo demás — un bot
     // con `sign,secrets:eco` firma como aparato del acta Y lee solo su cajón.
+    // Si quien emparejó ELIGIÓ los permisos (`startPairing({ caps })`), entran esos y en
+    // esta misma acta; si no, los que da el scope.
     const cn = scopeToCn(pend.scope)
-    const caps = [...new Set([...scopeToCaps(pend.scope), ...(cn ? ['secrets'] : [])])]
+    const caps = [...new Set([...(pend.caps || scopeToCaps(pend.scope)), ...(cn ? ['secrets'] : [])])]
     if (!caps.length) {
       throw Object.assign(new Error('the pairing scope grants no permission: no certificate was issued'), { code: 'empty-scope' })
     }

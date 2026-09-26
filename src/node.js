@@ -228,6 +228,7 @@ export class Identity {
   /** Registra la llave de cifrado de un miembro ya admitido (evita re-enrolarlo). */
   setMemberEncPub (args) { return this._h('setMemberEncPub', args) }
   setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }
+  setCapsMany (changes) { return this._h('setCapsMany', { changes }) }
   setLabel (pub, label) { return this._h('setLabel', { pub, label }) }
   removeMember (pub) { return this._h('removeMember', { pub }) }
   handoverMaster (to, member = null) { return this._h('handoverMaster', { to, member }) }

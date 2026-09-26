@@ -348,6 +348,8 @@ export class Identity {
 
   /** Cambia las capacidades de un miembro (solo el master). */
   async setCaps (pub, caps) { return this._call('setCaps', { pub, caps }) }
+  /** Cambia las capacidades de VARIOS miembros en una sola acta: `[{ pub, caps }]`. */
+  async setCapsMany (changes) { return this._call('setCapsMany', { changes }) }
   async setLabel (pub, label) { return this._call('setLabel', { pub, label }) }
 
   /** Expulsa a un miembro (solo el master; al master no se le puede expulsar). */
