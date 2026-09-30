@@ -118,56 +118,25 @@ export const CEK_ENVELOPE = 'dotrino-cek'
 export const isCekEnvelope = (v) => !!v && typeof v === 'object' && v.t === CEK_ENVELOPE &&
   Number.isInteger(v.gen) && typeof v.iv === 'string' && typeof v.ct === 'string'
 
-/** Cifra con la CEK. Devuelve un sobre `{ t, gen, iv, ct }` (el `gen` dice con cuál se cifró). */
+/**
+ * Cifra con una clave simétrica. Devuelve `{ gen, iv, ct }` (el `gen` dice con cuál).
+ *
+ * Es GENÉRICA: la usan la llave de la cuenta y también llaves que no son de la cuenta (los
+ * cajones de secretos, cada entrada del gestor de contraseñas, el transporte). Por eso NO
+ * lleva la marca: la marca dice «esto es de la cuenta» y solo la pone `sealAccount`. En
+ * 0.107.0 la ponía aquí, y marcaba como de la cuenta sobres que la cuenta no abre.
+ */
 export async function encryptWithCek ({ cek, gen, plaintext }) {
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['encrypt'])
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
   const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, k, new TextEncoder().encode(plaintext))
-  return { t: CEK_ENVELOPE, gen, iv: b64(iv), ct: b64(ct) }
+  return { gen, iv: b64(iv), ct: b64(ct) }
 }
 
-/**
- * VUELVE A CERRAR con la generación vigente todo sobre de una generación anterior que haya
- * dentro de `value`, a cualquier profundidad. Devuelve una copia (no toca el original) y
- * cuántos sobres cambió.
- *
- * Es lo que hace la bóveda al abrirse después de una rotación (dueño, 2026-09-30): lo que
- * sirve va SIEMPRE con la llave vigente, así que un aparato que entra después —que solo
- * recibe esa generación— abre todo, y la llave vieja deja de abrir nada porque ya no se
- * le sirve nada cerrado con ella.
- *
- * `reseal(envelope)` abre y vuelve a cerrar un sobre; lo pone quien tiene las llaves. Si
- * un sobre no se puede abrir, se PARA: no se deja a medias ni se salta en silencio.
- *
- * @param {any} value
- * @param {{ gen: number, reseal: (env: object) => Promise<object> }} o
- * @returns {Promise<{ value: any, changed: number }>}
- */
-export async function resealStale (value, { gen, reseal }) {
-  if (!Number.isInteger(gen)) throw new Error('resealStale: the current generation is required')
-  let changed = 0
-  const walk = async (v) => {
-    if (isCekEnvelope(v)) {
-      if (v.gen === gen) return v
-      const nuevo = await reseal(v)
-      if (!isCekEnvelope(nuevo) || nuevo.gen !== gen) throw new Error(`resealStale: reseal did not return an envelope of generation ${gen}`)
-      changed++
-      return nuevo
-    }
-    if (Array.isArray(v)) {
-      const out = []
-      for (const x of v) out.push(await walk(x))
-      return out
-    }
-    if (v && typeof v === 'object') {
-      const out = {}
-      for (const [k, x] of Object.entries(v)) out[k] = await walk(x)
-      return out
-    }
-    return v
-  }
-  const out = await walk(value)
-  return { value: out, changed }
+/** Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca. */
+export async function sealAccount ({ cek, gen, plaintext }) {
+  if (!Number.isInteger(gen) || gen < 1) throw new Error('sealAccount: the account key generation starts at 1')
+  return { t: CEK_ENVELOPE, ...(await encryptWithCek({ cek, gen, plaintext })) }
 }
 
 /**
@@ -198,7 +167,81 @@ export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPriva
   return new TextDecoder().decode(pt)
 }
 
+/**
+ * MIGRACIÓN, con fecha de caducidad: hasta 0.107.0 los sobres de la cuenta salían SIN marca,
+ * como `{ gen, iv, ct }` a secas. Hasta esta fecha, `resealStale` también prueba esos: si
+ * abren con la llave de la cuenta, los vuelve a cerrar ya marcados; si no abren, no eran de
+ * la cuenta y se dejan como están. Pasada la fecha, un sobre sin marca ya no se toca. Se
+ * quita el código cuando pase (y su prueba con él).
+ */
+export const LEGACY_UNMARKED_UNTIL = Date.parse('2027-06-30T00:00:00Z')
+
+/** ¿Tiene la forma EXACTA de un sobre de la cuenta anterior a la marca? */
+export const isLegacyCekEnvelope = (v) => !!v && typeof v === 'object' && !Array.isArray(v) &&
+  Object.keys(v).length === 3 && Number.isInteger(v.gen) && v.gen >= 1 &&
+  typeof v.iv === 'string' && typeof v.ct === 'string'
+
+/**
+ * VUELVE A CERRAR con la generación vigente todo sobre de la cuenta de una generación
+ * anterior que haya dentro de `value`, a cualquier profundidad. Devuelve una copia (no toca
+ * el original) y cuántos sobres cambió.
+ *
+ * Es lo que hace la bóveda al abrirse y después de una rotación (dueño, 2026-09-30): lo que
+ * sirve va SIEMPRE con la llave vigente, así que un aparato que entra después —que solo
+ * recibe esa generación— abre todo, y la llave vieja deja de abrir nada porque ya no se le
+ * sirve nada cerrado con ella.
+ *
+ * `reseal(envelope)` abre y vuelve a cerrar un sobre con la llave de la cuenta; lo pone quien
+ * la tiene, y debe devolver un sobre MARCADO de la generación `gen`.
+ *
+ *  · Un sobre MARCADO que no abre PARA todo: es de la cuenta y algo va mal; no se deja a
+ *    medias ni se salta en silencio.
+ *  · Un sobre SIN MARCA (migración, hasta `LEGACY_UNMARKED_UNTIL`) se prueba aunque ya
+ *    tenga la generación vigente —hay que ponerle la marca—; si no abre, se deja y se
+ *    cuenta en `skipped`.
+ *
+ * @param {any} value
+ * @param {{ gen: number, reseal: (env: object) => Promise<object>, now?: number }} o
+ * @returns {Promise<{ value: any, changed: number, skipped: number }>}
+ */
+export async function resealStale (value, { gen, reseal, now = Date.now() }) {
+  if (!Number.isInteger(gen)) throw new Error('resealStale: the current generation is required')
+  const migrar = now < LEGACY_UNMARKED_UNTIL
+  let changed = 0; let skipped = 0
+  const comprobar = (nuevo) => {
+    if (!isCekEnvelope(nuevo) || nuevo.gen !== gen) throw new Error(`resealStale: reseal did not return a marked envelope of generation ${gen}`)
+    return nuevo
+  }
+  const walk = async (v) => {
+    if (isCekEnvelope(v)) {
+      if (v.gen === gen) return v
+      const nuevo = comprobar(await reseal(v))
+      changed++
+      return nuevo
+    }
+    if (migrar && isLegacyCekEnvelope(v)) {
+      let nuevo
+      try { nuevo = await reseal(v) } catch (_) { skipped++; return v }
+      changed++
+      return comprobar(nuevo)
+    }
+    if (Array.isArray(v)) {
+      const out = []
+      for (const x of v) out.push(await walk(x))
+      return out
+    }
+    if (v && typeof v === 'object') {
+      const out = {}
+      for (const [k, x] of Object.entries(v)) out[k] = await walk(x)
+      return out
+    }
+    return v
+  }
+  const out = await walk(value)
+  return { value: out, changed, skipped }
+}
+
 export default {
   makeContentKey, wrapForMember, openWrap, makeGeneration, myContentKey,
-  encryptWithCek, decryptWithCek, decryptWithKeyring, CEK_ENVELOPE, isCekEnvelope, resealStale
+  encryptWithCek, sealAccount, decryptWithCek, decryptWithKeyring, CEK_ENVELOPE, isCekEnvelope, isLegacyCekEnvelope, LEGACY_UNMARKED_UNTIL, resealStale
 }

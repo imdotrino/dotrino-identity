@@ -91,51 +91,94 @@ test('cada clave de contenido es distinta', async () => {
   assert.equal(Buffer.from(k1, 'base64').length, 32, 'AES-256')
 })
 
-test('el sobre de la cuenta lleva su marca y su generación', async () => {
-  const { isCekEnvelope, CEK_ENVELOPE } = await import('../vault/content.js')
+test('solo el sobre de la CUENTA lleva la marca; encryptWithCek es genérica', async () => {
+  const { isCekEnvelope, CEK_ENVELOPE, sealAccount } = await import('../vault/content.js')
   const a = await miembro('pc')
   const { cek } = await makeGeneration({ members: [a] })
-  const env = await encryptWithCek({ cek, gen: 1, plaintext: 'hola' })
-  assert.equal(env.t, CEK_ENVELOPE)
-  assert.equal(env.gen, 1)
-  assert.ok(isCekEnvelope(env))
-  assert.ok(!isCekEnvelope({ gen: 1, iv: 'x', ct: 'y' }), 'sin marca no es un sobre de la cuenta')
+  const cuenta = await sealAccount({ cek, gen: 1, plaintext: 'hola' })
+  assert.equal(cuenta.t, CEK_ENVELOPE)
+  assert.equal(cuenta.gen, 1)
+  assert.ok(isCekEnvelope(cuenta))
+  const generico = await encryptWithCek({ cek, gen: 0, plaintext: 'hola' })
+  assert.equal(generico.t, undefined, 'un cajón o una contraseña no se hacen pasar por la cuenta')
+  await assert.rejects(sealAccount({ cek, gen: 0, plaintext: 'x' }), /starts at 1/)
 })
 
-test('resealStale: lo viejo pasa a la generación vigente y un aparato nuevo lo abre', async () => {
-  const { resealStale } = await import('../vault/content.js')
-  const boveda = await miembro('boveda'); const viejo = await miembro('viejo')
+/** Una cuenta con dos generaciones: la bóveda en las dos, el aparato nuevo solo en la 2. */
+async function rotada () {
+  const { sealAccount } = await import('../vault/content.js')
+  const boveda = await miembro('boveda'); const viejo = await miembro('viejo'); const nuevo = await miembro('nuevo')
   const g1 = await makeGeneration({ members: [boveda, viejo], gen: 1 })
-  const sobre = await encryptWithCek({ cek: g1.cek, gen: 1, plaintext: 'la firma' })
-  const dato = { id: 'signature:x', info: { cn: 'yo' }, envelope: sobre, lista: [sobre] }
-
-  // Sale el viejo, entra uno nuevo: la generación 2 solo es de los que están.
-  const nuevo = await miembro('nuevo')
   const g2 = await makeGeneration({ members: [boveda, nuevo], gen: 2 })
   const keyring = [g1.generation, g2.generation]
-  const nuevoSinG1 = await decryptWithKeyring({ envelope: sobre, keyring, myPub: nuevo.pub, myEncPrivateKey: nuevo.priv }).catch(() => null)
-  assert.equal(nuevoSinG1, null, 'el aparato nuevo no abre la generación 1')
+  const reseal = async (env) => sealAccount({
+    cek: g2.cek, gen: 2,
+    plaintext: await decryptWithKeyring({ envelope: env, keyring, myPub: boveda.pub, myEncPrivateKey: boveda.priv })
+  })
+  const abre = (m, env) => decryptWithKeyring({ envelope: env, keyring, myPub: m.pub, myEncPrivateKey: m.priv }).catch(() => null)
+  return { g1, g2, keyring, reseal, abre, nuevo }
+}
 
-  const reseal = async (env) => {
-    const pt = await decryptWithKeyring({ envelope: env, keyring, myPub: boveda.pub, myEncPrivateKey: boveda.priv })
-    return encryptWithCek({ cek: g2.cek, gen: 2, plaintext: pt })
-  }
-  const { value, changed } = await resealStale(dato, { gen: 2, reseal })
-  assert.equal(changed, 2)
+test('resealStale: lo marcado viejo pasa a la vigente y un aparato nuevo lo abre', async () => {
+  const { resealStale, sealAccount } = await import('../vault/content.js')
+  const { g1, reseal, abre, nuevo } = await rotada()
+  const sobre = await sealAccount({ cek: g1.cek, gen: 1, plaintext: 'la firma' })
+  const dato = { id: 'signature:x', info: { cn: 'yo' }, envelope: sobre, lista: [sobre] }
+  assert.equal(await abre(nuevo, sobre), null, 'el aparato nuevo no abre la generación 1')
+
+  const { value, changed, skipped } = await resealStale(dato, { gen: 2, reseal })
+  assert.equal(changed, 2); assert.equal(skipped, 0)
   assert.equal(dato.envelope.gen, 1, 'no toca el original')
   assert.deepEqual(value.info, { cn: 'yo' }, 'lo que no es sobre queda igual')
   for (const env of [value.envelope, value.lista[0]]) {
     assert.equal(env.gen, 2)
-    assert.equal(await decryptWithKeyring({ envelope: env, keyring, myPub: nuevo.pub, myEncPrivateKey: nuevo.priv }), 'la firma')
+    assert.equal(await abre(nuevo, env), 'la firma')
   }
-  const otra = await resealStale(value, { gen: 2, reseal })
-  assert.equal(otra.changed, 0, 'lo que ya está en la vigente no se toca')
+  assert.equal((await resealStale(value, { gen: 2, reseal })).changed, 0, 'lo vigente no se toca')
 })
 
-test('resealStale para si un sobre no se puede volver a cerrar', async () => {
-  const { resealStale } = await import('../vault/content.js')
+test('MIGRACIÓN: un sobre de la cuenta SIN marca (antes de 0.107) se vuelve a cerrar y queda marcado', async () => {
+  const { resealStale, isCekEnvelope } = await import('../vault/content.js')
+  const { g1, g2, reseal, abre, nuevo } = await rotada()
+  // Tal como salían antes: { gen, iv, ct } a secas. Uno de la generación vieja y otro de la
+  // vigente: los dos necesitan la marca.
+  const viejo = await encryptWithCek({ cek: g1.cek, gen: 1, plaintext: 'p12' })
+  const vigente = await encryptWithCek({ cek: g2.cek, gen: 2, plaintext: 'otro' })
+  const { value, changed, skipped } = await resealStale({ a: viejo, b: vigente }, { gen: 2, reseal })
+  assert.equal(changed, 2); assert.equal(skipped, 0)
+  assert.ok(isCekEnvelope(value.a) && isCekEnvelope(value.b))
+  assert.equal(await abre(nuevo, value.a), 'p12')
+  assert.equal(await abre(nuevo, value.b), 'otro')
+})
+
+test('MIGRACIÓN: un sobre sin marca que NO es de la cuenta se deja como está y no bloquea nada', async () => {
+  const { resealStale, sealAccount } = await import('../vault/content.js')
+  const { g1, reseal, abre, nuevo } = await rotada()
+  const ajena = (await makeGeneration({ members: [await miembro('otro')], gen: 1 })).cek
+  const deOtraLlave = await encryptWithCek({ cek: ajena, gen: 3, plaintext: 'no es tuyo' })
+  const cajon = await encryptWithCek({ cek: ajena, gen: 0, plaintext: 'cajón' })
+  const cuenta = await sealAccount({ cek: g1.cek, gen: 1, plaintext: 'sí es tuyo' })
+  const { value, changed, skipped } = await resealStale({ deOtraLlave, cajon, cuenta }, { gen: 2, reseal })
+  assert.equal(changed, 1, 'solo el de la cuenta')
+  assert.equal(skipped, 1, 'el de otra llave se prueba, no abre y se cuenta')
+  assert.deepEqual(value.deOtraLlave, deOtraLlave, 'intacto')
+  assert.deepEqual(value.cajon, cajon, 'gen 0 no es de la cuenta: ni se prueba')
+  assert.equal(await abre(nuevo, value.cuenta), 'sí es tuyo')
+})
+
+test('MIGRACIÓN: pasada la fecha, un sobre sin marca ya no se toca', async () => {
+  const { resealStale, LEGACY_UNMARKED_UNTIL } = await import('../vault/content.js')
+  const { g1, reseal } = await rotada()
+  const viejo = await encryptWithCek({ cek: g1.cek, gen: 1, plaintext: 'x' })
+  const r = await resealStale({ viejo }, { gen: 2, reseal, now: LEGACY_UNMARKED_UNTIL + 1 })
+  assert.equal(r.changed, 0)
+  assert.deepEqual(r.value.viejo, viejo)
+})
+
+test('resealStale para si un sobre MARCADO no se puede volver a cerrar', async () => {
+  const { resealStale, sealAccount } = await import('../vault/content.js')
   const a = await miembro('pc')
   const g1 = await makeGeneration({ members: [a], gen: 1 })
-  const sobre = await encryptWithCek({ cek: g1.cek, gen: 1, plaintext: 'x' })
+  const sobre = await sealAccount({ cek: g1.cek, gen: 1, plaintext: 'x' })
   await assert.rejects(resealStale({ sobre }, { gen: 2, reseal: async () => { throw new Error('no abre') } }), /no abre/)
 })

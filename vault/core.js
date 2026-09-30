@@ -2695,13 +2695,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     async contentKey () { return myCek() },
 
     /**
-     * Cifra algo con la clave de contenido del perfil. Devuelve el sobre `{gen,iv,ct}`.
-     * La llave privada de cifrado NUNCA sale de aquí: se cifra y descifra dentro.
+     * Cifra algo con la clave de contenido del perfil. Devuelve el sobre MARCADO
+     * `{ t: 'dotrino-cek', gen, iv, ct }` (la marca deja a la bóveda reconocerlo y volver a
+     * cerrarlo al rotar). La llave privada de cifrado NUNCA sale de aquí.
      */
     async sealContent ({ plaintext } = {}) {
       const mine = await myCek()
       if (!mine) throw new Error('this device does not hold the profile content key yet')
-      return Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: String(plaintext) })
+      return Content.sealAccount({ cek: mine.cek, gen: mine.gen, plaintext: String(plaintext) })
     },
 
     /**
