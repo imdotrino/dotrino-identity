@@ -21,6 +21,7 @@
 import { signDelegationWith, LEGACY_CERTS_UNTIL } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
+import { syncPeers, stampOf } from './peerSync.js'
 import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_TTL_MS } from './assertion.js'
 import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck } from './remote.js'
@@ -1450,7 +1451,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const merged = { ...a }
       const aSeen = a.lastSeen || 0
       const bSeen = b.lastSeen || 0
-      const newer = bSeen > aSeen ? b : a
+      // Gana la ficha que cambió MÁS TARDE (vista o tocada: `stampOf`), también para ser o no
+      // contacto: antes bastaba con que una de las dos lo fuera, y un contacto que quitabas
+      // volvía desde el otro aparato.
+      const newer = stampOf(b) > stampOf(a) ? b : a
       if (newer === b) {
         if (b.nickname !== undefined) merged.nickname = b.nickname
         if (b.notes !== undefined) merged.notes = b.notes
@@ -1460,7 +1464,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       merged.firstSeen = Math.min(a.firstSeen || aSeen || Date.now(), b.firstSeen || bSeen || Date.now())
       merged.lastSeen = Math.max(aSeen, bSeen)
-      merged.isContact = !!(a.isContact || b.isContact)
+      const changed2 = Math.max(Number(a.changedAt) || 0, Number(b.changedAt) || 0)
+      if (changed2) merged.changedAt = changed2
+      if (newer.isContact) merged.isContact = true; else delete merged.isContact
+      if (!merged.card && b.card) merged.card = b.card
       const aMine = a.myRating
       const bMine = b.myRating
       if (bMine && (!aMine || (bMine.issuedAt || 0) > (aMine.issuedAt || 0))) {
@@ -2085,6 +2092,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const rec = p[publickey]
       if (!rec) return null
       delete rec.isContact
+      // Quitarlo es un CAMBIO: con fecha, para que no vuelva desde otro aparato (`peerSync.js`).
+      rec.changedAt = Date.now()
       p[publickey] = rec
       savePeers(p)
       return rec
@@ -3495,8 +3504,40 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       applyMerged: applyMergedFromSync,
       mergeFn: mergeForSync
     })
-    onDirty(() => { if (sync) sync.markDirty() })
   }
+  // Un cambio en el libro de contactos avisa a los dos respaldos: Drive (si está) y la bóveda.
+  onDirty(() => { if (sync) sync.markDirty(); schedulePeerSync(1500) })
+
+  // ----- el libro de contactos en la bóveda (peerSync.js) -----
+  //
+  // Solo con bóveda y con la clave de contenido; una cuenta volátil no guarda contactos en ningún
+  // sitio, tampoco en la bóveda. Sin bóveda no es un error: es el estado normal, y no se dice.
+  let peerSyncTimer = null
+  let peerSyncRunning = false
+  function schedulePeerSync (delay) {
+    if (volatilePids.has(currentPid)) return
+    clearTimeout(peerSyncTimer)
+    peerSyncTimer = setTimeout(runPeerSync, delay)
+    peerSyncTimer?.unref?.()
+  }
+  async function runPeerSync () {
+    if (peerSyncRunning) { schedulePeerSync(3000); return }
+    if (!loadVaultCert()?.cert || volatilePids.has(currentPid)) return
+    peerSyncRunning = true
+    try {
+      const { incoming } = await syncPeers({ peers: loadPeers(), call: (method, args) => handlers.vaultStore({ method, args }) })
+      if (incoming.length) {
+        const here = loadPeers()
+        const { merged, changed } = await mergePeerMaps(here, Object.fromEntries(incoming.map((r) => [r.publickey, r])))
+        // Fundido en su sitio, sin volver a marcar sucio (sería subirlo otra vez para nada).
+        if (changed) setPeersDirect(merged)
+      }
+    } catch (e) {
+      if (!['not-paired', 'no-content-key'].includes(e?.code)) console.warn(`[cc-identity] contact book ↔ vault failed (${e?.code || 'error'}): ${e?.message}`)
+    } finally { peerSyncRunning = false }
+  }
+  schedulePeerSync(4000)
+  setInterval(() => schedulePeerSync(0), 5 * 60_000)?.unref?.()
 
   // ----- gate del candado: TODO handler no exento exige perfil desbloqueado -----
   refreshLockState()

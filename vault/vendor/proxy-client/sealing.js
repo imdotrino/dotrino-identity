@@ -136,11 +136,14 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
   }
 
   return {
-    async seal (msg, peerEncPub) {
+    async seal (msg, peerEncPub, { publickey } = {}) {
       if (!peerEncPub) throw errorCon('no encryption key for the other side', 'unsealed')
-      // Destinatarios como OBJETOS: `encrypt` expande cada uno a todos los aparatos de
-      // esa persona, y una llave suelta se le cae sin envolver nada.
-      const sealed = await identity.encrypt([{ encryptionPubkey: peerEncPub }], JSON.stringify(msg))
+      // Destinatarios como OBJETOS, y CON SU `publickey`: `encrypt` expande cada uno a
+      // todos los aparatos de esa persona por su tarjeta de perfil, y la tarjeta se busca
+      // por la pubkey. Sin ella el sobre solo lo abría el aparato que anunció la llave, y
+      // los demás aparatos de esa persona recibían un mensaje que «no es para mí».
+      const recipient = publickey ? { publickey, encryptionPubkey: peerEncPub } : { encryptionPubkey: peerEncPub }
+      const sealed = await identity.encrypt([recipient], JSON.stringify(msg))
       // Y SE COMPRUEBA QUE ENVOLVIÓ A ALGUIEN. `encrypt` se salta en silencio al
       // destinatario cuya llave no puede importar, y devuelve un sobre con el llavero
       // VACÍO: cifrado de verdad, y que no abre nadie. Eso no es un sobre, es un mensaje
@@ -151,6 +154,13 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
       return { app, sealed, from: await myEncPub() }
     },
     async open (env) { return JSON.parse(await openEnvelope(env.from, env.sealed)) },
+    /**
+     * La llave de cifrado de QUIEN SELLÓ. El sobre de la bóveda es ECDH entre la llave de
+     * quien sella y la mía, así que solo lo pudo armar quien tiene la privada de `from`:
+     * es lo que dice de quién viene de verdad (el token no lo dice, y el saludo no
+     * autentica). La app la compara con la que conoce de su contacto.
+     */
+    senderOf: (env) => (typeof env?.from === 'string' ? env.from : null),
     isSealed: (m) => !!m && m.app === app && !!m.sealed,
   }
 }

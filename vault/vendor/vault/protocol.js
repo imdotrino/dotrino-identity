@@ -65,7 +65,7 @@ export const MSG = Object.freeze({
   //     empieza con el heap limpio.
   // Va FIRMADO por la maestra y el agente lo verifica contra su `iss` pineada: un
   // aviso de reinicio sin autenticar ES un ataque de denegación.
-  SECRETS_CHANGED: 'vault.secrets.changed',   // vault → servicio: { body:{op,ns,ts}, signature }
+  SECRETS_CHANGED: 'vault.secrets.changed',   // vault → servicio: { body:{op,ns,ts}, seal, acta }
   // REPARTIR LA LLAVE DE UN CAJÓN A UN MIEMBRO NUEVO. Lo hace el SERVICIO y no la
   // bóveda, porque la bóveda no puede abrir la llave sin la frase y el servicio ya la
   // tiene: re-envolverla no le añade ningún poder. Ver `docs/secretos-sellados.md` §8.11.
@@ -74,7 +74,7 @@ export const MSG = Object.freeze({
   // el ACTA que viene dentro (también firmada) y saca de ahí la llave pública del
   // destinatario. Así, ni siquiera una bóveda comprometida puede hacerle envolver la
   // llave para alguien que la maestra no haya metido en su propio cajón.
-  REWRAP: 'vault.rewrap',                     // vault → servicio: { body:{op,owner,gen,wrap,target,acta,ts}, signature }
+  REWRAP: 'vault.rewrap',                     // vault → servicio: { body:{op,owner,gen,wrap,target,acta,ts}, seal }
   REWRAP_OK: 'vault.rewrap.ok',               // servicio → vault: { data:{op,owner,gen,target,wrap,ts}, signature, cert }
   // --- CONSOLA REMOTA (docs/consola-remota.md) — requiere cert `vault:admin` ---
   // Un solo mensaje con `data.op`: pending · pair · approve · reject · revoke · audit.
@@ -85,7 +85,7 @@ export const MSG = Object.freeze({
   // Aviso a TODOS los miembros de que el perfil cambió (alguien entró o salió). Es la
   // contrapartida de administrar a distancia: sin esto, un enrolamiento remoto sería
   // invisible para el resto de tus dispositivos.
-  ADMIN_EVENT: 'vault.admin.event',           // vault → todos: { body:{ev,deviceId,by,ts}, signature }
+  ADMIN_EVENT: 'vault.admin.event',           // vault → todos: { body:{ev,deviceId,by,ts}, acta } (pedidos: + seal)
   // RÉPLICAS: la principal empuja lo que hay que servir (el acta y los sobres, que van
   // firmados de antes y no se pueden falsificar) y la réplica acusa hasta qué `seq` tiene.
   REPLICA_PUSH: 'vault.replica.push',         // master → réplica: { body:{seq,acta,secrets,ts}, signature }
