@@ -106,12 +106,68 @@ export async function myContentKey ({ keyring, myPub, myEncPrivateKey }) {
   return null
 }
 
-/** Cifra con la CEK. Devuelve un sobre `{ gen, iv, ct }` (el `gen` dice con cuál se cifró). */
+/**
+ * La marca de un sobre de la llave de la cuenta. La lleva todo sobre de `encryptWithCek`
+ * para que quien guarda datos ajenos —la bóveda con el almacén de las apps— lo RECONOZCA
+ * dentro de un JSON cualquiera sin adivinar por la forma, y pueda volver a cerrarlo con la
+ * generación vigente cuando la llave rota (`resealStale`).
+ */
+export const CEK_ENVELOPE = 'dotrino-cek'
+
+/** ¿Es un sobre de la llave de la cuenta? */
+export const isCekEnvelope = (v) => !!v && typeof v === 'object' && v.t === CEK_ENVELOPE &&
+  Number.isInteger(v.gen) && typeof v.iv === 'string' && typeof v.ct === 'string'
+
+/** Cifra con la CEK. Devuelve un sobre `{ t, gen, iv, ct }` (el `gen` dice con cuál se cifró). */
 export async function encryptWithCek ({ cek, gen, plaintext }) {
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['encrypt'])
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
   const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, k, new TextEncoder().encode(plaintext))
-  return { gen, iv: b64(iv), ct: b64(ct) }
+  return { t: CEK_ENVELOPE, gen, iv: b64(iv), ct: b64(ct) }
+}
+
+/**
+ * VUELVE A CERRAR con la generación vigente todo sobre de una generación anterior que haya
+ * dentro de `value`, a cualquier profundidad. Devuelve una copia (no toca el original) y
+ * cuántos sobres cambió.
+ *
+ * Es lo que hace la bóveda al abrirse después de una rotación (dueño, 2026-09-30): lo que
+ * sirve va SIEMPRE con la llave vigente, así que un aparato que entra después —que solo
+ * recibe esa generación— abre todo, y la llave vieja deja de abrir nada porque ya no se
+ * le sirve nada cerrado con ella.
+ *
+ * `reseal(envelope)` abre y vuelve a cerrar un sobre; lo pone quien tiene las llaves. Si
+ * un sobre no se puede abrir, se PARA: no se deja a medias ni se salta en silencio.
+ *
+ * @param {any} value
+ * @param {{ gen: number, reseal: (env: object) => Promise<object> }} o
+ * @returns {Promise<{ value: any, changed: number }>}
+ */
+export async function resealStale (value, { gen, reseal }) {
+  if (!Number.isInteger(gen)) throw new Error('resealStale: the current generation is required')
+  let changed = 0
+  const walk = async (v) => {
+    if (isCekEnvelope(v)) {
+      if (v.gen === gen) return v
+      const nuevo = await reseal(v)
+      if (!isCekEnvelope(nuevo) || nuevo.gen !== gen) throw new Error(`resealStale: reseal did not return an envelope of generation ${gen}`)
+      changed++
+      return nuevo
+    }
+    if (Array.isArray(v)) {
+      const out = []
+      for (const x of v) out.push(await walk(x))
+      return out
+    }
+    if (v && typeof v === 'object') {
+      const out = {}
+      for (const [k, x] of Object.entries(v)) out[k] = await walk(x)
+      return out
+    }
+    return v
+  }
+  const out = await walk(value)
+  return { value: out, changed }
 }
 
 /**
@@ -144,5 +200,5 @@ export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPriva
 
 export default {
   makeContentKey, wrapForMember, openWrap, makeGeneration, myContentKey,
-  encryptWithCek, decryptWithCek, decryptWithKeyring
+  encryptWithCek, decryptWithCek, decryptWithKeyring, CEK_ENVELOPE, isCekEnvelope, resealStale
 }
