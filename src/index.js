@@ -139,6 +139,7 @@ export class Identity {
             const err = new Error(msg.error)
             if (msg.code) err.code = msg.code
             if (msg.detail) err.detail = msg.detail
+            if (msg.reason) err.reason = msg.reason
             pending.reject(err)
           }
           else pending.resolve(msg.result)

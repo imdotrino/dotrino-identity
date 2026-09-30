@@ -188,6 +188,18 @@ export class Identity {
   canApproveVault (): Promise<boolean>
   getVaultCert (): Promise<any>
   onVault (handler: (payload: any) => void): () => void
+  /** El perfil ACTIVO de este aparato (el que usan las apps; `@dotrino/store` se ata a él). */
+  currentProfile (): Promise<{ id: string; name?: string; pubkey?: string } | null>
+  /** Los perfiles de este aparato. */
+  listProfiles (): Promise<Array<{ id: string; name?: string; pubkey?: string; current?: boolean; avatar?: string }>>
+  /** Cambia el perfil activo (la app recarga: no es reactivo). */
+  switchProfile (id: string): Promise<any>
+  /** Cifra con la llave de la CUENTA: el sobre lleva la marca `t: 'dotrino-cek'` y lo abren todos los aparatos del acta. */
+  sealContent (plaintext: string): Promise<{ t: 'dotrino-cek'; gen: number; iv: string; ct: string }>
+  /** Abre un sobre de la cuenta (cualquier generación que este aparato tenga). */
+  openContent (envelope: { gen: number; iv: string; ct: string; t?: string }): Promise<string>
+  /** Mi copia de la llave de la cuenta vigente, o null si todavía no me la han envuelto. */
+  contentKey (): Promise<{ gen: number; cek: string } | null>
   // self-vault (este dispositivo ES el vault, daemon dentro del iframe)
   selfVaultStatus (): Promise<{ enabled: boolean; running: boolean }>
   setSelfVault (enabled: boolean): Promise<{ ok: true; enabled: boolean }>

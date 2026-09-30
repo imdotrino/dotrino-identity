@@ -540,7 +540,10 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       reply({
         error: e?.message || String(e),
         ...(e?.code ? { code: e.code } : {}),
-        ...(e?.detail ? { detail: e.detail } : {})
+        ...(e?.detail ? { detail: e.detail } : {}),
+        // El MOTIVO de un rechazo de la bóveda (`expired`, `revoked`, `acta`…): sin él, «la
+        // bóveda te rechaza» no dice si hay que volver a enlazar o esperar.
+        ...(e?.reason ? { reason: e.reason } : {})
       })
     }
   })
