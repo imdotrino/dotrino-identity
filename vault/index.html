@@ -1,24 +1,155 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Dotrino Identity Vault</title>
-  <meta name="robots" content="noindex,nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Esta página tiene DOS papeles según cómo se abra:
+       · en un iframe (lo normal): es la bóveda de identidad de todas las apps. Carga
+         vault.js y no enseña nada.
+       · abierta directo: es la portada que explica qué es Identidad Dotrino. NO carga
+         vault.js (una pestaña de portada no debe tomar el candado del modo «este
+         dispositivo es bóveda» ni atender a nadie), y carga el topbar y GoatCounter, que
+         dentro del iframe sobrarían (contarían cada arranque de cada app). -->
+  <script>if (window.top !== window) document.documentElement.classList.add('embedded')</script>
+  <title>Identidad Dotrino — tu llave y tus perfiles, en tu aparato</title>
+  <meta name="description" content="La identidad de Dotrino: una llave y tus perfiles que viven en tu aparato y comparten todas las apps de Dotrino. Cómo funciona en el navegador, en Android y en iPhone.">
+  <link rel="canonical" href="https://id.dotrino.com/">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="theme-color" content="#0a3570">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="es_ES">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:site_name" content="Dotrino">
+  <meta property="og:title" content="Identidad Dotrino">
+  <meta property="og:description" content="Tu llave y tus perfiles viven en tu aparato y los comparten todas las apps de Dotrino. En el navegador, en Android y en iPhone.">
+  <meta property="og:url" content="https://id.dotrino.com/">
+  <meta property="og:image" content="https://id.dotrino.com/og.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Identidad Dotrino">
+  <meta name="twitter:description" content="Tu llave y tus perfiles viven en tu aparato y los comparten todas las apps de Dotrino.">
+  <meta name="twitter:image" content="https://id.dotrino.com/og.jpg">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Identidad Dotrino",
+    "url": "https://id.dotrino.com/",
+    "description": "La identidad compartida de las apps de Dotrino: una llave y tus perfiles que viven en tu aparato.",
+    "applicationCategory": "SecurityApplication",
+    "operatingSystem": "Web, Android, iOS",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "publisher": { "@type": "Organization", "name": "Dotrino", "url": "https://dotrino.com/" }
+  }
+  </script>
   <style>
-    body { font-family: system-ui, sans-serif; padding: 1rem; color: #444; background: #fafafa; }
-    code { background: #eee; padding: 2px 6px; border-radius: 3px; }
+    :root {
+      --brand: #0a3570;
+      --accent: #00658c;
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --ink: #14213d;
+      --muted: #5a6478;
+      --line: #dfe5ee;
+      --warn-bg: #fff7e6;
+      --warn-line: #f0c36d;
+      --dotrino-topbar-bg: rgba(255, 255, 255, .92);
+      --dotrino-topbar-border: var(--line);
+      --dotrino-topbar-text: var(--ink);
+      --dotrino-topbar-muted: var(--muted);
+      --dotrino-topbar-accent: var(--accent);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--ink);
+      font: 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      -webkit-text-size-adjust: 100%;
+    }
+    html.embedded body { background: transparent; }
+    html.embedded #home { display: none; }
+    a { color: var(--accent); }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+    h1 { color: var(--brand); font-size: clamp(30px, 6vw, 42px); line-height: 1.15; margin: 8px 0 10px; }
+    h2 { color: var(--brand); font-size: 22px; margin: 40px 0 12px; }
+    h3 { margin: 0 0 6px; font-size: 18px; }
+    .lead { font-size: 19px; color: var(--muted); max-width: 640px; }
+    .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+    .card p { margin: 6px 0; }
+    .tag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+    .warn { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 14px; padding: 18px 20px; }
+    .warn p { margin: 8px 0; }
+    ul { padding-left: 20px; }
+    footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
+    html[lang="en"] [data-lang="es"] { display: none; }
+    html:not([lang="en"]) [data-lang="en"] { display: none; }
   </style>
 </head>
 <body>
-  <h1>Dotrino — Identity Vault</h1>
-  <p>This page is the cross-app storage for Dotrino identities.
-     It is meant to be embedded as an invisible iframe by the apps.</p>
-  <p>Stored in <code>localStorage</code> on this origin:</p>
-  <ul>
-    <li>Your ECDSA P-256 keypair (private key never leaves this page).</li>
-    <li>Nicknames and ratings of peers you've met.</li>
-  </ul>
-  <p>Source: <a href="https://github.com/imdotrino/dotrino-identity" target="_blank" rel="noopener">github.com/imdotrino/dotrino-identity</a></p>
+  <div id="home">
+    <dotrino-topbar profile
+      brand="Identidad"
+      icon="icon-192.png"
+      no-back
+      support-repo="imdotrino/dotrino-identity"
+      support-discord="https://discord.gg/D648uq7cth"></dotrino-topbar>
+
+    <main class="wrap">
+      <h1>Identidad Dotrino</h1>
+      <p class="lead" data-lang="es">Tu llave y tus perfiles. Viven en tu aparato, no se registran en ningún lado y los comparten todas las apps de Dotrino.</p>
+      <p class="lead" data-lang="en">Your key and your profiles. They live on your device, aren't registered anywhere, and every Dotrino app shares them.</p>
+
+      <h2 data-lang="es">Dónde vive, según dónde uses Dotrino</h2>
+      <h2 data-lang="en">Where it lives, depending on where you use Dotrino</h2>
+      <div class="cards">
+        <section class="card">
+          <span class="tag" data-lang="es">Navegador</span><span class="tag" data-lang="en">Browser</span>
+          <h3 data-lang="es">Se crea sola</h3><h3 data-lang="en">It creates itself</h3>
+          <p data-lang="es">La primera vez que abres una app de Dotrino, tu navegador crea tu llave. Todas las apps que abras <b>en ese navegador</b> la comparten.</p>
+          <p data-lang="en">The first time you open a Dotrino app, your browser creates your key. Every app you open <b>in that browser</b> shares it.</p>
+        </section>
+        <section class="card">
+          <span class="tag">Android</span>
+          <h3 data-lang="es">Una app: Identidad Dotrino</h3><h3 data-lang="en">An app: Dotrino Identity</h3>
+          <p data-lang="es">Las apps de Dotrino instaladas desde Google Play guardan tus llaves y perfiles en la app <b>Identidad Dotrino</b>. No se abre ni hace nada sola: está ahí para que las demás la compartan. Las apps que la necesitan te avisan si falta.</p>
+          <p data-lang="en">Dotrino apps installed from Google Play keep your keys and profiles in the <b>Dotrino Identity</b> app. You don't open it and it does nothing on its own: it's there so the others can share it. The apps that need it tell you if it's missing.</p>
+          <p><a href="https://play.google.com/apps/internaltest/4699800053552003281" rel="noopener"><span data-lang="es">Identidad Dotrino en Google Play (beta)</span><span data-lang="en">Dotrino Identity on Google Play (beta)</span></a></p>
+        </section>
+        <section class="card">
+          <span class="tag" data-lang="es">iPhone y iPad</span><span class="tag" data-lang="en">iPhone and iPad</span>
+          <h3 data-lang="es">No es una app, pero existe</h3><h3 data-lang="en">Not an app, but it's there</h3>
+          <p data-lang="es">En iPhone <b>no hay app de Identidad Dotrino, ni hace falta</b>. Apple deja que las apps de un mismo fabricante compartan un espacio guardado, y ahí cada app de Dotrino guarda tus perfiles para las demás. No hay nada que instalar.</p>
+          <p data-lang="en">On iPhone <b>there is no Dotrino Identity app, and none is needed</b>. Apple lets apps from the same maker share a saved space, and each Dotrino app keeps your profiles there for the others. There's nothing to install.</p>
+        </section>
+      </div>
+
+      <h2 data-lang="es">El navegador y las apps instaladas no se ven</h2>
+      <h2 data-lang="en">The browser and installed apps don't see each other</h2>
+      <div class="warn">
+        <p data-lang="es"><b>Los perfiles de tu navegador no aparecen en las apps instaladas desde la tienda, y los de las apps instaladas no aparecen en el navegador.</b> El teléfono no deja que uno mire dentro del otro. Pasa igual en Android y en iPhone.</p>
+        <p data-lang="en"><b>Your browser's profiles don't show up in apps installed from the store, and the installed apps' profiles don't show up in the browser.</b> The phone doesn't let one look inside the other. It's the same on Android and iPhone.</p>
+        <p data-lang="es">Para usar el mismo perfil en los dos, se conectan a tu bóveda como dos aparatos de tu cuenta, o se inicia sesión con tu dirección y tu contraseña. Si no haces nada, cada lado sigue con su propia cuenta y todo funciona igual.</p>
+        <p data-lang="en">To use the same profile in both, connect them to your vault as two devices of your account, or sign in with your address and password. If you do nothing, each side keeps its own account and everything works the same.</p>
+        <p><a data-lang="es" href="https://wiki.dotrino.com/empezar/navegador-y-apps/">Cómo usar el mismo perfil en los dos</a><a data-lang="en" href="https://wiki.dotrino.com/en/empezar/navegador-y-apps/">How to use the same profile in both</a></p>
+      </div>
+
+      <h2 data-lang="es">Más</h2>
+      <h2 data-lang="en">More</h2>
+      <ul>
+        <li><a href="https://profile.dotrino.com/"><span data-lang="es">Administrar tus perfiles</span><span data-lang="en">Manage your profiles</span></a></li>
+        <li><a data-lang="es" href="https://wiki.dotrino.com/empezar/identidad/">Tu identidad y tus perfiles</a><a data-lang="en" href="https://wiki.dotrino.com/en/empezar/identidad/">Your identity and your profiles</a></li>
+        <li><a data-lang="es" href="https://wiki.dotrino.com/empezar/otros-dispositivos/">Usar tu cuenta en otros dispositivos</a><a data-lang="en" href="https://wiki.dotrino.com/en/empezar/otros-dispositivos/">Use your account on other devices</a></li>
+      </ul>
+
+      <footer>
+        <p>MIT · <a href="https://github.com/imdotrino/dotrino-identity">imdotrino/dotrino-identity</a> · <span data-lang="es">parte de</span><span data-lang="en">part of</span> <a href="https://dotrino.com/">Dotrino</a></p>
+      </footer>
+    </main>
+  </div>
+
   <!-- Transporte self-hosted (vendorizado): el emparejamiento de dispositivos importa
        @dotrino/proxy-client de forma perezosa; este import map lo resuelve sin CDN. -->
   <script type="importmap">
@@ -33,6 +164,21 @@
     "@dotrino/identity/content": "./content.js"
   } }
   </script>
-  <script type="module" src="./vault.js"></script>
+  <script type="module">
+    if (window.top !== window) {
+      import('./vault.js')
+    } else {
+      // Portada. Analítica cookieless autohosteada (GoatCounter); no cuenta en localhost/LAN.
+      window.goatcounter = { path: (p) => location.hostname + p }
+      const goat = document.createElement('script')
+      goat.async = true
+      goat.dataset.goatcounter = 'https://goat.dotrino.com/count'
+      goat.src = 'https://goat.dotrino.com/count.js'
+      document.head.appendChild(goat)
+      // Por CDN el topbar va SIEMPRE con `+esm` (CONVENCIONES §5). Pone el idioma en
+      // <html lang>, que es de lo que cuelgan los bloques [data-lang].
+      import('https://cdn.jsdelivr.net/npm/@dotrino/topbar@0.12/+esm')
+    }
+  </script>
 </body>
 </html>

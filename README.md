@@ -19,6 +19,24 @@ Identidad de usuario y rating de peers compartidos entre las apps de Dotrino. Fu
 
 Como todas las apps cargan el vault desde el mismo origin, comparten el mismo `localStorage` aunque ellas estén en orígenes distintos. **Las claves privadas nunca salen del vault** — las apps reciben firmas (de la ECDSA) y plaintext descifrado (de la ECDH) pero nunca las llaves.
 
+## Dónde vive la identidad: web, Android, iOS
+
+Uso para el usuario: [El navegador y las apps instaladas](https://wiki.dotrino.com/empezar/navegador-y-apps/) (wiki). Portada: [id.dotrino.com](https://id.dotrino.com/).
+
+«Identidad Dotrino» es un **concepto** con tres implementaciones. Solo en Android es una app:
+
+| Plataforma | Dónde están las llaves y los perfiles | Quién los comparte |
+|---|---|---|
+| **Navegador** | este paquete: el iframe `id.dotrino.com` (localStorage + IndexedDB de ese navegador, llaves WebCrypto no extraíbles) | todas las apps abiertas **en ese navegador** |
+| **Android nativo** | la app **`com.dotrino.identity`** (Keystore), servicio con permiso de nivel firma | las apps nativas firmadas con la misma llave de Play |
+| **iOS nativo** | **no hay app**: llavero `P7G853375S.com.dotrino.shared` + App Group `group.com.dotrino`, dentro de cada app | las apps del equipo `P7G853375S` |
+
+**El navegador y lo nativo NO se ven, en ninguna dirección.** Chrome no puede enlazar el servicio de `com.dotrino.identity` (exige la firma de Play) y Safari no entra en los grupos del equipo; ninguna app nativa puede leer el almacén de un navegador. El WebView de una app nativa tampoco es el navegador: su iframe `id.dotrino.com` guarda en lo nativo por el puente (`window.DotrinoIdentityKeys`, `nativeStore.js`), no en Chrome ni en Safari.
+
+Para la cuenta son **dos aparatos distintos del acta** (el navegador y el conjunto de apps nativas del teléfono). Se unen como cualquier par de aparatos: emparejando con la bóveda («Adoptar un perfil», `vault.dotrino.com/d`) o entrando con dirección y contraseña. No existe ni se construye un puente para copiar perfiles de un lado a otro. Detalle nativo en `dotrino-native/docs/DISENO.md` §2.
+
+`id.dotrino.com/` tiene dos papeles: dentro de un iframe es la bóveda (carga `vault.js`); abierta directo es la portada (no carga `vault.js`, para no tomar el candado del modo «este dispositivo es bóveda»).
+
 ## Instalación
 
 ```bash

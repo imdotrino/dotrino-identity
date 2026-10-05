@@ -37,7 +37,10 @@ jobs:
       - name: Versionar imports (propagación rápida del iframe) + meta de commit
         run: |
           V=${GITHUB_SHA::8}
-          sed -i "s|src=\"./vault.js\"|src=\"./vault.js?v=$V\"|" vault/index.html
+          # vault.js entra por import() (solo dentro del iframe; abierta directo, la página es
+          # la portada y no lo carga). Si este patrón deja de casar, el iframe se queda 4 h rancio.
+          grep -q "import('./vault.js')" vault/index.html
+          sed -i "s|import('./vault.js')|import('./vault.js?v=$V')|" vault/index.html
           # `..` y una carpeta más de hondo: la copia de @dotrino/opaque conserva la forma
           # del paquete (`src/index.js` importa `../build/opaque.js`, que es el WASM), así
           # que un patrón de un solo nivel dejaba justo ese archivo sin versionar.
