@@ -18,7 +18,7 @@
  * vault, compartida por todos los runtimes.
  */
 
-import { signDelegationWith, LEGACY_CERTS_UNTIL } from './capabilities.js'
+import { signDelegationWith } from './capabilities.js'
 import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { syncPeers, stampOf } from './peerSync.js'
@@ -1015,14 +1015,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * el vault y hay un aparato expirado debe quitarlo del acta en una nueva acta»*).
    *
    * Muerto es un aparato cuyo papel no tiene vuelta atrás: todos los certificados que ESTA
-   * bóveda le dio son del modelo viejo (sin `seq`) y ya no valen — vencidos, o pasado
-   * `LEGACY_CERTS_UNTIL`, que los retira a todos. Renovar tampoco lo salva: la renovación
+   * bóveda le dio son del modelo viejo (sin `seq`), que ya no vale desde que se retiró su
+   * repliegue (2026-10-01). Renovar tampoco lo salva: la renovación
    * viaja firmada con ese mismo papel, y la bóveda lo rechaza (`unauthorized: expired`).
    * Hasta ahora se quedaban en el acta para siempre, como miembros que nadie podía usar.
    *
    * Lo que NO se toca, porque no hay datos para juzgarlo:
    *   · un miembro sin certificados de esta bóveda (se los pudo dar otra);
-   *   · un papel viejo sin `exp` antes del corte;
    *   · esta misma llave.
    *
    * Todo sale en UNA acta: las bajas y la clave de contenido nueva van en el mismo sello,
@@ -1041,8 +1040,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (!porSub.has(d.sub)) porSub.set(d.sub, [])
       porSub.get(d.sub).push(d)
     }
-    const muerto = (d) => typeof d.seq !== 'number' &&
-      (now > LEGACY_CERTS_UNTIL || (typeof d.exp === 'number' && now > d.exp))
+    const muerto = (d) => typeof d.seq !== 'number'
     const muertos = [...porSub]
       .filter(([sub, ds]) => sub !== publickeyJwkStr && ds.every(muerto))
       .map(([sub, ds]) => ({ pub: sub, label: ds[0]?.label || '' }))
@@ -1383,13 +1381,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // él se va la última razón por la que la maestra tenía que estar disponible sin nadie
       // delante. Renovar pasa a ocurrir justo cuando ya hay una selladora abierta, porque
       // cambiar el acta ES tenerla abierta.
-      // Y LA MIGRACIÓN: un papel del modelo viejo (sin `seq`) que todavía vale se cambia por
-      // uno nuevo. Sin esto moría en su fecha aunque el aparato se usara a diario, y ya no
-      // tenía arreglo — el teléfono que aprueba se quedó así el 2026-09-22. Caduca sola: a
-      // partir de `LEGACY_CERTS_UNTIL` no queda ningún papel viejo que valga.
-      const legadoVivo = typeof v.cert.seq !== 'number' && typeof v.cert.exp === 'number' &&
-        now < v.cert.exp && now < LEGACY_CERTS_UNTIL
-      if (!legadoVivo && !certDesfasadoDelActa()) return
+      if (!certDesfasadoDelActa()) return
       if (now - renewLastTry < RENEW_RETRY_MS) return
       renovarCert().catch(() => {}) // best-effort: el cert vigente sigue sirviendo mientras tanto
     } catch (_) {}
@@ -1461,6 +1453,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         if (b.contactNotes !== undefined) merged.contactNotes = b.contactNotes
         if (b.encryptionPubkey) merged.encryptionPubkey = b.encryptionPubkey
         if (typeof b.rating === 'number') merged.rating = b.rating
+        if (typeof b.blocked === 'boolean') merged.blocked = b.blocked
       }
       merged.firstSeen = Math.min(a.firstSeen || aSeen || Date.now(), b.firstSeen || bSeen || Date.now())
       merged.lastSeen = Math.max(aSeen, bSeen)
@@ -1984,6 +1977,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return p[publickey] || null
     },
 
+    /**
+     * BLOQUEAR a alguien (dueño, 2026-10-05): un indicador PRIVADO, aparte de la calificación.
+     * No se firma ni se publica —no es una opinión sobre esa persona, es tu decisión de no
+     * recibirla—, viaja con el libro de contactos a tu bóveda y a tus aparatos, y lo respeta
+     * cada app que recibe mensajes (el messenger, el primero). Desbloquear deja `false` y no
+     * borra el campo: así el cambio también llega a los demás aparatos.
+     */
+    async setBlocked ({ publickey, blocked }) {
+      if (!publickey) throw new Error('publickey required')
+      return upsertPeer(publickey, { blocked: !!blocked, changedAt: Date.now() })
+    },
+
     async setNickname ({ publickey, nickname }) {
       return upsertPeer(publickey, { nickname: String(nickname || '').slice(0, 40) })
     },
@@ -2396,14 +2401,17 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (e.id === currentPid) { me = { ...(me || {}), nickname: e.name }; saveMe(me) }
       return { id: e.id, name: e.name }
     },
+    /**
+     * BORRAR UNA CUENTA, también la activa y también la única (dueño, 2026-10-05): borrar tu
+     * cuenta desde la app es un derecho del usuario, y la App Store lo exige (norma 5.1.1(v)).
+     * La alerta es de la INTERFAZ, que pregunta antes. Si era la activa, `current` dice cuál
+     * queda, y la app tiene que RECARGAR; si no queda ninguna, el arranque estrena una nueva
+     * y vacía (ver `purgeProfile`).
+     */
     async deleteProfile ({ id } = {}) {
-      const list = loadProfiles()
-      // El freno es de la INTERFAZ: el botón «Borrar» de la página de perfiles no puede
-      // dejarte sin ninguna de un clic. La expulsión no pasa por aquí (ver `purgeProfile`):
-      // ahí sí se va la última, porque no es un descuido sino que te echaron.
-      if (list.length <= 1) throw new Error('cannot delete the only profile')
-      if (!list.find((p) => p.id === id)) throw new Error('profile does not exist')
-      return purgeProfile(id)
+      if (!loadProfiles().find((p) => p.id === id)) throw new Error('profile does not exist')
+      const wasCurrent = id === currentPid
+      return { ...(await purgeProfile(id)), wasCurrent }
     },
 
     // ----- ENTRAR CON USUARIO Y CONTRASEÑA -----

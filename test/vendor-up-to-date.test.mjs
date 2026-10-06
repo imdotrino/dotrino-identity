@@ -68,6 +68,28 @@ test('el import map resuelve todo lo que el vendor importa por nombre', async ()
 })
 
 /**
+ * TODO IMPORT RELATIVO DE LA COPIA SE COPIÓ. La lista de archivos de `vendor.mjs` es fija, y
+ * proxy-client 0.28 trajo `stats.js`: la copia salió sin él y el iframe habría pedido un
+ * archivo que no estaba (un 404 que el borde cachea horas). Las pruebas de «al día» solo
+ * comparan los archivos de la lista, así que no lo veían.
+ */
+test('cada import relativo de lo vendorizado está en la copia', async () => {
+  const { existsSync } = await import('node:fs')
+  const faltan = []
+  for (const v of VENDORED) {
+    for (const f of v.files) {
+      const code = await readFile(join(here, v.to, f), 'utf8')
+      for (const m of code.matchAll(/(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
+        const dest = join(here, v.to, dirname(f), m[1])
+        if (!dest.startsWith(join(here, v.to)) ) continue   // fuera de la copia: lo resuelve el import map
+        if (!existsSync(dest)) faltan.push(`${v.to}/${f} → ${m[1]}`)
+      }
+    }
+  }
+  assert.deepEqual(faltan, [], 'la copia importa archivos que vendor.mjs no copia (añádelos a su lista)')
+})
+
+/**
  * LO QUE SE SIRVE NO PUEDE ESTAR IGNORADO.
  *
  * La copia de `@dotrino/opaque` trae su carpeta `build/` (el WASM dentro del JS) y el

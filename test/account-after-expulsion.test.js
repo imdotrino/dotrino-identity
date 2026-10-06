@@ -83,16 +83,24 @@ test('la cuenta borrada se va con lo suyo: no queda su llave en ninguna otra', a
 })
 
 /**
- * El freno de «no te quedes sin ninguna» es de la INTERFAZ (el botón Borrar de la página
- * de perfiles), no del borrado en sí: la expulsión va por dentro y sí se lleva la última.
+ * BORRAR LA ÚNICA CUENTA (dueño, 2026-10-05): se puede, porque borrar tu cuenta es un derecho
+ * y la App Store lo exige. La alerta es de la interfaz. Lo que se comprueba aquí es que el
+ * aparato no queda roto: el siguiente arranque estrena una cuenta NUEVA, con otra llave.
  */
-test('el botón Borrar sigue negándose a dejar el dispositivo sin ninguna cuenta', async () => {
+test('borrar la única cuenta: se va entera y el arranque estrena una nueva', async () => {
   const dir = tmp()
   const id = await Identity.connect({ dir })
-  const sola = (await id.currentProfile()).id
+  const sola = await id.currentProfile()
 
-  await assert.rejects(() => id.deleteProfile(sola), /only profile/)
-  assert.equal((await id.listProfiles()).length, 1, 'y no tocó nada')
+  const r = await id.deleteProfile(sola.id)
+  assert.equal(r.wasCurrent, true)
+  assert.equal((await id.listProfiles()).length, 0, 'no queda ninguna')
+  id.destroy()
 
-  id.destroy(); fs.rmSync(dir, { recursive: true, force: true })
+  const otra = await Identity.connect({ dir })
+  const nueva = await otra.currentProfile()
+  const lista = await otra.listProfiles()
+  assert.equal(lista.length, 1, 'el arranque estrenó una')
+  assert.notEqual(nueva.pubkey, sola.pubkey, 'con otra llave: la borrada no vuelve')
+  otra.destroy(); fs.rmSync(dir, { recursive: true, force: true })
 })

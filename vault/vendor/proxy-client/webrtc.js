@@ -12,6 +12,8 @@
  * the "polite" one (rolls back on collision).
  */
 
+import { routeOf, utf8Length } from './stats.js'
+
 export const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -82,6 +84,8 @@ export class WebRTCManager {
    * @param {(from: string, parsed: any, meta: any) => void} opts.deliverMessage forwards
    *        an incoming P2P payload as if it had arrived via the proxy
    * @param {(event: string, ...args: any[]) => void} opts.emit
+   * @param {(dir: 'in'|'out', token: string, bytes: number, route: 'direct'|'turn'|'webrtc') => void} [opts.count]
+   *        cuenta el tráfico que va por el canal (ver stats.js)
    * @param {{iceServers?: any[]}} [opts.config]
    */
   constructor (opts) {
@@ -90,6 +94,7 @@ export class WebRTCManager {
     this.signalSend = opts.signalSend
     this.deliverMessage = opts.deliverMessage
     this.emit = opts.emit
+    this.count = typeof opts.count === 'function' ? opts.count : null
     this.iceServers = (opts.config && opts.config.iceServers) || DEFAULT_ICE_SERVERS
     this.peers = new Map() // remoteToken -> PeerState
   }
@@ -128,6 +133,7 @@ export class WebRTCManager {
     if (peer.dc && peer.dc.readyState === 'open') {
       try {
         peer.dc.send(payloadString)
+        this.count?.('out', to, utf8Length(payloadString), peer.route || 'webrtc')
         return true
       } catch (_) {
         return false
@@ -166,6 +172,27 @@ export class WebRTCManager {
    */
   setIceServers (list) {
     if (Array.isArray(list) && list.length) this.iceServers = list
+  }
+
+  /** Pregunta a ICE por dónde va el canal y lo apunta en `peer.route`. */
+  async probeRoute (peer) {
+    const r = await routeOf(peer.pc)
+    if (r) peer.route = r
+    return peer.route || null
+  }
+
+  /**
+   * El estado de cada canal, para las estadísticas: `connecting` mientras se negocia,
+   * `direct`/`turn`/`webrtc` con el canal abierto, `failed` si no salió.
+   */
+  async describe () {
+    const out = new Map()
+    for (const peer of this.peers.values()) {
+      const open = !!(peer.dc && peer.dc.readyState === 'open')
+      if (open) { try { await this.probeRoute(peer) } catch (_) {} }
+      out.set(peer.remote, open ? (peer.route || 'webrtc') : peer.failed ? 'failed' : peer.negotiating ? 'connecting' : null)
+    }
+    return out
   }
 
   isOpen (to) {
@@ -253,6 +280,8 @@ export class WebRTCManager {
   _attachDC (peer, dc) {
     peer.dc = dc
     dc.onopen = () => {
+      // Por dónde salió: directo o por TURN. Por detrás, sin retrasar a nadie.
+      this.probeRoute(peer).catch(() => {})
       this.emit('webrtc_open', peer.remote)
       const waiters = peer.openWaiters
       peer.openWaiters = []
@@ -267,6 +296,7 @@ export class WebRTCManager {
     dc.onmessage = (ev) => {
       let parsed = null
       const raw = ev.data
+      this.count?.('in', peer.remote, utf8Length(raw), peer.route || 'webrtc')
       if (typeof raw === 'string') {
         try { parsed = JSON.parse(raw) } catch (_) { parsed = null }
       }

@@ -102,6 +102,7 @@ Inicializa el iframe y resuelve cuando el vault está listo.
 
 - `id.getPeer(publickey)`
 - `id.setNickname(publickey, nickname)`
+- `id.setBlocked(publickey, blocked)` — **bloquear** (0.108): privado, no se firma ni se publica; viaja con tus contactos (`peer.blocked`) a tu bóveda y tus aparatos. Cada app que recibe mensajes lo respeta.
 - `id.setRating(publickey, rating, notes?)` — produce un envelope firmado y lo guarda como `peer.myRating` (rating 0–5).
 - `id.mergeEndorsements(subject, [signedRatings], askerPubkey?)` — para web-of-trust: valida firmas, dedupea por `(ratedBy, subject)`, cap 50.
 - `id.getRatingsForSubject(subject)` → `{ mine, endorsements }` para responder a un `RATING_QUERY`.

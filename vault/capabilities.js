@@ -27,27 +27,12 @@ const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' }
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
 
-/**
- * HASTA CUÁNDO SE ACEPTA UN PAPEL DEL MODELO VIEJO — **2026-10-01**, y se quita ese día.
- *
- * Los certificados de antes de 0.73 llevaban `exp` y no `seq`. Al pasar la bóveda al modelo
- * del acta, TODOS los aparatos ya enrolados se quedaban fuera de golpe (`shape`) y sin forma
- * de volver: el mostrador de renovación los rechazaba por lo mismo. Diez máquinas —los dos
- * proxios, los nodes de contenido, el bot— habrían necesitado re-enrolarse a mano, con TTY
- * en los dos lados.
- *
- * Así que se aceptan, con dos frenos y ninguna concesión de fondo:
- *   · hasta su PROPIO vencimiento, que sigue valiendo (el más lejano es 2026-09-30);
- *   · y en ningún caso pasado este tope.
- * Además el mostrador los cruza con el acta igual que a los nuevos, así que un papel viejo
- * no autoriza nada que el acta de hoy no autorice.
- *
- * Se apaga solo por partida doble: ninguna bóveda 0.73+ puede EMITIR uno de estos
- * (`signDelegationWith` solo escribe `seq`), así que cuando el último caduque esta rama es
- * inalcanzable. **Y aun así se borra en la fecha**, porque un repliegue sin fecha no es una
- * migración: es un agujero (`CLAUDE.md`).
+/*
+ * EL MODELO VIEJO YA NO ENTRA. Los papeles de antes de 0.73 llevaban `exp` y no `seq`; se
+ * aceptaron hasta el 2026-10-01 por un repliegue de migración declarado y con fecha, y esa
+ * fecha pasó: se quitó (2026-10-05). Un papel sin `seq` se rechaza con `legacy-cert-retirado`,
+ * el mismo código que daba el repliegue al caducar, así que quien lo comprueba no cambia.
  */
-export const LEGACY_CERTS_UNTIL = Date.parse('2026-10-01T00:00:00Z')
 
 const enc = (s) => new TextEncoder().encode(s)
 
@@ -252,9 +237,8 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   const { v, iss, sub, scope, iat, seq, nonce, sig } = cert
   if (v !== 1 || typeof iss !== 'string' || typeof sub !== 'string' || typeof sig !== 'string') return { ok: false, reason: 'shape' }
   if (typeof iat !== 'number' || (typeof scope !== 'string' && !Array.isArray(scope))) return { ok: false, reason: 'shape' }
-  // ¿ES UN PAPEL DEL MODELO VIEJO? Llevaba `exp` y no `seq` (ver `LEGACY_CERTS_UNTIL`).
-  const legado = typeof seq !== 'number'
-  if (legado && typeof cert.exp !== 'number') return { ok: false, reason: 'shape' }
+  // UN PAPEL DEL MODELO VIEJO (con `exp`, sin `seq`) ya no vale: el repliegue se retiró.
+  if (typeof seq !== 'number') return { ok: false, reason: typeof cert.exp === 'number' ? 'legacy-cert-retirado' : 'shape' }
   if (!(await rawVerify(iss, enc(canonicalStringify(delegationBody(cert))), sig))) return { ok: false, reason: 'bad-signature' }
   // EL ACTA MANDA, Y NO HAY RELOJ (dueño, 2026-08-31). El papel no vence: dice «una
   // selladora de este perfil, mirando el acta nº `seq`, avaló esta llave». Lo que puede
@@ -280,19 +264,7 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   // estaba apagado: vuelve, su papel ya no vale, y renovarlo exige una selladora ABIERTA.
   // O sea que un cambio de acta te obligaría a abrir la bóveda para que tus aparatos
   // volvieran — justo lo que se acaba de quitar de en medio.
-  if (!legado && seq > actaSeq) return { ok: false, reason: 'acta-vieja' }
-  // REPLIEGUE DE MIGRACIÓN, declarado y con fecha (ver `LEGACY_CERTS_UNTIL`). Un papel del
-  // modelo viejo se sigue aceptando, pero SOLO hasta su propio vencimiento: no se le regala
-  // ni un día. No hay nada que decidir sobre el acta que nombra, porque no nombra ninguna.
-  //
-  // Lo que NO se relaja, y es lo que hace que esto no sea un agujero: quien lo emitió tiene
-  // que poder sellar (abajo), y el mostrador cruza igual con el acta (`memberCanScope`). Un
-  // papel viejo no autoriza nada que el acta de hoy no autorice; lo único que compra es
-  // seguir hablando mientras su máquina se actualiza.
-  if (legado) {
-    if (Date.now() > cert.exp) return { ok: false, reason: 'expired' }
-    if (Date.now() > LEGACY_CERTS_UNTIL) return { ok: false, reason: 'legacy-cert-retirado' }
-  }
+  if (seq > actaSeq) return { ok: false, reason: 'acta-vieja' }
   // Y QUIEN LO EMITIÓ TIENE QUE PODER SELLAR. No se compara contra «la maestra»: cualquiera
   // que el acta nombre sellador emite papeles válidos — si no, la segunda bóveda podría
   // invalidar todos los certificados al sellar y luego no poder dar los nuevos.
@@ -304,7 +276,7 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
       : (revoked instanceof Set ? revoked.has(nonce) : !!revoked[nonce])
     if (isRev) return { ok: false, reason: 'revoked' }
   }
-  return { ok: true, iss, sub, scope, iat, seq: legado ? null : seq, nonce, legacy: legado || undefined }
+  return { ok: true, iss, sub, scope, iat, seq, nonce }
 }
 
 /**

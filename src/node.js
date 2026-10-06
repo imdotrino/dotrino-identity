@@ -166,6 +166,7 @@ export class Identity {
   }
   getPeer (publickey) { return this._h('getPeer', { publickey }) }
   setNickname (publickey, nickname) { return this._h('setNickname', { publickey, nickname }) }
+  setBlocked (publickey, blocked) { return this._h('setBlocked', { publickey, blocked }) }
   setRating (publickey, rating, notes) { return this._h('setRating', { publickey, rating, notes }) }
   listPeers () { return this._h('listPeers') }
   forgetPeer (publickey) { return this._h('forgetPeer', { publickey }) }

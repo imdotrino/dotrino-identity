@@ -10,7 +10,6 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { Identity, makeDeviceKey } from '../src/node.js'
-import { LEGACY_CERTS_UNTIL } from '../vault/capabilities.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'muertos-'))
 
@@ -97,27 +96,15 @@ test('un papel viejo y vencido saca al aparato del acta; uno vigente no se toca'
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('un papel viejo que TODAVÍA vale no se quita (se renueva, no se poda)', async () => {
-  const { dir, id, muerto } = await conDosAparatos()
-  id.destroy()
-  aLegado(dir, muerto.publickey, Date.now() + 86400000)
-  const b = await Identity.connect({ dir })
-  const antes = await b.profileMembers()
-  const r = await b.pruneExpiredDevices(Math.min(Date.now(), LEGACY_CERTS_UNTIL - 1))
-  assert.deepEqual(r.removed, [])
-  assert.equal((await b.profileMembers()).seq, antes.seq, 'sin nada que quitar, no se sella nada')
-  fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('pasado el corte, todo papel viejo está muerto aunque su fecha diga otra cosa', async () => {
+test('todo papel viejo está muerto aunque su fecha diga otra cosa (el repliegue se retiró)', async () => {
   const { dir, id, muerto, vivo } = await conDosAparatos()
   id.destroy()
-  aLegado(dir, muerto.publickey, LEGACY_CERTS_UNTIL + 30 * 86400000)
+  aLegado(dir, muerto.publickey, Date.now() + 30 * 86400000)
   const b = await Identity.connect({ dir })
-  const r = await b.pruneExpiredDevices(LEGACY_CERTS_UNTIL + 1000)
+  const r = await b.pruneExpiredDevices()
   assert.deepEqual(r.removed.map((m) => m.pub), [muerto.publickey])
   assert.ok((await b.profileMembers()).members.some((m) => m.pub === vivo.publickey),
-    'un papel del modelo nuevo no caduca por el corte')
+    'un papel del modelo nuevo no caduca')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

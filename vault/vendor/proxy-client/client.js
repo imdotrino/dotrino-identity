@@ -2,6 +2,7 @@ import { buildSignedChannel, getPublicKeyJwk, signData, samePubkey } from './sig
 import { seal, open, isSealed } from './sealing.js'
 import { buildEncPubStatement, readEncPubStatement, isEncPub } from './encpub.js'
 import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection } from './webrtc.js'
+import { TrafficStats, utf8Length, registerTransport, unregisterTransport } from './stats.js'
 
 /**
  * Error con un `code` estable.
@@ -46,6 +47,20 @@ function errorCon (mensaje, code) {
  *   - 'reconnecting'      (attempt, max)
  *   - 'reconnect_failed'  (attempts)
  */
+const APP_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+
+/**
+ * Valida un nombre de app (`messenger`, `vault`…). Lo que no tiene forma LANZA: un nombre mal
+ * escrito haría que el timbre no sonara nunca en esa app, y eso no se ve.
+ */
+function checkApp (app) {
+  if (app == null) return null
+  if (typeof app !== 'string' || !APP_RE.test(app)) {
+    throw Object.assign(new Error(`app: "${app}" is not a valid app name (a-z, 0-9, -; up to 32)`), { code: 'bad-app' })
+  }
+  return app
+}
+
 export class WebSocketProxyClient {
   constructor (options = {}) {
     this.url = options.url || 'wss://proxy.dotrino.com'
@@ -68,6 +83,18 @@ export class WebSocketProxyClient {
      */
     this.requireSealed = options.requireSealed === true
     this.myEncPrivateKey = options.myEncPrivateKey || null
+
+    /**
+     * QUÉ APP ES ESTA (websocket-proxy ≥ 1.4.0). En un teléfono varias apps hablan con la
+     * MISMA llave (el perfil del teléfono), y el proxio necesita saber a cuál despertar y a
+     * cuál entregarle la cola: sin esto, la última en suscribirse se llevaba todos los
+     * timbres y la primera en conectarse, los mensajes de todas. Es ruteo, no contenido.
+     *
+     * Se dice al identificarse (solo baja lo suyo de la cola), al suscribirse al timbre (solo
+     * suena con lo suyo) y quien le escribe lo marca con `sendByPubkey(…, { app })`.
+     * Sin `app`, como antes: recibe todo.
+     */
+    this.app = checkApp(options.app)
 
     /**
      * MI llave de cifrado, la pública. Con ella puesta, `identify` anuncia al proxio
@@ -154,6 +181,7 @@ export class WebSocketProxyClient {
     this._pending = new Map() // messageId -> { resolve, reject, timer }
     this._nextId = 1
     this._tokenWatch = new Map() // messageId -> { token, sobre, peerPubkey, timer }
+    this._traffic = new TrafficStats()
 
     this._rtc = this.enableWebRTC ? new WebRTCManager({
       getSelfToken: () => this.token,
@@ -166,6 +194,8 @@ export class WebSocketProxyClient {
         if (event === 'webrtc_close') this._rtcTried?.delete(args[0])
         this._emit(event, ...args)
       },
+      count: (dir, token, bytes, route) =>
+        this._traffic.peer(dir, route, { token, pubkey: this._tokenPubkeys.get(token) || null }, bytes),
       config: this.iceServers ? { iceServers: this.iceServers } : null
     }) : null
     // QUIÉN PUEDE HACERTE NEGOCIAR UN CANAL DIRECTO. Sin política, cualquiera que sepa
@@ -203,6 +233,7 @@ export class WebSocketProxyClient {
 
   close () {
     this.autoReconnect = false
+    unregisterTransport(this)
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
@@ -257,6 +288,17 @@ export class WebSocketProxyClient {
     // cualquier otro módulo de la app la desactivara sin querer, y no hay ningún
     // motivo legítimo para hacerlo a mitad de una sesión.
     if (options.requireSealed === true) this.requireSealed = true
+
+    // La APP también, por la misma razón (el singleton): si se perdiera, esta app ni sonaría
+    // con lo suyo ni se llevaría solo su cola. Se fija una vez; otra distinta después es que
+    // dos apps comparten el cliente de la página, y eso es un error, no algo que resolver aquí.
+    if (options.app != null) {
+      const app = checkApp(options.app)
+      if (this.app && this.app !== app) {
+        throw Object.assign(new Error(`app: this client is already "${this.app}", not "${app}"`), { code: 'app-conflict' })
+      }
+      this.app = app
+    }
   }
 
   on (event, handler) {
@@ -765,8 +807,14 @@ export class WebSocketProxyClient {
     }
     if (opts.ephemeral) msg.ephemeral = true
     if (opts.quiet) msg.quiet = true
+    // A QUÉ APP va (ruteo): el proxio timbra y entrega solo a esa app de ese aparato.
+    const app = checkApp(opts.app)
+    if (app) msg.app = app
     this._sendRaw(msg)
   }
+
+  /** `{ app }` para lo firmado (suscribirse al timbre), o nada si esta conexión no dijo cuál. */
+  _appField () { return this.app ? { app: this.app } : {} }
 
   /**
    * Pedir una CITA: el código corto que una persona lee, dicta o escanea para
@@ -858,6 +906,7 @@ export class WebSocketProxyClient {
   identify ({ data, signature, cert, acta, sign }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
     const msg = { type: 'identify', data, signature }
+    if (this.app) msg.app = this.app
     if (cert) msg.cert = cert // "una identidad": el proxy bindea este token también bajo tu maestra M
     // Acta de perfil: el proxy la verifica (va firmada) y bindea también el `profileId`, así
     // escribirle a la PERSONA llega a cualquiera de sus dispositivos. Ver acta-de-perfil.md.
@@ -1019,7 +1068,7 @@ export class WebSocketProxyClient {
       })
     }
     const subJson = typeof sub.toJSON === 'function' ? sub.toJSON() : sub
-    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify(subJson), ts: Date.now() }
+    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify(subJson), ts: Date.now(), ...this._appField() }
     const signature = await normalizeSignature(sign, data)
     await this._request({ type: 'push-subscribe', data, signature }, 'push-subscribed')
     return sub
@@ -1033,7 +1082,7 @@ export class WebSocketProxyClient {
    */
   async registerPushToken ({ publicKey, sign, token, kind = 'fcm' } = {}) {
     if (!publicKey || typeof sign !== 'function' || !token) throw new Error('registerPushToken requires { publicKey, sign, token }')
-    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind, token }), ts: Date.now() }
+    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind, token }), ts: Date.now(), ...this._appField() }
     const signature = await normalizeSignature(sign, data)
     await this._request({ type: 'push-subscribe', data, signature }, 'push-subscribed')
     return { kind, token }
@@ -1058,7 +1107,7 @@ export class WebSocketProxyClient {
       } catch (_) { /* best-effort local */ }
     }
     if (publicKey && typeof sign === 'function') {
-      const data = { op: 'push-unsubscribe', publickey: publicKey, ts: Date.now() }
+      const data = { op: 'push-unsubscribe', publickey: publicKey, ts: Date.now(), ...this._appField() }
       const signature = await normalizeSignature(sign, data)
       await this._request({ type: 'push-unsubscribe', data, signature }, 'push-unsubscribed')
     }
@@ -1145,6 +1194,7 @@ export class WebSocketProxyClient {
   // ---------- internals ----------
 
   _open () {
+    registerTransport(this)
     const ws = new WebSocket(this.url)
     this.ws = ws
     // `ws !== this.ws` ⇒ es un socket que ya abandonamos (p.ej. por heartbeat
@@ -1159,6 +1209,7 @@ export class WebSocketProxyClient {
     ws.addEventListener('message', (ev) => {
       if (ws !== this.ws) return
       this._noteActivity()           // cualquier frame entrante prueba que está vivo
+      this._traffic.frame('in', utf8Length(ev.data))
       this._handleFrame(ev.data)
     })
     ws.addEventListener('error', (err) => {
@@ -1224,7 +1275,7 @@ export class WebSocketProxyClient {
   _heartbeatTick () {
     if (!this._connected || !this.ws) return
     if (this._hbDeadTimer) return // ya hay un ping en vuelo esperando respuesta
-    try { this.ws.send(JSON.stringify({ type: 'ping' })) }
+    try { const ping = JSON.stringify({ type: 'ping' }); this.ws.send(ping); this._traffic.frame('out', ping.length) }
     catch (_) { this._onHeartbeatDead(); return }
     this._hbDeadTimer = setTimeout(() => this._onHeartbeatDead(), this.heartbeatTimeout)
   }
@@ -1301,6 +1352,7 @@ export class WebSocketProxyClient {
         if (typeof message === 'string') {
           try { parsed = JSON.parse(message) } catch (_) { parsed = null }
         }
+        this._traffic.peer('in', 'proxy', { token: from || null, pubkey: from_publickey || this._tokenPubkeys.get(from) || null }, utf8Length(message))
         if (this._rtc && parsed && parsed.t === RTC_TAG) {
           this._rtc.handleIncoming(from, parsed)
           break
@@ -1395,7 +1447,65 @@ export class WebSocketProxyClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw errorCon('WebSocket not connected', 'NOT_CONNECTED')
     }
-    this.ws.send(JSON.stringify(frame))
+    const texto = JSON.stringify(frame)
+    this.ws.send(texto)
+    this._countOut(frame, texto)
+  }
+
+  /** Cuenta un frame que sale por el proxio, y a quién iba. */
+  _countOut (frame, texto) {
+    this._traffic.frame('out', utf8Length(texto))
+    if (typeof frame.message !== 'string') return
+    const bytes = utf8Length(frame.message)
+    for (const token of Array.isArray(frame.to) ? frame.to : []) {
+      this._traffic.peer('out', 'proxy', { token, pubkey: this._tokenPubkeys.get(token) || null }, bytes)
+    }
+    for (const pubkey of Array.isArray(frame.to_publickey) ? frame.to_publickey : []) {
+      this._traffic.peer('out', 'proxy', { pubkey }, bytes)
+    }
+  }
+
+  /**
+   * ESTADÍSTICAS DE RED: cuánto entró y salió, por conexión, y por qué camino.
+   *
+   * `route` es por dónde va AHORA cada conexión: `proxy`, `connecting` (por el proxio
+   * mientras se negocia WebRTC), `direct` o `turn` (WebRTC, sin o con relevo), `webrtc`
+   * (canal abierto sin poder saber cuál) o `failed` (WebRTC no salió: sigue por el proxio).
+   * Los bytes van separados por el camino por el que pasaron de verdad.
+   *
+   * Los bytes son de payload (UTF-8), no del cable: las cabeceras de TLS/DTLS no se ven
+   * desde aquí.
+   */
+  async stats () {
+    const t = this._traffic
+    const routes = this._rtc ? await this._rtc.describe() : new Map()
+    const peers = [...t.peers.values()].map((p) => {
+      const pubkey = p.pubkey || (p.token && this._tokenPubkeys.get(p.token)) || null
+      const rtc = p.token ? routes.get(p.token) : null
+      return {
+        token: p.token,
+        pubkey,
+        route: rtc && rtc !== 'failed' && rtc !== 'connecting' ? rtc : (rtc || 'proxy'),
+        bytesIn: { ...p.bytesIn },
+        bytesOut: { ...p.bytesOut },
+        msgsIn: p.msgsIn,
+        msgsOut: p.msgsOut,
+        firstAt: p.firstAt,
+        lastAt: p.lastAt
+      }
+    }).sort((a, b) => b.lastAt - a.lastAt)
+    return {
+      url: this.url,
+      app: this.app,
+      node: this.node || null,
+      token: this.token,
+      publickey: this.myPublickey,
+      connected: this._connected,
+      webrtc: !!this._rtc,
+      since: t.since,
+      proxy: { ...t.proxy },
+      peers
+    }
   }
 
   _request (frame, expectedType, channelKey) {

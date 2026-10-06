@@ -209,6 +209,11 @@ export class Identity {
     return this._call('getPeer', { publickey })
   }
 
+  /** Bloquear (o desbloquear) a alguien: privado, viaja con tus contactos y no se publica. */
+  async setBlocked (publickey, blocked) {
+    return this._call('setBlocked', { publickey, blocked })
+  }
+
   async setNickname (publickey, nickname) {
     return this._call('setNickname', { publickey, nickname })
   }

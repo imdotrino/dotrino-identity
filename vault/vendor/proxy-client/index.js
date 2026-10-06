@@ -10,6 +10,8 @@ export {
   buildEncPubStatement, readEncPubStatement,
 } from './encpub.js'
 
+export { listTransports, routeOf } from './stats.js'
+
 import { WebSocketProxyClient } from './client.js'
 
 let _singleton = null

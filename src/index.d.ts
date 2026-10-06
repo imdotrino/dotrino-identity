@@ -65,6 +65,9 @@ export interface PeerInfo {
   queryStats?: QueryStats
   firstSeen?: number
   lastSeen?: number
+  /** You blocked them (private, never published). */
+  blocked?: boolean
+  changedAt?: number
 }
 
 export interface Challenge {
@@ -106,6 +109,8 @@ export class Identity {
   verifyResponse (response: ChallengeResponse): Promise<VerifyResult>
   getPeer (publickey: string): Promise<PeerInfo | null>
   setNickname (publickey: string, nickname: string): Promise<PeerInfo>
+  /** Private block: not signed, not published; travels with your contacts. */
+  setBlocked (publickey: string, blocked: boolean): Promise<PeerInfo>
   setRating (publickey: string, rating: number, notes?: string): Promise<PeerInfo>
   listPeers (): Promise<PeerInfo[]>
   forgetPeer (publickey: string): Promise<void>
