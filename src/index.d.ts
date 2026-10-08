@@ -187,9 +187,9 @@ export class Identity {
    * abierto: viaja sellado a la llave de cifrado de este aparato y se descifra aquí dentro.
    * `ctxError` si no se pudo abrir; sin ninguno de los dos, el pedido no dijo qué corría.
    */
-  vaultApprovals (op: 'approvals' | 'approve' | 'deny', args?: { id?: string; profile?: string }): Promise<any>
+  vaultApprovals (op: 'approvals' | 'approve' | 'deny', args?: { id?: string; profile?: string; notify?: boolean }): Promise<any>
   /** Los pedidos de TODAS las cuentas de este dispositivo que aprueban, sin cambiar la activa. */
-  vaultApprovalsAll (): Promise<Array<{ profile: string; name: string; current: boolean; items: ApprovalRequest[]; error?: string }>>
+  vaultApprovalsAll (args?: { notify?: boolean }): Promise<Array<{ profile: string; name: string; current: boolean; items: ApprovalRequest[]; error?: string }>>
   canApproveVault (): Promise<boolean>
   getVaultCert (): Promise<any>
   onVault (handler: (payload: any) => void): () => void

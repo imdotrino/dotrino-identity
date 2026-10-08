@@ -452,11 +452,16 @@ export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked
  * `vault:approve` — que, como `admin`, no se recibe al emparejar: se concede a mano.
  * La bóveda contesta un cuerpo firmado por la maestra (`{ op, items | ok }`).
  */
-export async function requestApproval ({ master, proxy, device, cert, op, id, onRevoked } = {}) {
+export async function requestApproval ({ master, proxy, device, cert, op, id, notify, onRevoked } = {}) {
+  // `notify`: al pedir la lista, este aparato dice si le llegan los avisos. La bóveda lo
+  // apunta y es lo que mira para saber si hay a quién pedirle permiso antes de actualizarse.
+  // Solo va si quien llama lo SABE (true o false): no decir nada no cambia lo ya dicho.
+  const data = id ? { op, id } : { op }
+  if (op === 'approvals' && typeof notify === 'boolean') data.notify = notify
   const res = await vaultRpc({
     master, proxy, device, cert, onRevoked,
     sendType: MSG.SECRETS, okType: MSG.SECRETS_RESULT,
-    data: id ? { op, id } : { op }
+    data
   })
   return res.body
 }

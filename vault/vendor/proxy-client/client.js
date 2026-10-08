@@ -546,6 +546,27 @@ export class WebSocketProxyClient {
   }
 
   /**
+   * Mandar POR TOKEN algo que la app YA CIFRÓ por su cuenta (un canal de sesión propio,
+   * como el de `@dotrino/remote-agent`), con la misma red que `sendSealedTo`: sube al
+   * canal directo si lo hay, y si el token murió el mismo mensaje sale por `peerPubkey`
+   * y se avisa con `token_gone`.
+   *
+   * Existe porque `sendByPubkey` NUNCA sube de escalón —la cola es del proxio— y `send`
+   * a secas pierde en silencio lo que va a un token que ya no existe. Con `requireSealed`
+   * se niega igual que los demás: esto no abre una puerta para ir en claro.
+   *
+   * @param {string} token
+   * @param {any} payload
+   * @param {{ peerPubkey:string }} opts
+   */
+  sendToOrQueue (token, payload, { peerPubkey } = /** @type {any} */ ({})) {
+    if (!token || !peerPubkey) {
+      throw errorCon('sendToOrQueue: needs the token and whose it is (peerPubkey)', 'no-peer-identity')
+    }
+    this._sendToTokenOrQueue(token, payload, peerPubkey)
+  }
+
+  /**
    * UN TOKEN MUERTO NO SE TRAGA EL MENSAJE. Un token es una conexión, y cuando la otra punta
    * reinicia la app su token deja de existir; la app que lo tenía apuntado sigue mandando ahí
    * y el proxio contesta `message_sent` con ese token en `failed` (solo contesta si algo

@@ -69,7 +69,7 @@ export const VENDORED = [
     pkg: 'dotrino-proxy-client/package.json',
     from: 'dotrino-proxy-client/src',
     to: 'vault/vendor/proxy-client',
-    files: ['index.js', 'client.js', 'signature.js', 'canonical.js', 'sealing.js', 'encpub.js', 'webrtc.js', 'stats.js'],
+    files: ['index.js', 'client.js', 'signature.js', 'canonical.js', 'sealing.js', 'encpub.js', 'webrtc.js', 'stats.js', 'stats-log.js'],
     note: [
       'sealing.js resuelve @dotrino/identity/content de forma PEREZOSA (= ../../content.js',
       'por el import map): solo se carga si de verdad se sella algo.',

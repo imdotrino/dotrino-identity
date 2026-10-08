@@ -103,6 +103,13 @@ export const MSG = Object.freeze({
   // una forma de echar a alguien de su cuenta.
   LOGIN_CLOSE: 'vault.login.close',           // aparato → vault: { data:{op,user,sid,publickey,ts}, signature }
   LOGIN_CLOSED: 'vault.login.closed',         // vault → aparato: { ok }
+  // INCIDENTE: un agente de la cuenta (la terminal) avisa de que OTRO aparato de la cuenta
+  // se equivocó de clave tres veces seguidas. La bóveda lo apunta como un pedido más
+  // (`kind: 'incident'`), timbra a quien aprueba, y el aprobador bloquea o ignora. Bloquear
+  // no toca el acta: es una lista de la bóveda (`blocked.json`) que viaja a los agentes con
+  // `vault.devices.result` (`blocked`) y se deshace con `dotrino-vault unblock <ID>`.
+  INCIDENT: 'vault.incident',                 // agente → vault: { data:{op:'incident',kind,about,tries,publickey,ts}, signature, cert }
+  INCIDENT_RESULT: 'vault.incident.result',   // vault → agente: { id, approvers, blocked }
   ERROR: 'vault.error'                        // vault → dispositivo: { error }
 })
 

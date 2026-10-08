@@ -476,6 +476,10 @@ export class Identity {
    * PEDIDOS DE APROBACIÓN de la bóveda (cajones con `approval`): `op` = `approvals` ·
    * `approve` · `deny` (estos dos con `{ id }`). Requiere `vault:approve` en el cert.
    *
+   * `args.notify` (solo con `approvals`): `true`/`false` según a este aparato le lleguen los
+   * avisos de pedidos. La bóveda lo apunta, y para actualizarse solo pide permiso si hay un
+   * aprobador que pueda enterarse. No pasarlo no cambia lo ya dicho.
+   *
    * `args.profile` apunta a OTRA cuenta de este dispositivo (la que diga
    * `vaultApprovalsAll`); sin él es la activa.
    */
@@ -494,8 +498,8 @@ export class Identity {
    *
    * Aprobar uno de otra cuenta: `vaultApprovals('approve', { id, profile })`.
    */
-  async vaultApprovalsAll () {
-    return this._call('vaultApprovalsAll', {}, 30000)
+  async vaultApprovalsAll (args) {
+    return this._call('vaultApprovalsAll', args || {}, 30000)
   }
 
   /** Registra el token de push de la app nativa (FCM/APNs) bajo la llave de este aparato. */

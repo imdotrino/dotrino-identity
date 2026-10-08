@@ -3057,12 +3057,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `profile` apunta a OTRA cuenta de este mismo dispositivo (ver `vaultApprovalsAll`):
      * sin él es la activa, como siempre.
      */
-    async vaultApprovals ({ op, id, profile = null } = {}) {
+    async vaultApprovals ({ op, id, profile = null, notify } = {}) {
       if (profile && profile !== currentPid) return approvalsDeOtroPerfil(profile, { op, id })
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
-      const ask = (cert) => remoteApproval({ master: v.master, proxy: v.proxy, device, cert, op, id, onRevoked: wipeVaultLink })
+      const ask = (cert) => remoteApproval({ master: v.master, proxy: v.proxy, device, cert, op, id, notify, onRevoked: wipeVaultLink })
       try {
         let r
         try { r = await ask(v.cert) } catch (e) {
@@ -3104,7 +3104,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * @returns {Promise<Array<{ profile, name, items, error? }>>} una entrada por cuenta que
      *   aprueba — con sus pedidos, o con el motivo por el que no se pudo preguntar.
      */
-    async vaultApprovalsAll () {
+    async vaultApprovalsAll ({ notify } = {}) {
       // La activa sí se pone al día: es la única en la que esta pantalla puede escribir.
       try { maybeRenewVaultCert() } catch (_) {}
       const perfiles = loadProfiles()
@@ -3119,7 +3119,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         }
         if (!device) return { ...base, items: [], error: 'no-key' }
         try {
-          const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals' })
+          // `notify` habla de la cuenta ACTIVA: los avisos se suscriben bajo SU llave. De las
+          // demás no se dice nada, que no es lo mismo que decir que no.
+          const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals', ...(p.id === currentPid ? { notify } : {}) })
           const items = Array.isArray(r?.items) ? await abrirContextos(r.items, p.id) : []
           return { ...base, items }
         } catch (e) {
