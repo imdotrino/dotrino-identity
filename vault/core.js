@@ -1124,12 +1124,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (keyStore?.importPair) {
         // DENTRO DE UNA APP NATIVA: la llave que entrega la bóveda la guarda la app (cifrada
         // con una llave del chip) y firma ella. Van las dos mitades juntas, bajo un mismo id.
-        if (!entrada.keys.enc || !entrada.encPublickey) {
-          throw Object.assign(new Error('this login has no encryption key: the phone needs both'), { code: 'native-import-needs-enc' })
-        }
+        // Si la bóveda no entrega llave de cifrado, la app estrena una (como hace el navegador).
+        const traeEnc = !!(entrada.keys.enc && entrada.encPublickey)
         await keyStore.importPair({
           sign: { name: _scoped(KEY_STORAGE), privateJwk: sinTopes(entrada.keys.sign), publickey: entrada.publickey },
-          enc: { name: _scoped(ENC_KEY_STORAGE), privateJwk: sinTopes(entrada.keys.enc), publickey: entrada.encPublickey }
+          enc: { name: _scoped(ENC_KEY_STORAGE), privateJwk: traeEnc ? sinTopes(entrada.keys.enc) : null, publickey: traeEnc ? entrada.encPublickey : null }
         })
         kv.removeItem(KEY_STORAGE); kv.removeItem(ENC_KEY_STORAGE)
       } else {

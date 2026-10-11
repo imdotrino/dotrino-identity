@@ -83,15 +83,16 @@ export function withExternalKeys (keyStore, bridge) {
      * puede meter en el chip, así que la app la guarda cifrada con una llave del chip y firma
      * ella. Desde aquí es una llave externa más: la página no se queda con la privada.
      * `sign` y `enc`: `{ name, privateJwk, publickey }`, con la pública TAL CUAL la escribe el
-     * acta (es la cadena con la que esa llave es miembro).
+     * acta (es la cadena con la que esa llave es miembro). Si la bóveda no entrega la de
+     * cifrado (`enc.privateJwk` nulo), la app estrena una y devuelve su pública.
      */
     async importPair ({ sign, enc }) {
-      const k = await bridge.call('import', {
-        sign: sign.privateJwk, enc: enc.privateJwk, publickey: sign.publickey, encPub: enc.publickey
-      })
-      if (!k?.kid) throw Object.assign(new Error('the phone did not keep the key'), { code: 'native-no-key' })
+      const params = { sign: sign.privateJwk, publickey: sign.publickey }
+      if (enc.privateJwk) { params.enc = enc.privateJwk; params.encPub = enc.publickey }
+      const k = await bridge.call('import', params)
+      if (!k?.kid || !k.encPub) throw Object.assign(new Error('the phone did not keep the key'), { code: 'native-no-key' })
       await keyStore.set(sign.name, { external: k.kid, kind: 'sign', publicJwk: JSON.parse(sign.publickey) })
-      await keyStore.set(enc.name, { external: k.kid, kind: 'enc', publicJwk: JSON.parse(enc.publickey) })
+      await keyStore.set(enc.name, { external: k.kid, kind: 'enc', publicJwk: JSON.parse(enc.publickey || k.encPub) })
     },
     async create (kind, name) {
       // Las dos mitades del perfil van bajo la MISMA llave del chip: si la otra ya nació

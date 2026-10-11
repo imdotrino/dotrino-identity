@@ -37,9 +37,13 @@ function chip () {
       // La llave que entrega la bóveda al entrar con contraseña: la app la guarda y firma ella.
       const kid = 'kid-' + (++n)
       const s = { privateKey: await crypto.subtle.importKey('jwk', p.sign, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']) }
-      const e = { privateKey: await crypto.subtle.importKey('jwk', p.enc, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']) }
-      llaves.set(kid, { s, e, publickey: p.publickey, encPub: p.encPub })
-      return { kid, publickey: p.publickey, encPub: p.encPub }
+      // Sin llave de cifrado de la bóveda, la app estrena una.
+      const e = p.enc
+        ? { privateKey: await crypto.subtle.importKey('jwk', p.enc, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']) }
+        : await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
+      const encPub = p.encPub || pubStr(await crypto.subtle.exportKey('jwk', e.publicKey))
+      llaves.set(kid, { s, e, publickey: p.publickey, encPub })
+      return { kid, publickey: p.publickey, encPub }
     }
     const k = llaves.get(p.kid)
     if (!k) throw Object.assign(new Error('that key is not on this phone'), { code: 'native-key-gone' })
@@ -167,4 +171,21 @@ test('la llave de entrar con contraseña la guarda la app: aquí queda solo su r
   const data = new TextEncoder().encode('hola')
   const sig = Buffer.from(await h.privateKey.sign(data), 'base64')
   assert.ok(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, s.publicKey, sig, data), 'lo que firma la app lo verifica la pública de la bóveda')
+})
+
+test('si la bóveda no entrega llave de cifrado, la app estrena una y la página apunta su pública', async () => {
+  const c = chip()
+  const idb = new Map()
+  const ks = withExternalKeys({
+    get: async (name) => idb.get(name) || null, set: async (name, v) => { idb.set(name, v) }, remove: async (name) => { idb.delete(name) }
+  }, { call: c.call })
+  const s = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const { key_ops: _o, ...priv } = await crypto.subtle.exportKey('jwk', s.privateKey)
+  await ks.importPair({
+    sign: { name: 'p.sign', privateJwk: priv, publickey: pubStr(await crypto.subtle.exportKey('jwk', s.publicKey)) },
+    enc: { name: 'p.enc', privateJwk: null, publickey: null }
+  })
+  const enc = idb.get('p.enc')
+  assert.equal(enc.external, idb.get('p.sign').external)
+  assert.equal(enc.publicJwk.crv, 'P-256', 'la pública de cifrado es la que estrenó la app')
 })
