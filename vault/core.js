@@ -1121,9 +1121,22 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // se hace al generar una propia — quién puede hacer qué con esta llave lo decide esta
       // casa, no una etiqueta que viajó dentro del paquete.
       const sinTopes = (jwk) => { const { key_ops: _o, ...resto } = jwk || {}; return resto }
-      await adoptJwkPair('sign', KEY_STORAGE, sinTopes(entrada.keys.sign), JSON.parse(entrada.publickey))
-      if (entrada.keys.enc && entrada.encPublickey) {
-        await adoptJwkPair('enc', ENC_KEY_STORAGE, sinTopes(entrada.keys.enc), JSON.parse(entrada.encPublickey))
+      if (keyStore?.importPair) {
+        // DENTRO DE UNA APP NATIVA: la llave que entrega la bóveda la guarda la app (cifrada
+        // con una llave del chip) y firma ella. Van las dos mitades juntas, bajo un mismo id.
+        if (!entrada.keys.enc || !entrada.encPublickey) {
+          throw Object.assign(new Error('this login has no encryption key: the phone needs both'), { code: 'native-import-needs-enc' })
+        }
+        await keyStore.importPair({
+          sign: { name: _scoped(KEY_STORAGE), privateJwk: sinTopes(entrada.keys.sign), publickey: entrada.publickey },
+          enc: { name: _scoped(ENC_KEY_STORAGE), privateJwk: sinTopes(entrada.keys.enc), publickey: entrada.encPublickey }
+        })
+        kv.removeItem(KEY_STORAGE); kv.removeItem(ENC_KEY_STORAGE)
+      } else {
+        await adoptJwkPair('sign', KEY_STORAGE, sinTopes(entrada.keys.sign), JSON.parse(entrada.publickey))
+        if (entrada.keys.enc && entrada.encPublickey) {
+          await adoptJwkPair('enc', ENC_KEY_STORAGE, sinTopes(entrada.keys.enc), JSON.parse(entrada.encPublickey))
+        }
       }
       saveActa(entrada.acta)
       kv.setItem(ACTA_HISTORY_STORAGE, '[]')
@@ -1147,6 +1160,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       list.push({ id: pid, name: entrada.user, pubkey: publickeyJwkStr })
       saveProfiles(list)
       emitVault({ phase: 'login', address: entrada.address, volatile: !remember })
+      // En una app nativa, la cuenta pasa también a su pantalla de Pedidos, con el mismo papel
+      // (como al emparejar). Si la app no la guarda, se dice: la entrada en sí ya está hecha.
+      if (keypair?.privateKey?.external) {
+        keypair.privateKey.paired({
+          cert: entrada.cert, vault: entrada.iss, proxy: proxy || DEFAULT_PROXY,
+          deviceId: await deviceIdDe(entrada.publickey),
+          name: entrada.acta?.name || entrada.address, profileId: entrada.acta?.profileId || null
+        }).then(
+          () => emitVault({ phase: 'native-account', ok: true }),
+          (e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
+        )
+      }
       return { id: pid, name: entrada.user, address: entrada.address, user: entrada.user, sid: entrada.sid, volatile: !remember }
     } catch (e) {
       // NADA DE MEDIAS CUENTAS: si algo falla, no se queda una identidad a medio adoptar en

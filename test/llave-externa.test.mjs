@@ -33,6 +33,14 @@ function chip () {
       llaves.set(kid, k)
       return { kid, publickey: k.publickey, encPub: k.encPub }
     }
+    if (method === 'import') {
+      // La llave que entrega la bóveda al entrar con contraseña: la app la guarda y firma ella.
+      const kid = 'kid-' + (++n)
+      const s = { privateKey: await crypto.subtle.importKey('jwk', p.sign, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']) }
+      const e = { privateKey: await crypto.subtle.importKey('jwk', p.enc, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']) }
+      llaves.set(kid, { s, e, publickey: p.publickey, encPub: p.encPub })
+      return { kid, publickey: p.publickey, encPub: p.encPub }
+    }
     const k = llaves.get(p.kid)
     if (!k) throw Object.assign(new Error('that key is not on this phone'), { code: 'native-key-gone' })
     if (method === 'open') return { kid: p.kid, publickey: k.publickey, encPub: k.encPub }
@@ -134,4 +142,29 @@ test('sin puente (el navegador, las apps) todo sigue como siempre: CryptoKey en 
   const r = await core.handlers.signData({ data: { a: 1 } })
   assert.ok(r.signature)
   for (const rec of idb.values()) assert.ok(rec.privateKey && !rec.external)
+})
+
+test('la llave de entrar con contraseña la guarda la app: aquí queda solo su registro, y firma por el puente', async () => {
+  const c = chip()
+  const idb = new Map()
+  const ks = withExternalKeys({
+    get: async (name) => idb.get(name) || null, set: async (name, v) => { idb.set(name, v) }, remove: async (name) => { idb.delete(name) }
+  }, { call: c.call })
+  const s = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const e = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const sin = ({ key_ops: _o, ...r }) => r
+  const publickey = pubStr(await crypto.subtle.exportKey('jwk', s.publicKey))
+  const encPub = pubStr(await crypto.subtle.exportKey('jwk', e.publicKey))
+  await ks.importPair({
+    sign: { name: 'p.sign', privateJwk: sin(await crypto.subtle.exportKey('jwk', s.privateKey)), publickey },
+    enc: { name: 'p.enc', privateJwk: sin(await crypto.subtle.exportKey('jwk', e.privateKey)), publickey: encPub }
+  })
+  const rec = idb.get('p.sign')
+  assert.deepEqual(Object.keys(rec).sort(), ['external', 'kind', 'publicJwk'], 'ninguna privada en el almacén de la página')
+  assert.equal(idb.get('p.enc').external, rec.external, 'las dos mitades bajo el mismo id')
+  assert.equal(JSON.stringify(rec.publicJwk), publickey, 'la pública es la del acta, tal cual')
+  const h = await ks.get('p.sign')
+  const data = new TextEncoder().encode('hola')
+  const sig = Buffer.from(await h.privateKey.sign(data), 'base64')
+  assert.ok(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, s.publicKey, sig, data), 'lo que firma la app lo verifica la pública de la bóveda')
 })

@@ -28,8 +28,9 @@ function plainKeyRecord (rec) {
   if (rec && typeof rec.external === 'string' && rec.publicJwk && (rec.kind === 'sign' || rec.kind === 'enc')) {
     return { external: rec.external, kind: rec.kind, publicJwk: rec.publicJwk }
   }
-  // Una llave de SOFTWARE (adoptar un perfil, entrar con contraseña) no cabe en el chip, y
-  // guardarla a medias sería perder la cuenta sin decirlo. Se para aquí y se dice.
+  // Una llave de SOFTWARE no se guarda aquí: guardarla a medias sería perder la cuenta sin
+  // decirlo. La de entrar con contraseña no llega a este punto: la guarda la app, cifrada con
+  // una llave del chip (`importPair` de `externalKeys.js`), y aquí queda su registro externo.
   throw Object.assign(new Error('this app keeps keys in the phone chip only: a software key cannot be stored here'), { code: 'native-no-import' })
 }
 

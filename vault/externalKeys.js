@@ -78,6 +78,21 @@ export function withExternalKeys (keyStore, bridge) {
       const other = sib ? await keyStore.get(sib) : null
       if (rec?.external && !(other?.external === rec.external)) await bridge.call('remove', { kid: rec.external })
     },
+    /**
+     * UNA LLAVE QUE YA EXISTE (entrar con usuario y contraseña): la bóveda la entrega y no se
+     * puede meter en el chip, así que la app la guarda cifrada con una llave del chip y firma
+     * ella. Desde aquí es una llave externa más: la página no se queda con la privada.
+     * `sign` y `enc`: `{ name, privateJwk, publickey }`, con la pública TAL CUAL la escribe el
+     * acta (es la cadena con la que esa llave es miembro).
+     */
+    async importPair ({ sign, enc }) {
+      const k = await bridge.call('import', {
+        sign: sign.privateJwk, enc: enc.privateJwk, publickey: sign.publickey, encPub: enc.publickey
+      })
+      if (!k?.kid) throw Object.assign(new Error('the phone did not keep the key'), { code: 'native-no-key' })
+      await keyStore.set(sign.name, { external: k.kid, kind: 'sign', publicJwk: JSON.parse(sign.publickey) })
+      await keyStore.set(enc.name, { external: k.kid, kind: 'enc', publicJwk: JSON.parse(enc.publickey) })
+    },
     async create (kind, name) {
       // Las dos mitades del perfil van bajo la MISMA llave del chip: si la otra ya nació
       // allí, se reutiliza; si no, se crea una nueva.
