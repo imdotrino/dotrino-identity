@@ -531,8 +531,14 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       // dato que la aplicación no puede falsificar —el navegador lo garantiza— y de él
       // depende a quién se le concedió qué.
       const result = await handler({ ...(params || {}), __origin: event.origin })
+      // DENTRO DE LA APP, lo guardado viaja a la app por una cola (`nativeStore.js`). Quien
+      // llama suele NAVEGAR en cuanto recibe la respuesta (entrar con contraseña vuelve a
+      // donde estaba; cambiar de perfil recarga), y eso destruye este iframe con la cola a
+      // medias: la cuenta quedaba en Pedidos y no en la lista de perfiles (2026-10-12).
+      if (native) await native.flush()
       reply({ result })
     } catch (e) {
+      if (native) await native.flush()
       // `code` (y su `detail`) CRUZAN. Sin ellos, al otro lado solo llegaba la frase, y una
       // app que quiere reaccionar a un rechazo concreto —«esa bóveda ya está en otra cuenta
       // de este aparato»— no tenía más remedio que emparejarla por su texto: se traduce o se
