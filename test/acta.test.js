@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, canSeal,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
-  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, checkShape,
+  memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, cnScope, VAULT_CN, checkShape,
   CAP_SCOPE, sealersOf, memberEncPub, samePubkey
 } from '../vault/acta.js'
 import { SESSION_FORBIDDEN } from '../vault/session.js'
@@ -184,11 +184,13 @@ test('CN: un miembro con cajón abre SU cajón; lo demás son permisos que se le
   const a = await key(); const proxy = await key(); const geo = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
 
-  // Se admiten dos servicios, cada uno con su nombre y solo su cajón.
+  // Se admiten dos servicios, cada uno con su nombre y solo su cajón. El cajón lo abre el
+  // CN: no hay permiso que darle (dueño, 2026-10-13).
   const dos = await step(g, [
-    { op: 'admit', member: { pub: proxy.pub, cn: 'proxy', label: 'proxy', caps: ['secrets'] } },
-    { op: 'admit', member: { pub: geo.pub, cn: 'geo', label: 'geo', caps: ['secrets'] } }
+    { op: 'admit', member: { pub: proxy.pub, cn: 'proxy', label: 'proxy', caps: [] } },
+    { op: 'admit', member: { pub: geo.pub, cn: 'geo', label: 'geo', caps: [] } }
   ], a)
+  assert.deepEqual(dos.members.at(-1).caps, [], 'un servicio puede no llevar ningún permiso')
 
   assert.equal(isService(dos, proxy.pub), true)
   assert.equal(isService(dos, a.pub), false, 'el dueño es un dispositivo, no un servicio')
@@ -202,14 +204,59 @@ test('CN: un miembro con cajón abre SU cajón; lo demás son permisos que se le
   // PERMISOS, no tipos (2026-08-22): el cajón no recorta lo demás. Un miembro con CN puede
   // llevar además capacidades de aparato — al admitirlo o después —, y siguen siendo
   // exactamente las que se le dieron, ni una más.
-  const tres = await step(dos, [{ op: 'caps', pub: proxy.pub, caps: ['sign', 'secrets'] }], a)
-  assert.deepEqual([...effectiveCaps(tres, proxy.pub)].sort(), ['secrets', 'sign'])
+  const tres = await step(dos, [{ op: 'caps', pub: proxy.pub, caps: ['sign'] }], a)
+  assert.deepEqual([...effectiveCaps(tres, proxy.pub)].sort(), ['sign'])
   assert.deepEqual([...memberScopes(tres, proxy.pub)].sort(), ['vault:secrets:proxy', 'vault:sign'])
   assert.equal(memberCanReadSecrets(tres, proxy.pub, 'geo'), false, 'firmar no le abre otros cajones')
 
   const bot = await key()
+  // `secrets` ya no es una capacidad: quien la pida no la recibe, y el cajón se abre igual.
   const cuatro = await step(tres, [{ op: 'admit', member: { pub: bot.pub, cn: 'bot', caps: ['sign', 'secrets'] } }], a)
-  assert.deepEqual([...cuatro.members.at(-1).caps].sort(), ['secrets', 'sign'])
+  assert.deepEqual([...cuatro.members.at(-1).caps].sort(), ['sign'])
+  assert.equal(memberCanReadSecrets(cuatro, bot.pub, 'bot'), true)
+})
+
+/**
+ * LAS ACTAS YA SELLADAS LLEVAN LA PALABRA, y se tienen que seguir leyendo: la firma cubre
+ * el documento tal cual. Para este lector `secrets` es una palabra que no conoce, así que
+ * no cuenta como capacidad — y el cajón lo sigue abriendo el CN.
+ */
+test('CN: un acta vieja con `secrets` se sigue leyendo, y la palabra no cuenta', async () => {
+  const a = await key(); const x = await key(); const sinCn = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [
+    { op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: [] } },
+    { op: 'admit', member: { pub: sinCn.pub, caps: ['sign'] } }
+  ], a)
+  // Se mete la palabra en una copia y se vuelve a sellar: tocar un acta firmada rompe la firma.
+  const vieja = await sealActa({
+    acta: { ...dos, seq: dos.seq + 1, prev: await actaHash(dos), sealedBy: a.pub,
+      members: dos.members.map((m) => (m.pub === a.pub ? m : { ...m, caps: [...m.caps, 'secrets'] })) },
+    privateJwk: a.privateJwk
+  })
+  const v = await verifyActa({ acta: vieja })
+  assert.equal(v.ok, true, v.reason)
+  assert.deepEqual(effectiveCaps(vieja, x.pub), [])
+  assert.equal(memberCanReadSecrets(vieja, x.pub, 'proxy'), true)
+  assert.deepEqual(memberScopes(vieja, x.pub), ['vault:secrets:proxy'])
+  // Sin CN no hay cajón, diga lo que diga la lista.
+  assert.equal(memberCanReadSecrets(vieja, sinCn.pub, 'proxy'), false)
+  assert.deepEqual(memberScopes(vieja, sinCn.pub), ['vault:sign'])
+})
+
+/**
+ * LA LLAVE DE COMUNICACIÓN DE LA BÓVEDA NO ABRE NINGÚN CAJÓN. Entra con `cn: 'vault'` y es
+ * la que firma con el perfil cerrado: si abriera un cajón, se leerían secretos sin abrir la
+ * bóveda. Antes lo impedía no tener `secrets`; ahora lo impide el nombre.
+ */
+test('CN: el nombre de la propia bóveda no abre ningún cajón, tampoco uno que se llame igual', async () => {
+  const a = await key(); const comm = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: comm.pub, cn: VAULT_CN, caps: ['sign'] } }], a)
+  assert.equal(memberCanReadSecrets(dos, comm.pub, VAULT_CN), false)
+  assert.deepEqual(memberScopes(dos, comm.pub), ['vault:sign'], 'ni lleva el scope de un cajón')
+  assert.equal(cnScope(VAULT_CN), null)
+  assert.equal(cnScope('proxy'), 'vault:secrets:proxy')
 })
 
 test('CN inválido o mezclado: el acta no cuadra', async () => {
@@ -217,16 +264,13 @@ test('CN inválido o mezclado: el acta no cuadra', async () => {
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
 
   await assert.rejects(
-    () => applyChanges(g, [{ op: 'admit', member: { pub: x.pub, cn: 'Proxy Mayúsculas', caps: ['secrets'] } }], { by: a.pub }),
+    () => applyChanges(g, [{ op: 'admit', member: { pub: x.pub, cn: 'Proxy Mayúsculas', caps: [] } }], { by: a.pub }),
     /invalid CN/
   )
   // Un acta escrita a mano que mezcle las dos cosas no pasa la comprobación de forma.
   // Un miembro con cajón SÍ puede llevar permisos de aparato (permisos, no tipos): eso cuadra.
-  const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['sign', 'secrets'], addedAt: Date.now() }] }
+  const mezclada = { ...g, members: [...g.members, { pub: x.pub, cn: 'proxy', caps: ['sign'], addedAt: Date.now() }] }
   assert.notEqual((await verifyActa({ acta: mezclada })).reason, 'servicio-con-capacidades-de-dispositivo')
-  // Y `secrets` sin CN tampoco.
-  const sinCn = { ...g, members: [...g.members, { pub: x.pub, cn: null, caps: ['secrets'], addedAt: Date.now() }] }
-  assert.equal((await verifyActa({ acta: sinCn })).reason, 'secretos-sin-cn')
 })
 
 // --- La capacidad `admin` (consola remota, dotrino-vault/docs/consola-remota.md) ---
@@ -304,10 +348,10 @@ test('admin: un miembro con cajón solo administra si el master se lo da, como c
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
 
   // Es un permiso más: entra solo si el master lo sella, y se ve en el acta.
-  const dos = await step(g, [{ op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: ['secrets'] } }], a)
-  assert.deepEqual(dos.members.at(-1).caps, ['secrets'])
-  const tres = await step(dos, [{ op: 'caps', pub: x.pub, caps: ['secrets', 'admin'] }], a)
-  assert.deepEqual([...effectiveCaps(tres, x.pub)].sort(), ['admin', 'secrets'])
+  const dos = await step(g, [{ op: 'admit', member: { pub: x.pub, cn: 'proxy', caps: [] } }], a)
+  assert.deepEqual(dos.members.at(-1).caps, [])
+  const tres = await step(dos, [{ op: 'caps', pub: x.pub, caps: ['admin'] }], a)
+  assert.deepEqual([...effectiveCaps(tres, x.pub)].sort(), ['admin'])
 
   // UN PERMISO DESCONOCIDO NO INVALIDA EL ACTA: se ignora (dueño, 2026-09-01). Antes se
   // rechazaba entera, y eso convertía cada permiso nuevo en una rotura de toda la flota —
@@ -323,7 +367,7 @@ test('admin: un miembro con cajón solo administra si el master se lo da, como c
   })
   assert.equal((await verifyActa({ acta: conRara })).ok, true, 'el acta sigue siendo válida')
   // Y lo desconocido NO CONCEDE NADA: es lo único que hace seguro ignorarlo.
-  assert.deepEqual([...effectiveCaps(conRara, x.pub)].sort(), ['secrets'], 'no se cuenta como capacidad')
+  assert.deepEqual([...effectiveCaps(conRara, x.pub)].sort(), [], 'no se cuenta como capacidad')
   assert.equal(memberCan(conRara, x.pub, 'vuela'), false)
 })
 
@@ -418,14 +462,14 @@ test('encPub: se valida la FORMA, y se acepta que falte', async () => {
 
   // Sin llave: se admite igual. Es lo que permite que un acta anterior a esto siga
   // verificando en vez de dejar el vault sin arrancar.
-  const sinLlave = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', caps: ['secrets'] } }], a)
+  const sinLlave = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', caps: [] } }], a)
   assert.equal((await verifyActa({ acta: sinLlave })).ok, true)
   assert.equal(sinLlave.members.find((m) => m.pub === s.pub).encPub, null)
 
   // Con llave válida: entra tal cual.
   const enc = await encKey()
   const b = await key()
-  const conLlave = await step(g, [{ op: 'admit', member: { pub: b.pub, cn: 'geo', caps: ['secrets'], encPub: enc } }], a)
+  const conLlave = await step(g, [{ op: 'admit', member: { pub: b.pub, cn: 'geo', caps: [], encPub: enc } }], a)
   assert.equal(conLlave.members.find((m) => m.pub === b.pub).encPub, enc)
 
   // Basura: NO pasa. Una encPub mal formada es un miembro al que nadie puede
@@ -439,7 +483,7 @@ test('encPub: se valida la FORMA, y se acepta que falte', async () => {
 test('encpub: registra la llave de un miembro YA admitido, sin tocarle nada mas', async () => {
   const a = await key(); const s = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub, label: 'PC' }), privateJwk: a.privateJwk })
-  const dos = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', label: 'proxy1', caps: ['secrets'] } }], a)
+  const dos = await step(g, [{ op: 'admit', member: { pub: s.pub, cn: 'proxy', label: 'proxy1', caps: [] } }], a)
 
   const enc = await encKey()
   const tres = await step(dos, [{ op: 'encpub', pub: s.pub, encPub: enc }], a)
@@ -514,7 +558,7 @@ test('a un replicador no se le puede envolver nada: entra sin llave de cifrado',
 
   const m = acta.members.find((x) => x.pub === repl.pub)
   assert.equal(m.encPub, null, 'sin `encPub` no hay destinatario posible')
-  // Y no lee secretos de ningún cajón, ni con `cn`: no tiene `secrets`.
+  // Y no lee secretos de ningún cajón: no tiene `cn`.
   assert.equal(memberCanReadSecrets(acta, repl.pub, 'proxy'), false)
 })
 

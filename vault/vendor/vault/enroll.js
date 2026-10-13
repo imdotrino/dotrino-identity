@@ -30,7 +30,7 @@
  * `docs/pairing-protocol.md`).
  */
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
-import { verifyContinuity, canSeal, DEVICE_CAPS } from '@dotrino/identity/acta'
+import { verifyContinuity, canSeal, DEVICE_CAPS, VAULT_CN } from '@dotrino/identity/acta'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -169,12 +169,16 @@ export function createEnrollDesk ({
    *                       el código, igual que hacía `caps` después.
    */
   async function startPairing ({ scope = defaultScope, ttlMs = defaultTtlMs, label = '', mode = 'join', account = '', caps = null } = {}) {
+    // El nombre de la propia bóveda no es un servicio: su llave firma con el perfil cerrado
+    // y no puede abrir ningún cajón. Un servicio que entrara con ese nombre tampoco podría.
+    if (scopeToCn(scope) === VAULT_CN) throw Object.assign(new Error(`"${VAULT_CN}" is the vault's own name: a service cannot use it`), { code: 'reserved-cn' })
     if (caps != null) {
       if (!Array.isArray(caps)) throw Object.assign(new Error('caps must be a list'), { code: 'bad-caps' })
       const cn = scopeToCn(scope)
-      const bad = caps.filter((c) => !(DEVICE_CAPS.includes(c) || (c === 'secrets' && cn)))
+      const bad = caps.filter((c) => !DEVICE_CAPS.includes(c))
       if (bad.length) throw Object.assign(new Error('unknown permission(s): ' + bad.join(', ')), { code: 'bad-caps' })
-      if (!caps.length) throw Object.assign(new Error('the pairing grants no permission'), { code: 'empty-scope' })
+      // Un servicio puede entrar sin ningún permiso: su cajón lo abre el CN.
+      if (!caps.length && !cn) throw Object.assign(new Error('the pairing grants no permission'), { code: 'empty-scope' })
       caps = [...new Set(caps)]
     }
     pending.clear() // uno a la vez: una sesión nueva supersede a la anterior
@@ -378,13 +382,14 @@ export function createEnrollDesk ({
       throw Object.assign(new Error('this vault cannot add devices to the account record: no certificate was issued'), { code: 'admit-unavailable' })
     }
     // PERMISOS, no tipos (2026-08-22): las capacidades son las del scope ENTERO. Un
-    // cajón (`secrets:<ns>`) suma `secrets` y fija el CN; no borra lo demás — un bot
-    // con `sign,secrets:eco` firma como aparato del acta Y lee solo su cajón.
+    // cajón (`secrets:<ns>`) fija el CN, que es lo que lo abre —no hay permiso aparte
+    // (dueño, 2026-10-13)—, y no borra lo demás: un bot con `sign,secrets:eco` firma como
+    // aparato del acta Y lee solo su cajón.
     // Si quien emparejó ELIGIÓ los permisos (`startPairing({ caps })`), entran esos y en
     // esta misma acta; si no, los que da el scope.
     const cn = scopeToCn(pend.scope)
-    const caps = [...new Set([...(pend.caps || scopeToCaps(pend.scope)), ...(cn ? ['secrets'] : [])])]
-    if (!caps.length) {
+    const caps = [...new Set(pend.caps || scopeToCaps(pend.scope))]
+    if (!caps.length && !cn) {
       throw Object.assign(new Error('the pairing scope grants no permission: no certificate was issued'), { code: 'empty-scope' })
     }
 

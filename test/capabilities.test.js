@@ -288,7 +288,7 @@ testR('una renuncia sin sellar ya quita el permiso en TODOS los mostradores', as
   const g = genR({ pub: master.pub, sealPub: master.pub })
   const conMiembros = await applyR(g, [
     { op: 'admit', member: { pub: tel.pub, caps: ['sign', 'admin'], label: 'teléfono' } },
-    { op: 'admit', member: { pub: svc.pub, caps: ['secrets'], cn: 'proxy', label: 'proxio' } }
+    { op: 'admit', member: { pub: svc.pub, caps: [], cn: 'proxy', label: 'proxio' } }
   ], { by: master.pub })
   const acta = await sealR({ acta: conMiembros, privateJwk: master.privateJwk })
 
@@ -310,21 +310,6 @@ testR('una renuncia sin sellar ya quita el permiso en TODOS los mostradores', as
   // Y el acta sin tocar sigue diciendo que sí: lo que cambia es quien la lee CON la
   // renuncia en la mano. Absorberla es lo que lo hace permanente.
   assertR.equal(canR(acta, tel.pub, 'admin'), true, 'el acta no se ha modificado')
-})
-
-testR('un servicio que renuncia deja de leer su cajón antes del sellado', async () => {
-  const master = await parR()
-  const svc = await parR()
-  const g = genR({ pub: master.pub, sealPub: master.pub })
-  const conSvc = await applyR(g, [
-    { op: 'admit', member: { pub: svc.pub, caps: ['secrets'], cn: 'proxy', label: 'proxio' } }
-  ], { by: master.pub })
-  const acta = await sealR({ acta: conSvc, privateJwk: master.privateJwk })
-
-  assertR.equal(canSecretsR(acta, svc.pub, 'proxy'), true)
-  const r = await makeRenounce({ member: svc.pub, caps: ['secrets'], privateJwk: svc.privateJwk })
-  assertR.equal(canSecretsR(acta, svc.pub, 'proxy', [r]), false)
-  assertR.equal(canScopeR(acta, svc.pub, 'vault:secrets:proxy', [r]), false, 'y por el scope del cert también')
 })
 
 testR('una renuncia AJENA no quita nada: la firma tiene que ser del propio miembro', async () => {

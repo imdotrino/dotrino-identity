@@ -94,8 +94,8 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * traspaso); el permiso dice **quién puede firmar el acta**. Admitir sigue sin ser un
  * permiso: se admite sellando.
  *
- * `secrets` es distinta de las otras: solo la pueden tener los miembros con **CN**
- * (los servicios), y lo que abre es únicamente el cajón de SU nombre. Ver `cn` abajo.
+ * El cajón de un servicio NO está en la lista: lo abre su **CN**, no un permiso. Ver
+ * `cnScope` abajo.
  *
  * `admin` es la rendija que se le abre a la consola remota (`dotrino-vault/docs/
  * consola-remota.md`): deja **admitir y expulsar** miembros a distancia, y nada más.
@@ -103,7 +103,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'secrets', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -158,31 +158,56 @@ export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'app
  */
 export const PAIRED_CAPS = Object.freeze(['sign', 'store', 'read'])
 
-/** Capacidades de un SERVICIO (con CN): solo su propio cajón de secretos. */
-export const SERVICE_CAPS = Object.freeze(['secrets'])
-
 /**
- * Qué capacidades puede llevar un miembro según tenga cajón (CN) o no. Con CN: su cajón
- * y, si se le conceden, las de aparato. Sin CN: solo las de aparato (no hay cajón que abrir).
+ * EL CAJÓN NO ES UN PERMISO: LO ABRE EL CN (dueño, 2026-10-13).
+ *
+ * Antes existía la capacidad `secrets`, y abrir el cajón exigía las dos cosas: llevar el
+ * `cn` de ese cajón Y tener `secrets`. La segunda no decidía nada —el alta se la ponía sola
+ * a todo miembro con `cn`— y en la pantalla de permisos salía como una casilla más al lado
+ * de las de verdad. Un servicio abre el cajón de SU nombre porque el acta dice que es ese
+ * servicio; para cortárselo se le bloquea o se le quita.
+ *
+ * Las actas ya selladas que llevan la palabra se siguen leyendo: es una capacidad que este
+ * lector no conoce, así que no cuenta (ver `checkShape`).
  */
-export const allowedCaps = (cn) => (cn ? [...SERVICE_CAPS, ...DEVICE_CAPS] : [...DEVICE_CAPS])
+
+/** Qué capacidades puede llevar un miembro: las mismas con cajón (CN) que sin él. */
+export const allowedCaps = () => [...DEVICE_CAPS]
 
 /** Un CN válido: minúsculas, números y guiones (igual que el namespace de secretos). */
 export const isValidCn = (cn) => typeof cn === 'string' && /^[a-z0-9-]{1,32}$/.test(cn)
 
 /**
- * Scope del cert que corresponde a cada capacidad. `secrets` necesita el CN para
- * completarse: el miembro `proxy` obtiene `vault:secrets:proxy` y nada más — no existe un
- * scope de secretos «de todos».
+ * Scope del cert que corresponde a cada capacidad. El del cajón no sale de aquí: lo da el
+ * CN (`cnScope`).
  */
-export function capScope (cap, cn = null) {
+export function capScope (cap) {
   // SALE DE `CAP_SCOPE`, no de una cadena de `if` escrita a mano. Esto era lo segundo: la
   // lista de arriba y esta se escribían por separado, así que un permiso nuevo entraba en
   // una y no en la otra y se quedaba sin scope en silencio. Ya pasó con `sealer`,
   // `unattended` y `secrets`; con `replica` se cortó aquí.
-  if (cap === 'secrets') return isValidCn(cn) ? 'vault:secrets:' + cn : null
   return CAP_SCOPE[cap] || null
 }
+
+/**
+ * EL NOMBRE DE LA PROPIA BÓVEDA NO ES UN SERVICIO, Y NO TIENE CAJÓN.
+ *
+ * La llave de comunicación de la bóveda entra en el acta con este `cn` para hablar por la
+ * bóveda y no firmar por la persona. Es la que firma con el perfil CERRADO, así que un sobre
+ * dirigido a ella sería leer secretos sin abrir la bóveda. Mientras existió la capacidad
+ * `secrets` lo impedía no tenerla; ahora que el cajón lo abre el `cn`, se dice aquí y por
+ * su nombre: este `cn` no abre ninguno, tampoco uno que se llame igual.
+ */
+export const VAULT_CN = 'vault'
+
+/** ¿Es el `cn` de un servicio con cajón? Válido y distinto del de la propia bóveda. */
+const hasDrawer = (cn) => isValidCn(cn) && cn !== VAULT_CN
+
+/**
+ * El scope del cajón de un servicio: el miembro `proxy` obtiene `vault:secrets:proxy` y nada
+ * más — no existe un scope de secretos «de todos».
+ */
+export const cnScope = (cn) => (hasDrawer(cn) ? 'vault:secrets:' + cn : null)
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
 export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords', sealer: 'vault:sealer', replica: 'vault:replica' })
@@ -479,11 +504,7 @@ export function checkShape (acta) {
     // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
     // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
     // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
-    if (m.cn != null) {
-      if (!isValidCn(m.cn)) return 'cn-invalido'
-    } else if (m.caps.includes('secrets')) {
-      return 'secretos-sin-cn'
-    }
+    if (m.cn != null && !isValidCn(m.cn)) return 'cn-invalido'
     // La llave de cifrado: por ahora se valida la FORMA y solo si viene. NO se exige
     // todavía, aunque el destino sea exigírsela a quien recibe secretos.
     //
@@ -777,8 +798,8 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           cn,
           // PERMISOS, no tipos (2026-08-22): el CN dice qué cajón abre; no recorta lo demás.
           // Un miembro con CN puede llevar además las capacidades de aparato (un bot que
-          // firma como aparato del acta Y lee su cajón). Sin CN, `secrets` no significa nada.
-          caps: cleanCaps(m.caps).filter((c) => allowedCaps(cn).includes(c)),
+          // firma como aparato del acta Y lee su cajón).
+          caps: cleanCaps(m.caps),
           addedAt: now,
           cert: m.cert || null,
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
@@ -803,8 +824,8 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         const m = find(ch.pub)
         if (!m) throw new Error('caps: that member is not in the record')
         // El CN no cambia por aquí (quitar el cajón es sacar al miembro y volver a admitirlo,
-        // que es un gesto visible); las capacidades sí, dentro de lo que su CN permite.
-        m.caps = cleanCaps(ch.caps).filter((c) => allowedCaps(m.cn).includes(c))
+        // que es un gesto visible); las capacidades sí.
+        m.caps = cleanCaps(ch.caps)
         // CONCEDER LIMPIA LA RENUNCIA. `effectiveCaps` resta lo renunciado, así que sin
         // esto una renuncia sellada era IRREVERSIBLE: el master le devolvía el permiso en
         // `caps` y la resta seguía dejándolo fuera, para siempre. La interfaz promete
@@ -1066,15 +1087,14 @@ export function memberCanScope (acta, pub, scope, extraRenounces = []) {
 
 export function memberCanReadSecrets (acta, pub, ns, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
-  if (!m || !m.cn) return false
-  return m.cn === ns && effectiveCaps(acta, pub, extraRenounces).includes('secrets')
+  return !!m && hasDrawer(m.cn) && m.cn === ns
 }
 
 /** Los scopes de cert que le corresponden a un miembro según el acta. */
 export function memberScopes (acta, pub, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m) return []
-  return effectiveCaps(acta, pub, extraRenounces).map((c) => capScope(c, m.cn)).filter(Boolean)
+  return [cnScope(m.cn), ...effectiveCaps(acta, pub, extraRenounces).map((c) => capScope(c))].filter(Boolean)
 }
 
 /** ¿Es un servicio (tiene CN) o un dispositivo del usuario? */
@@ -1276,6 +1296,6 @@ export default {
   sealActa, verifyActa, checkVaultReply, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
-  effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, isValidCn, canAdopt,
+  effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, cnScope, VAULT_CN, isValidCn, canAdopt,
   samePubkey, memberEncPub
 }

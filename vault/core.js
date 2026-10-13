@@ -2596,9 +2596,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
      */
     async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null } = {}) {
-      // `cn`: si viene, este miembro es un SERVICIO y su único permiso es abrir el cajón de
-      // secretos de ESE nombre — no ve nada más del usuario. Sin `cn` es un dispositivo.
-      const finales = caps || (cn ? ['secrets'] : ['store', 'read'])
+      // `cn`: si viene, este miembro es un SERVICIO: abre el cajón de secretos de ESE nombre
+      // por llevarlo, sin permiso aparte, y no ve nada más del usuario. Sin `cn` es un dispositivo.
+      const finales = caps || (cn ? [] : ['store', 'read'])
       // Que entre al perfil incluye poder LEER lo que ya hay: se le envuelve la clave
       // vigente (no hace falta rotar; rotar es para cuando alguien SALE).
       //
