@@ -11,7 +11,7 @@ export {
 } from './encpub.js'
 
 export { listTransports, routeOf } from './stats.js'
-export { logStats, formatStats } from './stats-log.js'
+export { logStats, formatStats, netReport, splitPeers } from './stats-log.js'
 
 import { WebSocketProxyClient } from './client.js'
 

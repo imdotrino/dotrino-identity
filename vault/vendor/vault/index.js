@@ -217,7 +217,10 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
       deviceId: x.sub ? await deviceIdOf(x.sub) : null, sub: x.sub || null,
       label: x.label || '', scope: x.scope, seq: x.seq, nonce: x.nonce
     })))
-    send(from, { type: MSG.DEVICES_RESULT, devices, revoked: (revoked || []).map((r) => r.nonce || r) })
+    // La cadena de selladores va con la lista (como en el daemon): es lo que un aparato de
+    // Node necesita para firmar a nombre de la cuenta de forma que un extraño lo compruebe.
+    const sealerChain = await identity.sealerChain?.().catch(() => null) || null
+    send(from, { type: MSG.DEVICES_RESULT, devices, revoked: (revoked || []).map((r) => r.nonce || r), sealerChain })
     // ¿el que consulta es una máquina revocada que reapareció? → re-emite el REVOKED firmado.
     // Se busca en `revokedCerts`: desde que `issued` solo trae lo vigente, los retirados
     // ya no están ahí y este aviso dejaba de dispararse (se caía en silencio).

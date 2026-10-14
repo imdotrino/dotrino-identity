@@ -6,7 +6,7 @@
  *   `send()` payloads tagged with `_rtc`.
  * - Once the DataChannel is open, payloads from `client.send(token, ...)`
  *   travel P2P; before that (or on failure) they fall back to the proxy.
- * - STUN-only (no TURN). Symmetric NATs will simply stay on the proxy.
+ * - STUN by default; `client.enableTurn()` adds the proxy's temporary TURN servers.
  *
  * Glare resolution: the peer with the lexicographically smaller token is
  * the "polite" one (rolls back on collision).
@@ -74,6 +74,55 @@ export async function loadNodePeerConnection () {
   }
   _PCBuscado = true
   return _PC
+}
+
+/**
+ * EL RELEVO, FIJADO A IPv4 — solo fuera del navegador.
+ *
+ * La implementación de Node (`@dotrino/webrtc`, o sea werift) abre el socket UDP hacia el
+ * relevo en IPv4 y nada más, pero resuelve el nombre sin pedir familia. En una máquina con
+ * las dos, el nombre sale en IPv6: el pedido se manda a una dirección que ese socket no
+ * alcanza, se reintenta siete veces (6,4 s medidos) y solo entonces se cae a TCP. Y como la
+ * oferta espera a que termine de reunir candidatos, CADA negociación arrancaba 6,4 s tarde
+ * por punta — una sesión más corta que eso no salía nunca del proxio.
+ *
+ * Con la dirección ya escrita no hay nada que resolver: 30 ms, y el relevo va por UDP.
+ *
+ * Solo las `turn:`. Una `turns:` necesita el nombre para comprobar el certificado, y a un
+ * `stun:` no le pasa esto. Se envuelve desde aquí y no se toca la librería, que es una poda
+ * sin cambios de lógica (README de `dotrino-webrtc`).
+ *
+ * Si el nombre no tiene dirección IPv4, se deja como vino: esa máquina no tiene por dónde
+ * llegar en UDP, y con el nombre la librería todavía llega por TCP.
+ *
+ * @param {any[]} iceServers
+ * @param {{ native?: boolean, lookup?: (host: string) => Promise<string> }} [opts]
+ * @returns {Promise<any[]>}
+ */
+export async function pinTurnToIPv4 (iceServers, opts = {}) {
+  const native = opts.native ?? (typeof globalThis.RTCPeerConnection === 'function')
+  if (native || !Array.isArray(iceServers)) return iceServers
+  let lookup = opts.lookup
+  if (!lookup) {
+    // El nombre va en una variable para que ningún empaquetador lo siga: esto lo importan
+    // las apps de navegador, donde `node:dns` no existe (y donde no se llega hasta aquí).
+    const mod = 'node:dns'
+    const dns = await import(mod)
+    lookup = async (host) => (await dns.promises.lookup(host, { family: 4 })).address
+  }
+  const cache = new Map()
+  const pin = async (url) => {
+    const m = /^(turn:)([^:?[\]]+)((?::\d+)?(?:\?.*)?)$/i.exec(String(url).trim())
+    if (!m || /^[\d.]+$/.test(m[2])) return url
+    if (!cache.has(m[2])) cache.set(m[2], lookup(m[2]).catch(() => null))
+    const ip = await cache.get(m[2])
+    return ip ? m[1] + ip + m[3] : url
+  }
+  return Promise.all(iceServers.map(async (s) => {
+    if (!s || s.urls == null) return s
+    const urls = Array.isArray(s.urls) ? await Promise.all(s.urls.map(pin)) : await pin(s.urls)
+    return { ...s, urls }
+  }))
 }
 
 export class WebRTCManager {

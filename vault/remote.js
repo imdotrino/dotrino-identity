@@ -374,7 +374,9 @@ export async function requestStore ({ master, proxy, device, cert, method, args,
 export async function requestDevices ({ master, proxy, device, cert, sinceSeq, onRevoked } = {}) {
   const data = typeof sinceSeq === 'number' ? { op: 'devices', sinceSeq } : { op: 'devices' }
   const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data })
-  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null, chain: res.chain || null }
+  // `sealerChain`: [génesis, …cambios de sellador…, actual], lo que una firma de este aparato
+  // tiene que llevar para que `verifySignedFor` la ate a la cuenta (vaultd ≥ 0.154.0).
+  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null, chain: res.chain || null, sealerChain: res.sealerChain || null }
 }
 
 /**

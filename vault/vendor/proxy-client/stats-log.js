@@ -54,6 +54,7 @@ export function formatStats (s, opts = {}) {
     ` ws.in=${s.proxy.bytesIn} ws.out=${s.proxy.bytesOut}` +
     ` ${pairs('in', sum(s.peers, 'bytesIn'))} ${pairs('out', sum(s.peers, 'bytesOut'))}` +
     ` peers=${talking.length} routes=${routeList}` +
+    (s.turn ? ` turn=${s.turn.active ? 'on' : `off(${s.turn.code || '?'})`}` : '') +
     (silent.length ? ` unanswered=${silent.length} unanswered.out=${silent.reduce((n, p) => n + PATHS.reduce((m, k) => m + p.bytesOut[k], 0), 0)}` : '') +
     (unknown.length ? ` unknown=${unknown.length} unknown.in=${unknown.reduce((n, p) => n + PATHS.reduce((m, k) => m + p.bytesIn[k], 0), 0)}` : '')
   ]
@@ -104,4 +105,64 @@ export function logStats (opts = {}) {
     flush,
     stop: async () => { clearInterval(timer); await flush() }
   }
+}
+
+/** Bytes para el informe de texto: `B`, `KB` con un decimal, `MB` con dos. */
+const rBytes = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
+const rPaths = (o) => {
+  const parts = PATHS.filter((k) => (o?.[k] || 0) > 0).map((k) => `${k} ${rBytes(o[k])}`)
+  return parts.length ? parts.join(', ') : '0 B'
+}
+
+/**
+ * Los que contestaron algo (`talking`) y los que solo recibieron (`silent`, resumidos): a un
+ * aparato apagado al que se le mandó un ping no se le llama conexión. `unknown`: quien nos
+ * escribió, nunca recibió respuesta y no sabemos su llave. Tampoco es una conexión.
+ *
+ * @param {Array<object>} peers `TransportStats.peers`
+ */
+export function splitPeers (peers) {
+  const total = (o) => PATHS.reduce((n, k) => n + (o?.[k] || 0), 0)
+  const talking = []
+  const silent = { count: 0, bytesOut: 0, msgsOut: 0 }
+  const unknown = { count: 0, bytesIn: 0, msgsIn: 0 }
+  for (const p of peers) {
+    if (!((p.msgsIn || 0) > 0)) { silent.count++; silent.bytesOut += total(p.bytesOut); silent.msgsOut += p.msgsOut || 0 } else if (!p.pubkey && !((p.msgsOut || 0) > 0)) { unknown.count++; unknown.bytesIn += total(p.bytesIn); unknown.msgsIn += p.msgsIn || 0 } else talking.push(p)
+  }
+  return { talking, silent, unknown }
+}
+
+/**
+ * EL INFORME DE RED COMO TEXTO, para que lo lea una persona: las mismas líneas que el modal de
+ * red del topbar y que las apps nativas (`NetworkStats.report`). A diferencia de `formatStats`
+ * (que va a un log en disco y por eso calla la llave), este se enseña en pantalla a quien lo
+ * pidió, y dice con quién es cada conexión.
+ *
+ * @param {Array<object>} list lo que devolvió `client.stats()` de cada cliente (o `{ url, error }`)
+ * @param {{ label?: (pubkey: string) => string | Promise<string>, now?: Date }} [opts]
+ *   `label`: cómo se nombra un aparato a partir de su llave (su id `AB12-CD34`, su nombre).
+ *   Sin él, o si falla, sale `?`: nunca un trozo de la llave.
+ * @returns {Promise<string>}
+ */
+export async function netReport (list, opts = {}) {
+  const now = opts.now || new Date()
+  let out = `Dotrino network stats · ${now.toISOString().replace(/\.\d{3}Z$/, 'Z')}\n`
+  if (!list.length) out += '(no transports)\n'
+  for (const s of list) {
+    if (s.error) { out += `Proxy ${s.url} | error: ${s.error}\n`; continue }
+    const hhmm = new Date(s.since).toTimeString().slice(0, 8)
+    out += `Proxy ${s.url}${s.app ? ` | app=${s.app}` : ''}${s.node ? ` | node=${s.node}` : ''} | ${s.connected ? 'connected' : 'disconnected'} | since ${hhmm}\n`
+    out += `  proxy total: in ${rBytes(s.proxy.bytesIn)} / out ${rBytes(s.proxy.bytesOut)} (frames ${s.proxy.framesIn ?? '?'}/${s.proxy.framesOut ?? '?'})\n`
+    const { talking, silent, unknown } = splitPeers(s.peers)
+    out += `  peers: ${talking.length}\n`
+    for (const p of talking) {
+      let who = '?'
+      if (p.pubkey && opts.label) { try { who = (await opts.label(p.pubkey)) || '?' } catch (_) { who = '?' } }
+      const tok = p.token ? ` (token ${p.token})` : ''
+      out += `  - ${who}${tok} | route=${p.route} | in: ${rPaths(p.bytesIn)} | out: ${rPaths(p.bytesOut)} | ${(p.msgsIn || 0) + (p.msgsOut || 0)} msgs\n`
+    }
+    if (silent.count) out += `  no answer: ${silent.count} (out ${rBytes(silent.bytesOut)}, ${silent.msgsOut} msgs)\n`
+    if (unknown.count) out += `  unknown senders: ${unknown.count} (in ${rBytes(unknown.bytesIn)}, ${unknown.msgsIn} msgs)\n`
+  }
+  return out
 }
