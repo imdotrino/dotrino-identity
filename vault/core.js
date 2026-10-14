@@ -873,7 +873,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     h.sort((a, b) => a.seq - b.seq)
     const ventana = h.slice(-ACTA_WINDOW)
     const enVentana = new Set(ventana.map((a) => a.seq))
-    const eslabones = h.filter((a) => a.sealerChanged && !enVentana.has(a.seq))
+    // El génesis cuenta siempre como eslabón: las actas anteriores a v5 no llevaban la
+    // marca, y por eso la poda se llevó el génesis de las cuentas viejas.
+    const eslabones = h.filter((a) => (a.sealerChanged || a.seq === 1) && !enVentana.has(a.seq))
     kv.setItem(ACTA_HISTORY_STORAGE, JSON.stringify([...eslabones, ...ventana].sort((a, b) => a.seq - b.seq)))
   }
 
@@ -888,7 +890,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // La vigente cuenta como parte del material aunque todavía no esté en la historia
     // (ahí entra al dejar de serlo). Sin esto, una cuenta recién creada devolvía [].
     const porSeq = new Map([...loadHistory(), cur].map((a) => [a.seq, a]))
-    const eslabones = [...porSeq.values()].filter((a) => a.sealerChanged).sort((a, b) => a.seq - b.seq)
+    const eslabones = [...porSeq.values()].filter((a) => a.sealerChanged || a.seq === 1).sort((a, b) => a.seq - b.seq)
     // Y la actual va al final si ella misma no es un eslabón: el verificador necesita ver
     // la cabeza para saber en qué `seq` está y quién la selló.
     return eslabones.length && eslabones[eslabones.length - 1].seq === cur.seq ? eslabones : [...eslabones, cur]
@@ -2506,6 +2508,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Una cuenta de una sola bóveda devuelve SIEMPRE eso y nada más, y no puede quedarse
      * obsoleta: su conjunto de selladores no puede cambiar, porque el único no puede
      * quitarse a sí mismo y no hay otro que se lo quite.
+     *
+     * SIN GÉNESIS, la cadena es `[acta actual]` y vale igual mientras la actual esté firmada
+     * por la llave del perfil: la raíz la ancla esa llave, no el número 1 (`verifySealerChain`).
+     * Pasa en las cuentas anteriores a v5, cuyo génesis se podó sin la marca de eslabón.
      */
     async sealerChain () { return sealerChain() },
 

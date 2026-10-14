@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   genesisActa, applyChanges, sealActa, verifyActa, canAdopt, canSeal, sealersOf,
-  checkShape, actaHash, memberCanSign, memberCanScope, verifySealerChain,
+  checkShape, actaHash, memberCanSign, memberCanScope, verifySealerChain, verifySignedBy,
   sealerLinkOf, verifySealerLinkChain
 } from '../vault/acta.js'
 import { makeDeviceKey, signWithDevice } from '../vault/capabilities.js'
@@ -421,4 +421,43 @@ test('el eslabón NO puede decir algo distinto que el acta que lo lleva', async 
   const v = await verifyActa({ acta: trucada })
   assert.equal(v.ok, false)
   assert.match(v.reason, /eslabon-(no-cuadra|otro-sellador)/)
+})
+
+/**
+ * EL ANCLA ES LA LLAVE DEL PERFIL, NO EL NÚMERO 1 (dueño, 2026-10-14). Una cuenta
+ * anterior a las actas v5 perdió su génesis en la poda (no llevaba la marca de eslabón) y
+ * no hay de dónde recuperarlo: su cadena es `[acta actual]`. Vale igual mientras esa acta
+ * la haya firmado la llave que da nombre al perfil — que es lo único que no se fabrica.
+ */
+test('una cadena sin génesis ancla en un acta posterior autofirmada por la llave del perfil', async () => {
+  const A = await makeDeviceKey()
+  const tel = await makeDeviceKey()
+  let acta = await sellar(genesisActa({ pub: A.publickey, label: 'A' }), A)
+  for (let i = 0; i < 3; i++) {
+    acta = await applyChanges(acta, [{ op: 'label', pub: A.publickey, label: 'A' + i }], { by: A.publickey })
+    acta = await sellar(acta, A)
+  }
+  acta = await applyChanges(acta, [{ op: 'admit', member: { pub: tel.publickey, label: 'tel', caps: ['sign'] } }], { by: A.publickey })
+  acta = await sellar(acta, A)
+  assert.ok(acta.seq > 1)
+
+  // Solo la actual, sin el génesis: pasa, y atribuye al perfil de siempre.
+  const r = await verifySealerChain([acta], { expectedProfileId: acta.profileId })
+  assert.equal(r.ok, true, r.reason)
+  assert.equal(r.profileId, A.publickey)
+  assert.equal(r.seq, acta.seq)
+
+  // Y una firma de un aparato admitido en esa acta se atribuye con esa cadena.
+  const post = { hola: 'mundo' }
+  const { signature } = await signWithDevice({ privateJwk: tel.privateJwk, data: post })
+  const v = await verifySignedBy({ data: post, signature, publickey: tel.publickey, chain: [acta] })
+  assert.equal(v.ok, true, v.reason)
+  assert.equal(v.profileId, A.publickey)
+
+  // Lo que sigue sin colar: una raíz que NO firmó la llave del perfil, aunque tenga seq 1.
+  const malo = await makeDeviceKey()
+  const falsa = await sellar({ ...acta, sealedBy: malo.publickey }, malo)
+  const mala = await verifySealerChain([falsa], { expectedProfileId: acta.profileId })
+  assert.equal(mala.ok, false)
+  assert.match(mala.reason, /genesis-no-autofirmado/)
 })

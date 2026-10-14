@@ -328,8 +328,9 @@ export async function verifySealerLink (link) {
  *
  * Es la hermana de `verifySealerChain`, que hace lo mismo con actas enteras para quien las
  * tiene. Lo que comprueba, y por qué basta:
- *   1. el primero es el GÉNESIS: `seq 1`, sin `prev`, y firmado por `profileId` — el ancla,
- *      que no se puede fabricar sin la llave que da nombre al perfil;
+ *   1. el primero está firmado por `profileId` — el ancla, que no se puede fabricar sin la
+ *      llave que da nombre al perfil. Normalmente es el génesis (`seq 1`, sin `prev`), pero
+ *      no tiene por qué: una cuenta que perdió su génesis ancla en un eslabón posterior;
  *   2. cada siguiente lo firmó alguien a quien el ANTERIOR autorizaba;
  *   3. y apunta al anterior por `seq` + hash, así que no se cuela uno de otra rama.
  *
@@ -339,7 +340,9 @@ export async function verifySealerLink (link) {
 export async function verifySealerLinkChain (chain, { expectedProfileId = null } = {}) {
   if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
   const [raiz] = chain
-  if (raiz?.seq !== 1 || raiz?.prev != null) return { ok: false, reason: 'no-empieza-en-genesis' }
+  // La misma regla que en `verifySealerChain`: la raíz la ancla la llave del perfil, no el
+  // número 1 (una cuenta puede haber perdido su génesis; ver allí).
+  if (!Number.isInteger(raiz?.seq) || raiz.seq < 1) return { ok: false, reason: 'no-empieza-en-genesis' }
   if (raiz.by !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
   if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
   const vr = await verifySealerLink(raiz)
@@ -637,8 +640,15 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
   if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
   const [raiz] = chain
 
-  if (raiz.seq !== 1 || raiz.sealerAnchor != null) return { ok: false, reason: 'no-empieza-en-genesis' }
-  // El ancla: el génesis se firma a sí mismo con la llave que da nombre al perfil.
+  // EL ANCLA ES LA LLAVE DEL PERFIL, NO EL NÚMERO 1 (dueño, 2026-10-14). La raíz vale si
+  // está firmada por la llave que da nombre al perfil, sea el génesis o un acta posterior.
+  // Antes se exigía `seq 1`, y eso dejaba sin cadena a toda cuenta anterior a las actas v5:
+  // su génesis no llevaba `sealerChanged`, la ventana de retención lo podó, y no hay de
+  // dónde recuperarlo. Exigir el génesis no protegía de nada: quien tenga la llave del
+  // perfil fabrica un génesis alterno igual que un acta posterior, y contra eso la capa es
+  // el registro público. Lo que sí sostiene la cadena —que cada eslabón lo firmó alguien a
+  // quien el anterior autorizaba— sigue intacto.
+  if (!Number.isInteger(raiz.seq) || raiz.seq < 1) return { ok: false, reason: 'no-empieza-en-genesis' }
   if (raiz.sealedBy !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
   if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
   const vr = await verifyActa({ acta: raiz })
