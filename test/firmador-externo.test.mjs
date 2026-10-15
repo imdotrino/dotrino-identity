@@ -45,3 +45,9 @@ test('un firmador externo que no devuelve firma se dice, con su code', async () 
     (e) => e.code === 'no-signature'
   )
 })
+
+test('canonicalStringify: una clave con undefined no existe, como en JSON.stringify', () => {
+  assert.equal(canonicalStringify({ b: 1, a: undefined }), '{"b":1}')
+  assert.equal(canonicalStringify({ b: 1, a: undefined }), canonicalStringify(JSON.parse(JSON.stringify({ b: 1, a: undefined }))))
+  assert.equal(canonicalStringify([1, undefined]), '[1,null]')
+})

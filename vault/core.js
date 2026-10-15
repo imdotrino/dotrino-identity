@@ -64,8 +64,12 @@ const PILAR_VAULT = '@dotrino/vault'
 
 export function canonicalStringify (v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v)
-  if (Array.isArray(v)) return '[' + v.map(canonicalStringify).join(',') + ']'
-  const ks = Object.keys(v).sort()
+  // Un array con `undefined` va como `null`, igual que en JSON.stringify.
+  if (Array.isArray(v)) return '[' + v.map((x) => x === undefined ? 'null' : canonicalStringify(x)).join(',') + ']'
+  // Una clave con `undefined` NO existe, igual que en JSON.stringify: antes salía como
+  // `"k":undefined` (ni siquiera es JSON) y lo firmado en memoria no cuadraba con lo mismo
+  // leído del disco o de la red (el directorio de nombres, 2026-10-15).
+  const ks = Object.keys(v).filter((k) => v[k] !== undefined).sort()
   return '{' + ks.map(k => JSON.stringify(k) + ':' + canonicalStringify(v[k])).join(',') + '}'
 }
 
