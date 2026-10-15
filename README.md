@@ -179,6 +179,11 @@ const v = await verifySignedFor({ data: pin, signature, publickey, chain, audien
 `aud` es obligatorio igual que en la prueba; `exp` es opcional, porque la caducidad de lo
 publicado la lleva el servicio (el TTL del pin) y no el cuerpo.
 
+Si quien firma es un **servicio** de la cuenta (un miembro con `cn`), pásale `ns` con su
+cajón (0.114.0+): un servicio solo firma dentro del suyo, y sin `ns` no pasa nunca. Así el
+directorio de nombres acepta lo que firma su aparato `names` sin aceptar lo de cualquier
+otro servicio de la misma cuenta.
+
 ### Permiso por origen (0.86.0+)
 
 Una prueba dice **quién eres** sin preguntar nada: quien llega al iframe ya pasó el filtro

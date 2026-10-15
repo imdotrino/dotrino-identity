@@ -186,6 +186,19 @@ test('un servicio solo firma lo de su cajón; un aparato tuyo, todo', async () =
   assert.equal(memberCanSign(acta, bot.publickey), false, 'un servicio no firma por la identidad')
   assert.equal(memberCanSign(acta, tel.publickey), true, 'un aparato tuyo sí')
   assert.equal(memberCanSign(acta, tel.publickey, 'eco'), true, 'y ningún cajón lo limita')
+
+  // Y lo mismo al verificar una firma con su cadena: el servicio pasa solo si quien
+  // verifica dice su cajón (`ns`). Así el directorio de nombres acepta lo que firma su
+  // aparato `names` sin aceptar lo de cualquier otro servicio de la cuenta.
+  const post = { hola: 'mundo' }
+  const { signature } = await signWithDevice({ privateJwk: bot.privateJwk, data: post })
+  const sin = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta] })
+  assert.equal(sin.ok, false); assert.equal(sin.reason, 'firmante-no-autorizado')
+  const otro = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta], ns: 'trueque' })
+  assert.equal(otro.ok, false); assert.equal(otro.reason, 'firmante-no-autorizado')
+  const suyo = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta], ns: 'eco' })
+  assert.equal(suyo.ok, true, suyo.reason)
+  assert.equal(suyo.profileId, A.publickey)
 })
 
 /**

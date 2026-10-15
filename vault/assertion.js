@@ -191,10 +191,13 @@ export async function verifyAssertion (assertion, opts = {}) {
  * quien la lleva es el servicio; si el cuerpo trae `exp`, se respeta.
  */
 /**
- * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], audience?: string, expectedProfileId?: string|null, now?: number, maxSkewMs?: number }} [args]
+ * `ns`: el cajón del servicio que firma (su `cn` en el acta). Solo hace falta cuando lo
+ * firmado viene de un SERVICIO de la cuenta y no de un aparato de la persona.
+ *
+ * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], audience?: string, expectedProfileId?: string|null, ns?: string|null, now?: number, maxSkewMs?: number }} [args]
  */
 export async function verifySignedFor (args = {}) {
-  const { data, signature, publickey, chain, audience, expectedProfileId = null, now = Date.now(), maxSkewMs = ASSERTION_MAX_SKEW_MS } = args
+  const { data, signature, publickey, chain, audience, expectedProfileId = null, ns = null, now = Date.now(), maxSkewMs = ASSERTION_MAX_SKEW_MS } = args
   if (typeof audience !== 'string' || !audience.trim()) return { ok: false, reason: 'no-audience' }
   if (!data || typeof data !== 'object') return { ok: false, reason: 'shape' }
   if (typeof data.aud !== 'string' || !data.aud) return { ok: false, reason: 'sin-destinatario' }
@@ -207,7 +210,7 @@ export async function verifySignedFor (args = {}) {
     if (!Number.isFinite(data.iat)) return { ok: false, reason: 'shape' }
     if (data.iat > now + maxSkewMs) return { ok: false, reason: 'del-futuro' }
   }
-  const v = await verifySignedBy({ data, signature, publickey, chain, expectedProfileId })
+  const v = await verifySignedBy({ data, signature, publickey, chain, expectedProfileId, ns })
   if (!v.ok) return { ok: false, reason: 'firma:' + v.reason }
   return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, aud: data.aud }
 }

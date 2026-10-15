@@ -622,7 +622,7 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
  * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], expectedProfileId?: string|null }} [args]
  */
 export async function verifySignedBy (args = {}) {
-  const { data, signature, publickey, chain, expectedProfileId = null } = args
+  const { data, signature, publickey, chain, expectedProfileId = null, ns = null } = args
   if (!data || typeof signature !== 'string' || typeof publickey !== 'string') {
     return { ok: false, reason: 'shape' }
   }
@@ -631,7 +631,10 @@ export async function verifySignedBy (args = {}) {
   const cabeza = chain[chain.length - 1]
   // Quien firmó tiene que ser miembro CON `sign` en el acta vigente de esa cadena. Si le
   // quitaste el permiso, sus firmas dejan de contar en cuanto se ve un acta más nueva.
-  if (!memberCanSign(cabeza, publickey)) return { ok: false, reason: 'firmante-no-autorizado' }
+  // Un SERVICIO (miembro con `cn`) solo firma dentro de su cajón: quien verifica dice cuál
+  // con `ns` (el directorio de nombres acepta lo firmado por su aparato `names`, no por
+  // cualquier servicio de la cuenta). Sin `ns`, un servicio nunca pasa, como siempre.
+  if (!memberCanSign(cabeza, publickey, ns)) return { ok: false, reason: 'firmante-no-autorizado' }
   if (!(await verifyDeviceSig({ publickey, data, signature }))) return { ok: false, reason: 'firma-invalida' }
   return { ok: true, profileId: c.profileId, seq: c.seq, signer: publickey }
 }
