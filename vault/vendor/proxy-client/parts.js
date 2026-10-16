@@ -22,6 +22,8 @@
  * llave que selló: nadie más puede colar una parte en el mensaje de otro.
  */
 
+import { pack, unpack, concatBytes } from './binpack.js'
+
 export const PART_TAG = '__dotrino_part'
 
 /** Parte por el canal directo: por debajo de los 64 KiB que acepta libwebrtc, ya sellada. */
@@ -35,6 +37,21 @@ export const PROXY_PART_CHARS = 512 * 1024
 export const QUEUE_MAX_CHARS = 11 * 1024 * 1024
 /** Lo más que pasa por el proxio EN VIVO: 25 MB de archivo son ~33,4 MB en base64. */
 export const RELAY_MAX_CHARS = 34 * 1024 * 1024
+
+/**
+ * LOS MISMOS TOPES PARA UN MENSAJE CON BYTES (0.35.0), medidos sobre su paquete (binpack.js),
+ * que ocupa lo que el archivo más unos pocos bytes: 8 MB y 25 MB de archivo, con 64 KB de
+ * margen para el texto que va alrededor (nombre, tipo, pie de foto).
+ */
+export const QUEUE_MAX_BYTES = 8 * 1024 * 1024 + 64 * 1024
+export const RELAY_MAX_BYTES = 25 * 1024 * 1024 + 64 * 1024
+/**
+ * Parte binaria por el canal directo: bajo los 64 KiB de libwebrtc, con sitio para el sobre
+ * de la llave, que la bóveda envuelve para cada aparato del destinatario.
+ */
+export const DIRECT_PART_BYTES = 48 * 1024
+/** Parte binaria por el proxio: cabe en su trama de 1 MB con la cabecera y el sobre. */
+export const PROXY_PART_BYTES = 768 * 1024
 
 /** Rearmado: lo que se acepta guardar a medias, y cuánto se espera a la parte siguiente. */
 const RECV_MAX_CHARS = 512 * 1024 * 1024
@@ -54,6 +71,18 @@ export function splitParts (json, size) {
   const id = partId()
   const out = []
   for (let i = 0; i < n; i++) out.push({ [PART_TAG]: { id, i, n }, d: json.slice(i * size, (i + 1) * size) })
+  return out
+}
+
+/**
+ * Las partes de un paquete de `bytes.length` > `size`, cada una ya empaquetada (lista para
+ * cifrar como bytes). El rearmado une los trozos y desempaqueta el resultado.
+ */
+export function splitBinParts (bytes, size) {
+  const n = Math.ceil(bytes.byteLength / size)
+  const id = partId()
+  const out = []
+  for (let i = 0; i < n; i++) out.push(pack({ [PART_TAG]: { id, i, n }, d: bytes.subarray(i * size, (i + 1) * size) }))
   return out
 }
 
@@ -77,25 +106,26 @@ export class Reassembler {
     const d = part.d
     if (!p || typeof p.id !== 'string' || p.id.length > 64 ||
         !Number.isInteger(p.n) || !Number.isInteger(p.i) || p.n < 2 || p.n > MAX_PARTS ||
-        p.i < 0 || p.i >= p.n || typeof d !== 'string') {
+        p.i < 0 || p.i >= p.n || (typeof d !== 'string' && !(d instanceof Uint8Array))) {
       throw Object.assign(new Error('malformed message part'), { code: 'bad-part' })
     }
     const key = `${sender}|${p.id}`
     let a = this._open.get(key)
     if (!a) {
-      a = { n: p.n, got: new Array(p.n), count: 0, chars: 0, timer: null }
+      a = { n: p.n, bin: d instanceof Uint8Array, got: new Array(p.n), count: 0, chars: 0, timer: null }
       this._open.set(key, a)
     }
-    if (a.n !== p.n) {
+    if (a.n !== p.n || a.bin !== (d instanceof Uint8Array)) {
       this._drop(key)
-      throw Object.assign(new Error('message parts disagree on their count'), { code: 'bad-part' })
+      throw Object.assign(new Error('message parts disagree on their count or kind'), { code: 'bad-part' })
     }
     if (a.got[p.i] === undefined) {
       if (this._chars + d.length > RECV_MAX_CHARS) {
         this._drop(key)
         throw Object.assign(new Error('too much of a message in parts is pending'), { code: 'parts-too-big' })
       }
-      a.got[p.i] = d
+      // Una copia: `d` es una vista sobre la trama entera, y guardarla retendría la trama.
+      a.got[p.i] = a.bin ? d.slice() : d
       a.count++
       a.chars += d.length
       this._chars += d.length
@@ -103,8 +133,8 @@ export class Reassembler {
     if (a.timer) clearTimeout(a.timer)
     if (a.count === a.n) {
       this._drop(key)
-      try { return JSON.parse(a.got.join('')) }
-      catch (_) { throw Object.assign(new Error('a message in parts did not join into JSON'), { code: 'bad-part' }) }
+      try { return a.bin ? unpack(concatBytes(a.got)) : JSON.parse(a.got.join('')) }
+      catch (_) { throw Object.assign(new Error('a message in parts did not join into a message'), { code: 'bad-part' }) }
     }
     a.timer = setTimeout(() => {
       const missing = a.n - a.count

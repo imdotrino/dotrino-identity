@@ -164,3 +164,45 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
     isSealed: (m) => !!m && m.app === app && !!m.sealed,
   }
 }
+
+/**
+ * SELLAR BYTES (0.35.0). Un archivo no pasa por el sellado de texto —que lo volvería a
+ * base64—: se cifra con una CEK nueva (`encryptBytesWithCek` de `@dotrino/identity/content`,
+ * AES-GCM) y lo que se sella con el sellado de siempre es SOLO la CEK. Así la bóveda del
+ * navegador ve una llave de 44 caracteres y no los megas, y no hay cripto nueva: la misma
+ * envoltura de siempre más el AES-GCM del pilar de identidad.
+ *
+ * El sobre binario es un paquete (`binpack.js`) con `{ bv: 1, k, iv, ct }`:
+ *   · `k`  el sobre de siempre (del sellado propio o de la bóveda) con `{ cek }` dentro
+ *   · `iv`, `ct`  los bytes cifrados, como bytes
+ *
+ * Una CEK vale para todas las partes de un mensaje (cada parte con su `iv`, que es lo que
+ * AES-GCM exige), así que la bóveda sella una vez por mensaje y no una por parte.
+ */
+export const BIN_SEALED = 1
+
+export function isBinSealed (env) {
+  return !!env && env.bv === BIN_SEALED && !!env.k && typeof env.k === 'object' &&
+    env.iv instanceof Uint8Array && env.ct instanceof Uint8Array
+}
+
+/** Una CEK nueva para un mensaje con bytes. */
+export async function makeMessageKey () {
+  const { makeContentKey } = await crypto_()
+  if (typeof makeContentKey !== 'function') throw errorCon('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  return makeContentKey()
+}
+
+/** Cifra `bytes` con la CEK y devuelve los campos del sobre (`iv`, `ct`). */
+export async function encryptBytes (cek, bytes) {
+  const { encryptBytesWithCek } = await crypto_()
+  if (typeof encryptBytesWithCek !== 'function') throw errorCon('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  return encryptBytesWithCek({ cek, bytes })
+}
+
+/** Descifra el `ct` de un sobre binario con su CEK ya abierta. */
+export async function decryptBytes (cek, env) {
+  const { decryptBytesWithCek } = await crypto_()
+  if (typeof decryptBytesWithCek !== 'function') throw errorCon('opening bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  return decryptBytesWithCek({ cek, iv: env.iv, ct: env.ct })
+}

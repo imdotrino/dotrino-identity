@@ -1,9 +1,10 @@
 import { buildSignedChannel, getPublicKeyJwk, signData, samePubkey } from './signature.js'
-import { seal, open, isSealed } from './sealing.js'
+import { seal, open, isSealed, isBinSealed, BIN_SEALED, makeMessageKey, encryptBytes, decryptBytes } from './sealing.js'
 import { buildEncPubStatement, readEncPubStatement, isEncPub } from './encpub.js'
 import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection, pinTurnToIPv4 } from './webrtc.js'
 import { TrafficStats, utf8Length, registerTransport, unregisterTransport } from './stats.js'
-import { splitParts, isPart, Reassembler, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS } from './parts.js'
+import { splitParts, splitBinParts, isPart, Reassembler, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS, DIRECT_PART_BYTES, PROXY_PART_BYTES, QUEUE_MAX_BYTES, RELAY_MAX_BYTES } from './parts.js'
+import { pack, unpack, hasBinary, encodeFrame, decodeFrame } from './binpack.js'
 
 /**
  * Error con un `code` estable.
@@ -193,6 +194,9 @@ export class WebSocketProxyClient {
     this._parts = new Reassembler({
       onExpire: (info) => this._emit('error', { type: 'parts_incomplete', code: 'parts-incomplete', ...info })
     })
+    // Las CEK de los mensajes con bytes ya abiertas, por su sobre: todas las partes de un
+    // mensaje traen la misma, y abrirla es una vuelta a la bóveda. Pocas: un mensaje vivo.
+    this._msgKeys = new Map()
     this._traffic = new TrafficStats()
 
     this._rtc = this.enableWebRTC ? new WebRTCManager({
@@ -341,7 +345,7 @@ export class WebSocketProxyClient {
         'unsealed')
     }
     const tokens = Array.isArray(to) ? to : [to]
-    const messageStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
+    const messageStr = this._wire(payload)
     if (!this._rtc) {
       this._sendRaw({ to: tokens, message: messageStr })
       return
@@ -508,18 +512,22 @@ export class WebSocketProxyClient {
   async sendSealed (toPubkeys, payload, { peerEncPub, ...opts } = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
     // Por pubkey el mensaje puede quedarse ESPERANDO en el proxio, y ahí se deja como mucho
-    // 1 MB (parts.js). Lo que pasa de eso no se manda: se dice, y la app decide.
-    const json = JSON.stringify(payload)
-    if (json.length > QUEUE_MAX_CHARS) {
-      throw errorCon(`sendSealed: ${json.length} chars is more than can wait in the proxy (${QUEUE_MAX_CHARS}); send it by token while both ends are connected`, 'too-big-for-queue')
+    // 8 MB de archivo (parts.js). Lo que pasa de eso no se manda: se dice, y la app decide.
+    const m = this._measure(payload)
+    const queueMax = m.bin ? QUEUE_MAX_BYTES : QUEUE_MAX_CHARS
+    if (m.len > queueMax) {
+      throw errorCon(`sendSealed: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than can wait in the proxy (${queueMax}); send it by token while both ends are connected`, 'too-big-for-queue')
     }
-    const pieces = json.length > PROXY_PART_CHARS ? splitParts(json, PROXY_PART_CHARS) : [payload]
+    // Por pubkey todo va por el proxio: si no admite bytes, se dice antes de mandar nada.
+    if (m.bin) this._needBinaryProxy()
+    const partSize = m.bin ? PROXY_PART_BYTES : PROXY_PART_CHARS
+    const pieces = m.len <= partSize ? [m.bin ? m.whole : payload]
+      : m.bin ? splitBinParts(m.whole, partSize) : splitParts(m.whole, partSize)
     // Con la llave puesta a mano se respeta tal cual: quien la pasa está diciendo que ya
     // sabe de quién es (se emparejaron), y un sobre vale para todos los destinatarios.
     if (peerEncPub) {
-      for (const piece of pieces) {
-        this._sendByPubkeyRaw(list, await this._seal(piece, peerEncPub, list.length === 1 ? list[0] : undefined), opts)
-      }
+      const sealPiece = await this._sealerFor(m.bin, peerEncPub, list.length === 1 ? list[0] : undefined)
+      for (const piece of pieces) this._sendByPubkeyRaw(list, await sealPiece(piece), opts)
       return
     }
     // Sin ella, se averigua. UNA ENVOLTURA POR DESTINATARIO: cada uno tiene su llave, así
@@ -530,7 +538,8 @@ export class WebSocketProxyClient {
     // sin forma de saber cuál mitad.
     const llaves = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
     for (const [pk, encPub] of llaves) {
-      for (const piece of pieces) this._sendByPubkeyRaw([pk], await this._seal(piece, encPub, pk), opts)
+      const sealPiece = await this._sealerFor(m.bin, encPub, pk)
+      for (const piece of pieces) this._sendByPubkeyRaw([pk], await sealPiece(piece), opts)
     }
   }
 
@@ -565,11 +574,15 @@ export class WebSocketProxyClient {
     // Por token los dos están conectados y NO HAY TOPE (parts.js): lo que no cabe en un
     // mensaje del camino que toca sale en partes. El tamaño de parte lo decide el camino
     // de ahora: el canal directo admite mucho menos por mensaje que el proxio.
-    const json = JSON.stringify(payload)
+    const m = this._measure(payload)
     const direct = tokens.length === 1 && !!this._rtc?.isOpen(tokens[0])
-    const size = direct ? DIRECT_PART_CHARS : PROXY_PART_CHARS
-    if (json.length <= size) {
-      const sobre = await this._seal(payload, peerEncPub, peerPubkey)
+    const size = m.bin ? (direct ? DIRECT_PART_BYTES : PROXY_PART_BYTES) : (direct ? DIRECT_PART_CHARS : PROXY_PART_CHARS)
+    const relayMax = m.bin ? RELAY_MAX_BYTES : RELAY_MAX_CHARS
+    const queueMax = m.bin ? QUEUE_MAX_BYTES : QUEUE_MAX_CHARS
+    if (m.bin && !direct) this._needBinaryProxy()
+    const sealPiece = await this._sealerFor(m.bin, peerEncPub, peerPubkey)
+    if (m.len <= size) {
+      const sobre = await sealPiece(m.bin ? m.whole : payload)
       if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], sobre, peerPubkey); return }
       // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
       this.send(tokens, sobre)
@@ -577,18 +590,18 @@ export class WebSocketProxyClient {
     }
     // Por el proxio en vivo hay tope (parts.js): lo que pasa de él solo sale por canal
     // directo. Se pide el canal para que el siguiente intento lo encuentre abierto.
-    if (!direct && json.length > RELAY_MAX_CHARS) {
+    if (!direct && m.len > relayMax) {
       this._upgradeDirect(tokens)
-      throw errorCon(`sendSealedTo: ${json.length} chars is more than goes through the proxy live (${RELAY_MAX_CHARS}); it needs a direct channel`, 'too-big-for-relay')
+      throw errorCon(`sendSealedTo: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than goes through the proxy live (${relayMax}); it needs a direct channel`, 'too-big-for-relay')
     }
     // Si el token muere a mitad, lo que quede se iría a la cola por pubkey; solo se permite
     // si el mensaje entero cabe ahí. Si no, se dice (`too-big-for-queue`), no se deja.
-    const queueFallback = json.length <= QUEUE_MAX_CHARS
+    const queueFallback = m.len <= queueMax
     // Y si el canal directo se cae a mitad, el resto va por el proxio en vivo solo si el
     // mensaje entero cabe por ahí; si no, se para y se dice (`direct-lost`).
-    const relayFallback = json.length <= RELAY_MAX_CHARS
-    for (const piece of splitParts(json, size)) {
-      const sobre = await this._seal(piece, peerEncPub, peerPubkey)
+    const relayFallback = m.len <= relayMax
+    for (const piece of (m.bin ? splitBinParts(m.whole, size) : splitParts(m.whole, size))) {
+      const sobre = await sealPiece(piece)
       if (tokens.length === 1 && peerPubkey) await this._sendPiece(tokens[0], sobre, peerPubkey, queueFallback, relayFallback)
       else this.send(tokens, sobre)
     }
@@ -620,10 +633,11 @@ export class WebSocketProxyClient {
    * una pausa corta entre partes, para no chocar con su límite de mensajes por segundo.
    */
   async _sendPiece (token, sobre, peerPubkey, queueFallback, relayFallback = true) {
-    if (this._rtc && await this._rtc.sendDirect(token, JSON.stringify(sobre))) return
+    if (this._rtc && await this._rtc.sendDirect(token, this._wire(sobre))) return
     if (!relayFallback) {
       throw errorCon('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
     }
+    if (sobre instanceof Uint8Array) this._needBinaryProxy()
     this._sendToTokenOrQueue(token, sobre, peerPubkey, { queueFallback, skipDirect: true })
     await new Promise((r) => setTimeout(r, 20))
   }
@@ -664,7 +678,7 @@ export class WebSocketProxyClient {
     if (this.requireSealed && !this._isSealed(sobre)) {
       throw errorCon('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
     }
-    const messageStr = JSON.stringify(sobre)
+    const messageStr = this._wire(sobre)
     if (!skipDirect && this._rtc && this._rtc.trySend(token, messageStr)) return
     const id = `msg_${this._nextId++}`
     const timer = setTimeout(() => this._tokenWatch.delete(id), 15000)
@@ -763,6 +777,62 @@ export class WebSocketProxyClient {
       : seal(payload, peerEncPub)
   }
 
+  /**
+   * Quién sella las piezas de UN mensaje hacia UN destinatario. Con bytes (sealing.js): una
+   * CEK para el mensaje entero, sellada una vez con el sellado de siempre, y cada pieza
+   * cifrada como bytes con ella. Sin bytes, el sobre de texto de siempre por pieza.
+   */
+  async _sealerFor (bin, peerEncPub, peerPubkey) {
+    if (!bin) return (piece) => this._seal(piece, peerEncPub, peerPubkey)
+    const cek = await makeMessageKey()
+    const k = await this._seal({ cek }, peerEncPub, peerPubkey)
+    return async (bytes) => {
+      const { iv, ct } = await encryptBytes(cek, bytes)
+      return pack({ bv: BIN_SEALED, k, iv, ct })
+    }
+  }
+
+  /** Lo que mide un mensaje para sus topes: su paquete si lleva bytes, su JSON si no. */
+  _measure (payload) {
+    if (hasBinary(payload)) {
+      const whole = pack(payload)
+      return { bin: true, whole, len: whole.byteLength }
+    }
+    const whole = JSON.stringify(payload)
+    return { bin: false, whole, len: whole.length }
+  }
+
+  /** Cómo va por el cable: los bytes tal cual, el texto tal cual, y un objeto en JSON (o empaquetado, si lleva bytes). */
+  _wire (payload) {
+    if (typeof payload === 'string' || payload instanceof Uint8Array) return payload
+    if (hasBinary(payload)) return pack(payload)
+    return JSON.stringify(payload)
+  }
+
+  /** Un mensaje con bytes por el proxio necesita uno que admita tramas binarias (websocket-proxy ≥ 1.6.0). */
+  _needBinaryProxy () {
+    if (!Array.isArray(this.caps) || !this.caps.includes('binary')) {
+      throw errorCon('this proxy does not take binary frames (it needs websocket-proxy >= 1.6.0)', 'no-binary-support')
+    }
+  }
+
+  /** La CEK de un mensaje con bytes, abriendo su sobre una vez por mensaje. */
+  _openMessageKey (k, meta) {
+    const id = JSON.stringify(k)
+    let p = this._msgKeys.get(id)
+    if (!p) {
+      p = (async () => {
+        const o = this.sealing ? await this.sealing.open(k, meta) : await open(k, this.myEncPrivateKey)
+        if (!o || typeof o.cek !== 'string') throw errorCon('the sealed key of a message has no key inside', 'bad-pack')
+        return o.cek
+      })()
+      this._msgKeys.set(id, p)
+      if (this._msgKeys.size > 64) this._msgKeys.delete(this._msgKeys.keys().next().value)
+      p.catch(() => this._msgKeys.delete(id))
+    }
+    return p
+  }
+
   // ---------- llaves de cifrado ajenas ----------
 
   /**
@@ -859,6 +929,11 @@ export class WebSocketProxyClient {
   }
 
   _isSealed (msg) {
+    if (msg instanceof Uint8Array) {
+      let env
+      try { env = unpack(msg) } catch (_) { return false }
+      return isBinSealed(env) && this._isSealed(env.k)
+    }
     return this.sealing ? this.sealing.isSealed(msg) : isSealed(msg)
   }
 
@@ -881,6 +956,33 @@ export class WebSocketProxyClient {
    * into the app.
    */
   async _deliver (from, payload, meta) {
+    // BYTES (binpack.js): un paquete. Si es un sobre binario se abre aquí; si no, es un
+    // objeto con bytes sin sellar, y decide `requireSealed` igual que con el texto.
+    if (payload instanceof Uint8Array) {
+      let env
+      try { env = unpack(payload) } catch (e) {
+        this._emit('error', { type: 'bad_pack', from, code: e.code || 'bad-pack', error: e })
+        return
+      }
+      if (isBinSealed(env)) {
+        if (!this.sealing && !this.myEncPrivateKey) {
+          this._emit('error', { type: 'unsealed', reason: 'no_encryption_key', from })
+          return
+        }
+        let opened
+        try {
+          if (!this._isSealed(env.k)) throw errorCon('the key of a sealed message is not sealed', 'bad-pack')
+          opened = unpack(await decryptBytes(await this._openMessageKey(env.k, meta), env))
+        } catch (e) {
+          this._emit('error', { type: 'undecipherable', from, error: e })
+          return
+        }
+        const senderEncPub = this.sealing?.senderOf?.(env.k) || null
+        this._handOpened(from, opened, { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) })
+        return
+      }
+      payload = env
+    }
     if (this._isSealed(payload)) {
       if (!this.sealing && !this.myEncPrivateKey) {
         this._emit('error', { type: 'unsealed', reason: 'no_encryption_key', from })
@@ -893,16 +995,7 @@ export class WebSocketProxyClient {
         // Quién selló (la llave de cifrado), si el sobre lo dice: es lo que autentica al
         // remitente, porque solo quien tiene esa privada pudo armarlo.
         const senderEncPub = this.sealing?.senderOf?.(payload) || null
-        const fullMeta = { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) }
-        if (isPart(opened)) {
-          // Se agrupa por quien selló: solo esa llave pudo armar cada parte.
-          let whole
-          try { whole = this._parts.add(senderEncPub || meta.fromPubkey || from || '', opened) }
-          catch (e) { this._emit('error', { type: 'bad_part', from, code: e.code || 'bad-part', error: e }); return }
-          if (whole !== null) this._emit('message', from, whole, { ...fullMeta, parts: opened.__dotrino_part.n })
-          return
-        }
-        this._emit('message', from, opened, fullMeta)
+        this._handOpened(from, opened, { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) })
       } catch (e) {
         // Sealed to somebody else, or tampered with. Staying quiet is the point.
         this._emit('error', { type: 'undecipherable', from, error: e })
@@ -917,11 +1010,24 @@ export class WebSocketProxyClient {
     this._emit('message', from, payload, { ...meta, sealed: false })
   }
 
+  /** Lo ya abierto a la app: entero, o a rearmar si es una parte (parts.js). */
+  _handOpened (from, opened, fullMeta) {
+    if (isPart(opened)) {
+      // Se agrupa por quien selló: solo esa llave pudo armar cada parte.
+      let whole
+      try { whole = this._parts.add(fullMeta.senderEncPub || fullMeta.fromPubkey || from || '', opened) }
+      catch (e) { this._emit('error', { type: 'bad_part', from, code: e.code || 'bad-part', error: e }); return }
+      if (whole !== null) this._emit('message', from, whole, { ...fullMeta, parts: opened.__dotrino_part.n })
+      return
+    }
+    this._emit('message', from, opened, fullMeta)
+  }
+
   _sendByPubkeyRaw (toPubkeys, payload, opts = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
     const msg = {
       to_publickey: list,
-      message: typeof payload === 'string' ? payload : JSON.stringify(payload)
+      message: this._wire(payload)
     }
     if (opts.ephemeral) msg.ephemeral = true
     if (opts.quiet) msg.quiet = true
@@ -1347,6 +1453,9 @@ export class WebSocketProxyClient {
       try { prev.close() } catch (_) {}
     }
     const ws = new WebSocket(this.url)
+    // Las tramas binarias (binpack.js) llegan como ArrayBuffer: un Blob obligaría a leerlas
+    // de forma asíncrona y desordenaría lo que llega detrás.
+    try { ws.binaryType = 'arraybuffer' } catch (_) {}
     this.ws = ws
     const openTimer = this.connectTimeout > 0 ? setTimeout(() => this._onConnectTimeout(ws), this.connectTimeout) : null
     openTimer?.unref?.()
@@ -1484,9 +1593,20 @@ export class WebSocketProxyClient {
 
   _handleFrame (raw) {
     let data
-    try { data = JSON.parse(raw) } catch (e) {
-      this._emit('error', { type: 'parse_error', error: e })
-      return
+    if (typeof raw === 'string') {
+      try { data = JSON.parse(raw) } catch (e) {
+        this._emit('error', { type: 'parse_error', error: e })
+        return
+      }
+    } else {
+      // Trama binaria: la cabecera de siempre y el `message` en crudo.
+      try {
+        const { header, body } = decodeFrame(raw)
+        data = { ...header, message: body }
+      } catch (e) {
+        this._emit('error', { type: 'parse_error', code: e.code || 'bad-frame', error: e })
+        return
+      }
     }
     const { type } = data
     switch (type) {
@@ -1619,6 +1739,14 @@ export class WebSocketProxyClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw errorCon('WebSocket not connected', 'NOT_CONNECTED')
     }
+    if (frame.message instanceof Uint8Array) {
+      this._needBinaryProxy()
+      const { message, ...header } = frame
+      const bytes = encodeFrame(header, message)
+      this.ws.send(bytes)
+      this._countOut(frame, bytes)
+      return
+    }
     const texto = JSON.stringify(frame)
     this.ws.send(texto)
     this._countOut(frame, texto)
@@ -1627,7 +1755,7 @@ export class WebSocketProxyClient {
   /** Cuenta un frame que sale por el proxio, y a quién iba. */
   _countOut (frame, texto) {
     this._traffic.frame('out', utf8Length(texto))
-    if (typeof frame.message !== 'string') return
+    if (typeof frame.message !== 'string' && !(frame.message instanceof Uint8Array)) return
     const bytes = utf8Length(frame.message)
     for (const token of Array.isArray(frame.to) ? frame.to : []) {
       this._traffic.peer('out', 'proxy', { token, pubkey: this._tokenPubkeys.get(token) || null }, bytes)

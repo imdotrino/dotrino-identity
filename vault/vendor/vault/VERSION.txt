@@ -1,4 +1,4 @@
-Copia vendorizada de @dotrino/vault@0.86.0 (dotrino-vault/lib/src/{admin,b64,browser,core/approvals,core/blocked,core/browserDisk,core/commKey,core/disk,core/libVersion,core/machines,core/notices,core/notifiable,core/passwords,core/sealKey,core/sealer,core/sealers,core/secretsStore,core/sha256,core/store,core/subacta,core/threadStore,core/transport,core/vault,enroll,index,loginClient,passwordLogins,procContext,protocol,revocation,sealed}.js).
+Copia vendorizada de @dotrino/vault@0.86.1 (dotrino-vault/lib/src/{admin,b64,browser,core/approvals,core/blocked,core/browserDisk,core/commKey,core/disk,core/libVersion,core/machines,core/notices,core/notifiable,core/passwords,core/sealKey,core/sealer,core/sealers,core/secretsStore,core/sha256,core/store,core/subacta,core/threadStore,core/transport,core/vault,enroll,index,loginClient,passwordLogins,procContext,protocol,revocation,sealed}.js).
 NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
 browser.js es la bóveda de esta pestaña: el MISMO núcleo que el binario (core/), con
 el disco en IndexedDB. Importa @dotrino/{compat,roadmap,passmanager,store/core} y

@@ -351,6 +351,8 @@ export class WebRTCManager {
 
   _attachDC (peer, dc) {
     peer.dc = dc
+    // Los bytes como ArrayBuffer: un Blob se lee de forma asíncrona y desordenaría las partes.
+    try { dc.binaryType = 'arraybuffer' } catch (_) {}
     dc.onopen = () => {
       // Por dónde salió: directo o por TURN. Por detrás, sin retrasar a nadie.
       this.probeRoute(peer).catch(() => {})
@@ -367,10 +369,13 @@ export class WebRTCManager {
     }
     dc.onmessage = (ev) => {
       let parsed = null
-      const raw = ev.data
+      let raw = ev.data
       this.count?.('in', peer.remote, utf8Length(raw), peer.route || 'webrtc')
       if (typeof raw === 'string') {
         try { parsed = JSON.parse(raw) } catch (_) { parsed = null }
+      } else if (raw instanceof ArrayBuffer) {
+        // Un mensaje con bytes (binpack.js). En Node llega ya como Buffer, que es un Uint8Array.
+        raw = new Uint8Array(raw)
       }
       this.deliverMessage(peer.remote, parsed ?? raw, { raw, timestamp: Date.now(), via: 'webrtc' })
     }
