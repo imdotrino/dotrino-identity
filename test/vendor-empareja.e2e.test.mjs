@@ -1,31 +1,33 @@
 /**
- * LA COPIA QUE SIRVE `id.dotrino.com`, CORRIENDO DE VERDAD.
+ * LA BÓVEDA QUE SIRVE `id.dotrino.com`, CORRIENDO DE VERDAD.
  *
  * `test/vendor-up-to-date.test.mjs` comprueba que la copia es idéntica a la fuente, y la
- * fuente tiene sus propias pruebas. Eso es una cadena razonable, pero nunca se había
- * EJECUTADO la copia: el fallo que se arregló el 2026-09-02 vivía exactamente ahí —el
- * iframe corría un device-vault de hace dieciocho versiones, sin `vault:passwords` en su
- * mapa de permisos— y ninguna prueba del ecosistema lo tocaba, porque todas importan el
- * pilar desde `node_modules`.
+ * fuente tiene sus propias pruebas. Pero el fallo del 2026-09-02 vivía en la copia —el
+ * iframe corría un device-vault de hace dieciocho versiones— y ninguna prueba la tocaba.
  *
- * Así que esto arranca la bóveda con `vault/vendor/vault/index.js`, el archivo que se
- * descarga un navegador al abrir `vault.dotrino.com/vault`, y recorre el emparejamiento
- * entero pidiendo el permiso de contraseñas. Si la copia se queda atrás otra vez y el
- * `vendor-up-to-date` se saltara (no está el repo hermano), esto lo caza igual.
+ * Así que esto arranca la bóveda con `vault/vendor/vault/browser.js` —el MISMO núcleo que
+ * el binario, el archivo que se descarga un navegador al abrir `vault.dotrino.com/vault`—
+ * y resuelve cada `@dotrino/...` con el import map de `index.html`
+ * (`helpers/importmap-hooks.mjs`): si al import map le falta algo, revienta aquí.
  *
- * Corre contra un proxio de VERDAD, porque el enrolamiento levanta su propio cliente y no
- * admite un transporte de mentira. Sin `DOTRINO_PROXY` se salta: una suite no abre
- * conexiones a producción por su cuenta.
+ * El emparejamiento corre contra un proxio de VERDAD (el enrolamiento levanta su propio
+ * cliente). Sin `DOTRINO_PROXY` esa prueba se salta: una suite no abre conexiones a
+ * producción por su cuenta. Las demás no tocan la red.
  *
  *   PORT=4099 node server.js                     # en dotrino-proxy
  *   DOTRINO_PROXY=ws://localhost:4099 node --test test/vendor-empareja.e2e.test.mjs
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { register } from 'node:module'
+
+register('./helpers/importmap-hooks.mjs', import.meta.url)
 
 import { createIdentityCore } from '../vault/core.js'
-// EL ARCHIVO QUE SE SIRVE, no el paquete. Esa es toda la gracia.
-import { startDeviceVault } from '../vault/vendor/vault/index.js'
+import { memoryDisk } from '../vault/vendor/vault/core/disk.js'
+// EL ARCHIVO QUE SE SIRVE, no el paquete. Esa es toda la gracia. Se carga después de
+// registrar el gancho, para que sus `@dotrino/...` salgan del import map.
+const { startBrowserVault } = await import('../vault/vendor/vault/browser.js')
 
 const PROXY = process.env.DOTRINO_PROXY || ''
 
@@ -65,23 +67,16 @@ async function nucleo () {
   })
 }
 
-/** El mismo adaptador que `vault.js` le pasa a `startDeviceVault` desde el iframe. */
-const comoElIframe = (core) => ({
-  get me () { return core.me },
-  signData: (data) => core.handlers.signData({ data }),
-  signDelegation: (sub, scope, opts = {}) => core.handlers.signDelegation({ sub, scope, ...opts }),
-  listDelegations: () => core.handlers.listDelegations({}),
-  revokeDelegation: (nonce) => core.handlers.revokeDelegation({ nonce }),
-  revokeDevice: (sub) => core.handlers.revokeDevice({ sub }),
-  admitMember: (m) => core.handlers.admitMember(m),
-  profileActa: () => core.handlers.profileActa({}),
-  joinProfile: (acta) => core.handlers.joinProfile({ acta }),
-})
+/** Un disco en memoria con la forma del de IndexedDB (Node no tiene IndexedDB). */
+const discoDePrueba = async () => ({ ...memoryDisk(), flush: async () => {}, close () {} })
+
+/** La bóveda de una pestaña, como la arranca `vault.js` (`startSelfDaemon`). */
+const bovedaPestana = (core, extra = {}) => startBrowserVault({ core, openDisk: discoDePrueba, log: () => {}, ...extra })
 
 test('la copia servida concede `passwords` al emparejar',
   { skip: PROXY ? false : 'sin DOTRINO_PROXY: no se toca producción' }, async (t) => {
     const bovedaCore = await nucleo()
-    const handle = await startDeviceVault(comoElIframe(bovedaCore), { proxyUrl: PROXY })
+    const handle = await bovedaPestana(bovedaCore, { proxyUrl: PROXY })
     t.after(() => handle.close())
 
     // La consola pide exactamente esto desde el 2026-09-02 (`selfVaultPairing({ scope })`).
@@ -137,19 +132,13 @@ test('la copia servida concede `passwords` al emparejar',
  * hace la consola de la pestaña.
  */
 test('la copia servida crea un inicio de sesión con contraseña y lo deja entrar', async (t) => {
-  const { client: opaqueClient } = await import('@dotrino/opaque')
-  const { createLoginDesk } = await import('../vault/vendor/vault/passwordLogins.js')
+  const { client: opaqueClient } = await import('../vault/vendor/opaque/src/index.js')
   const { makeDeviceKey } = await import('../vault/capabilities.js')
 
   const core = await nucleo()
-  let guardado = null
-  const logins = createLoginDesk({
-    load: () => (guardado ? JSON.parse(guardado) : null),
-    save: (s) => { guardado = JSON.stringify(s) }
-  })
-  // Sin proxio: `startDeviceVault` acepta un cliente puesto desde fuera, y el mostrador de
-  // contraseñas no manda nada por la red — es la consola de esta misma pestaña.
-  const handle = await startDeviceVault(comoElIframe(core), { client: clienteMudo(), logins })
+  // Sin proxio: el mostrador de contraseñas no manda nada por la red — es la consola de
+  // esta misma pestaña.
+  const handle = await bovedaPestana(core, { makeClient: clienteMudo })
   t.after(() => handle.close())
 
   const password = 'una contraseña larga de verdad'
@@ -177,20 +166,60 @@ test('la copia servida crea un inicio de sesión con contraseña y lo deja entra
 })
 
 /**
- * SIN ALMACÉN LO DICE, y no dice que la contraseña está mal. Son cosas distintas: una la
- * arregla quien monta la bóveda, la otra quien escribe la contraseña.
+ * LOS INICIOS DE SESIÓN DE ANTES SE TRAEN UNA VEZ. La pestaña los guardaba en su propio
+ * almacén antes de correr la bóveda entera: se pasan al de la bóveda y se borran de allí.
  */
-test('la copia servida sin almacén contesta `logins-unavailable`', async (t) => {
+test('la bóveda de la pestaña se trae los inicios de sesión que había', async (t) => {
   const core = await nucleo()
-  const handle = await startDeviceVault(comoElIframe(core), { client: clienteMudo() })
+  let borrado = false
+  const viejo = { v: 1, logins: {} }
+  const handle = await bovedaPestana(core, {
+    makeClient: clienteMudo,
+    legacyLogins: async () => ({ state: viejo, drop: () => { borrado = true } })
+  })
   t.after(() => handle.close())
-  assert.throws(() => handle.listLogins(), (e) => e.code === 'logins-unavailable')
+  assert.ok(handle.disk.exists('logins.json'), 'no se guardaron en el almacén de la bóveda')
+  assert.ok(borrado, 'la copia vieja se quedó: dos copias acaban diciendo cosas distintas')
+})
+
+/**
+ * LA CONSOLA DE ESTA PESTAÑA ADMINISTRA SU BÓVEDA con el mismo protocolo que usa contra el
+ * binario (`vault.admin`, `vault.secrets`), por el camino local y sin proxio. Es lo que
+ * hace que la pestaña tenga las mismas pantallas que el demonio: cajones, bloqueados y
+ * pedidos.
+ */
+test('la consola de la pestaña administra su propia bóveda por el camino local', async (t) => {
+  const core = await nucleo()
+  const handle = await bovedaPestana(core, { makeClient: clienteMudo })
+  t.after(() => handle.close())
+
+  assert.equal(await core.handlers.canAdminVault(), true, 'la maestra de la cuenta tiene que poder administrar su bóveda')
+  const bloqueados = await core.handlers.vaultAdmin({ op: 'blocked' })
+  assert.deepEqual(bloqueados?.items, [], 'la lista de bloqueados no llegó por el camino local')
+  const cajones = await core.handlers.vaultAdmin({ op: 'vars' })
+  assert.ok(cajones?.enc, 'los cajones llegan sellados a este aparato, como desde el binario')
+
+  // Bloquear y desbloquear: lo que hasta ahora solo hacía el binario.
+  const otro = await nucleo()
+  const pub = (await otro.handlers.publicMe()).publickey
+  await core.handlers.vaultAdmin({ op: 'block', sub: pub })
+  assert.equal((await core.handlers.vaultAdmin({ op: 'blocked' })).items.length, 1)
+  await core.handlers.vaultAdmin({ op: 'unblock', sub: pub })
+  assert.equal((await core.handlers.vaultAdmin({ op: 'blocked' })).items.length, 0)
+
+  // La lista de aparatos sale de la bóveda, con lo que da el binario.
+  const lista = await core.handlers.listVaultDevices()
+  assert.ok(Array.isArray(lista?.devices), 'la lista de aparatos no salió de la bóveda local')
+
+  // Al parar, la consola deja de tener a quién administrar.
+  await handle.close()
+  await assert.rejects(core.handlers.vaultAdmin({ op: 'blocked' }), /not paired/)
 })
 
 /** Un transporte que no habla con nadie: aquí se prueba el mostrador, no la red. */
 function clienteMudo () {
   return {
-    token: 'MUDO',
+    token: 'MUDO', isConnected: true, url: 'ws://mudo',
     on () {}, off () {},
     async connect () {}, async identify () {}, async identifyAs () {},
     async publish () {}, async list () { return [] },

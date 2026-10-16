@@ -1,0 +1,3 @@
+Copia vendorizada de @dotrino/roadmap@0.4.13 (dotrino-roadmap/src/{index,manifests}.js).
+NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
+El registro de versiones rotas que viaja con cada versión. Importa @dotrino/compat/ranges.

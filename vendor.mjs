@@ -16,7 +16,7 @@
  *
  *   node vendor.mjs
  */
-import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, copyFile, mkdir, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,8 +36,13 @@ export const VENDORED = [
     pkg: 'dotrino-vault/lib/package.json',
     from: 'dotrino-vault/lib/src',
     to: 'vault/vendor/vault',
-    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'loginClient.js', 'b64.js'],
+    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'loginClient.js', 'b64.js',
+      // LA BÓVEDA ENTERA: el mismo núcleo que el binario (`browser.js` → `core/`).
+      'browser.js', 'procContext.js', 'sealed.js', 'admin.js', 'revocation.js', 'core/'],
     note: [
+      'browser.js es la bóveda de esta pestaña: el MISMO núcleo que el binario (core/), con',
+      'el disco en IndexedDB. Importa @dotrino/{compat,roadmap,passmanager,store/core} y',
+      '@dotrino/identity/{facade,machine,content}, todos por el import map de index.html.',
       'index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),',
       '@dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y',
       '@dotrino/proxy-client (= ../proxy-client/), todos por el import map de index.html.',
@@ -79,6 +84,68 @@ export const VENDORED = [
   },
 ]
 
+// LO QUE IMPORTA EL NÚCLEO DE LA BÓVEDA (`@dotrino/vault/browser`). Solo lo carga la
+// pestaña que es bóveda, como el OPAQUE.
+VENDORED.push(
+  {
+    name: '@dotrino/compat',
+    repo: 'dotrino-compat',
+    pkg: 'dotrino-compat/package.json',
+    from: 'dotrino-compat/src',
+    to: 'vault/vendor/compat',
+    files: ['index.js', 'ranges.js', 'advisory.js'],
+    note: ['Qué versión es cada pieza y si pueden hablar (CONVENCIONES §14).'],
+  },
+  {
+    name: '@dotrino/roadmap',
+    repo: 'dotrino-roadmap',
+    pkg: 'dotrino-roadmap/package.json',
+    from: 'dotrino-roadmap/src',
+    to: 'vault/vendor/roadmap',
+    files: ['index.js', 'manifests.js'],
+    note: ['El registro de versiones rotas que viaja con cada versión. Importa @dotrino/compat/ranges.'],
+  },
+  {
+    name: '@dotrino/passmanager',
+    repo: 'dotrino-passmanager',
+    pkg: 'dotrino-passmanager/lib/package.json',
+    from: 'dotrino-passmanager/lib/src',
+    to: 'vault/vendor/passmanager',
+    files: ['./'],
+    note: ['El sobre de las contraseñas, el mismo que usan el binario y la extensión. Importa @dotrino/identity/content.'],
+  },
+  {
+    name: '@dotrino/store/core',
+    repo: 'dotrino-store',
+    pkg: 'dotrino-store/package.json',
+    from: 'dotrino-store/store',
+    to: 'vault/vendor/store',
+    files: ['core.js'],
+    note: ['Las reglas del almacén (lápidas, páginas): las mismas en el store y en la bóveda.'],
+  },
+)
+
+/**
+ * Los archivos de una entrada. Una que acaba en `/` es una CARPETA: se copian todos sus
+ * `.js`, con sus subcarpetas, porque sus imports relativos cuentan con la forma.
+ */
+export async function filesOf (v) {
+  const out = []
+  for (const f of v.files) {
+    if (!f.endsWith('/')) { out.push(f); continue }
+    const base = join(eco, v.from, f)
+    const walk = async (rel) => {
+      for (const e of await readdir(join(base, rel), { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name
+        if (e.isDirectory()) await walk(r)
+        else if (e.name.endsWith('.js') && !e.name.endsWith('.d.ts')) out.push(join(f, r).replace(/^\.\//, ''))
+      }
+    }
+    await walk('')
+  }
+  return out.sort()
+}
+
 /** La ruta de un repo hermano, o null si esta copia del ecosistema no lo tiene. */
 export const siblingPath = (rel) => {
   const p = join(eco, rel)
@@ -99,7 +166,8 @@ async function main () {
       continue
     }
     const ver = await version(v.pkg)
-    for (const f of v.files) {
+    const files = await filesOf(v)
+    for (const f of files) {
       // `f` puede llevar carpetas (`build/opaque.js`): la copia conserva la forma del
       // paquete, porque sus imports relativos cuentan con ella.
       const dest = join(here, v.to, f)
@@ -107,7 +175,7 @@ async function main () {
       await copyFile(join(eco, v.from, f), dest)
     }
     await writeFile(join(here, v.to, 'VERSION.txt'),
-      `Copia vendorizada de ${v.name}@${ver} (${v.from}/{${v.files.map((f) => f.replace(/\.js$/, '')).join(',')}}.js).\n` +
+      `Copia vendorizada de ${v.name}@${ver} (${v.from}/{${files.map((f) => f.replace(/\.js$/, '')).join(',')}}.js).\n` +
       'NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.\n' +
       v.note.join('\n') + '\n')
     console.log(`vendor: ${v.name}@${ver} → ${v.to}/`)

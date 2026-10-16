@@ -185,9 +185,9 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   core.onSyncStatus((p) => broadcast('sync', p))
   core.onVaultEvent((p) => broadcast('vault', p))
 
-  // ---- Modo SELF: este navegador actúa como bóveda (daemon device-vault) ----
-  // startDeviceVault convierte la identidad P en CA: atiende enrolamientos y consultas
-  // de revocación por el proxy. Solo UN iframe por origin es el daemon activo
+  // ---- Modo SELF: este navegador actúa como bóveda ----
+  // Corre la MISMA bóveda que el binario (`startBrowserVault`): emparejar, firmar, cajones,
+  // aprobaciones, consola remota, inicios de sesión. Solo UN iframe por origin es el activo
   // (navigator.locks): la pestaña VISIBLE sostiene el lock; al pasar a background lo
   // libera y otra pestaña visible lo toma. Así varias apps abiertas no compiten.
   const SELF_FLAG = 'dotrino.self-vault.enabled' // persistido en localStorage (kv)
@@ -208,79 +208,47 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       return /^wss?:\/\//.test(p || '') ? p : null
     } catch (_) { return null }
   })()
-  let daemon = null           // handle de startDeviceVault cuando ESTE iframe es el activo
+  let daemon = null           // la bóveda (`startBrowserVault`) cuando ESTE iframe es el activo
   let _lockResolver = null    // resolver del callback del lock (libera al resolverlo)
 
-  // Adaptador: startDeviceVault exige identity.{me.publickey, signData, signDelegation,
-  // listDelegations, revokeDelegation}; el core los expone vía handlers + getter me.
-  // `admitMember`/`profileActa` son opcionales para el mostrador de enrolamiento, pero sin
-  // ellos aprobar emitiría el cert SIN meter al dispositivo en el acta: se pasan también.
-  const selfIdentity = {
-    get me () { return core.me },
-    signData: (data) => handlers.signData({ data }),
-    signDelegation: (sub, scope, opts) => handlers.signDelegation({ sub, scope, ...(opts || {}) }),
-    listDelegations: () => handlers.listDelegations({}),
-    revokeDelegation: (nonce) => handlers.revokeDelegation({ nonce }),
-    revokeDevice: (sub) => handlers.revokeDevice({ sub }),
-    admitMember: (m) => handlers.admitMember(m),
-    profileActa: () => handlers.profileActa({}),
-    // Camino A (`mode: 'adopt'`): la bóveda se queda con la cuenta que trae el aparato,
-    // y para eso tiene que poder ENTRAR en su acta. Sin esto, adoptar fallaba con un
-    // «no es una función» en vez de con un error del protocolo.
-    joinProfile: (acta) => handlers.joinProfile({ acta })
-  }
+  // La dirección `nombre@AB12-CD34-EF56` sale del acta de la cuenta.
+  const selfIdentity = { profileActa: () => handlers.profileActa({}) }
 
   /**
-   * EL ESCRITORIO DE LOS INICIOS DE SESIÓN CON CONTRASEÑA, con el almacén de este navegador.
-   *
-   * La bóveda no decide dónde se guarda nada: en el navegador no hay archivos, así que el
-   * estado lo pone quien la monta —esto—. Sin escritorio la pestaña contesta
-   * `logins-unavailable`, que es distinto de «contraseña incorrecta» y por eso se ve.
-   *
-   * Cuelga del PERFIL ACTIVO: los inicios de sesión son de una cuenta, no de este
-   * navegador, y dos cuentas en el mismo equipo no comparten usuarios.
-   *
-   * Se carga solo aquí, y no arriba, porque arrastra el OPAQUE en WASM (~270 KB): el
-   * iframe lo cargan las ~30 apps del ecosistema y solo esta pestaña es bóveda.
-   *
-   * Lo que guarda aguanta lo mismo que el disco del daemon: con una copia de este
-   * `localStorage` se pueden probar contraseñas sin límite contra el registro de OPAQUE.
-   * Lo único que aguanta ahí es que la contraseña sea larga (`temporary-access.md` §4).
+   * LOS INICIOS DE SESIÓN QUE ESTA PESTAÑA GUARDABA ANTES de correr la bóveda entera. Ahora
+   * viven en el almacén de la bóveda (IndexedDB cifrado, uno por perfil); lo de antes se le
+   * pasa una vez y se borra de aquí. Si está y no parsea, REVIENTA a propósito: tomarlo por
+   * vacío perdería los inicios de sesión de la cuenta sin que nadie se enterara.
    */
-  async function makeLoginDesk () {
-    const { createLoginDesk } = await import('@dotrino/vault/password-logins')
+  async function legacyLogins () {
     const { id: pid } = await handlers.currentProfile()
-    if (!pid) throw new Error('no profile: password logins belong to an account')
+    if (!pid) return null
     const key = `dotrino.identity.p.${pid}.self-vault.logins`
-    return createLoginDesk({
-      load: () => {
-        const raw = kv.getItem(key)
-        // Si está y no parsea, REVIENTA aquí a propósito: devolver `null` haría nacer el
-        // escritorio vacío, y el primer guardado se llevaría por delante todos los inicios
-        // de sesión de esta cuenta sin que nadie se enterara.
-        return raw ? JSON.parse(raw) : null
-      },
-      save: (s) => kv.setItem(key, JSON.stringify(s))
-    })
+    const raw = kv.getItem(key)
+    if (!raw) return null
+    return { state: JSON.parse(raw), drop: () => kv.removeItem(key) }
   }
 
   async function startSelfDaemon () {
     if (daemon) return
     try {
-      // Import dinámico: aísla fallos del vendor del arranque del vault (cargado por
-      // todas las apps). El import map de index.html resuelve @dotrino/vault.
-      const { startDeviceVault } = await import('@dotrino/vault')
-      daemon = await startDeviceVault(selfIdentity, {
+      // LA MISMA BÓVEDA QUE EL BINARIO (`@dotrino/vault/browser`): el núcleo entero, con el
+      // disco en IndexedDB. Import dinámico: el iframe lo cargan las ~30 apps y solo esta
+      // pestaña es bóveda; además aísla un fallo del vendor del arranque de la identidad.
+      const { startBrowserVault } = await import('@dotrino/vault/browser')
+      daemon = await startBrowserVault({
+        core,
         ...(selfProxyUrl ? { proxyUrl: selfProxyUrl } : {}),
-        logins: await makeLoginDesk()
+        legacyLogins,
+        onPendingChange: () => broadcast('selfVault', { pending: daemon ? daemon.listPending() : [] }),
+        log: (...a) => console.log(...a)
       })
-      daemon.onPendingChange(() => broadcast('selfVault', { pending: daemon.listPending() }))
       broadcast('selfVault', { running: true })
     } catch (e) { daemon = null; broadcast('selfVault', { error: e?.message || String(e) }) }
   }
   function stopSelfDaemon () {
     if (!daemon) return
-    try { daemon.close() } catch {}
+    try { daemon.close()?.catch?.(() => {}) } catch {}
     daemon = null
     broadcast('selfVault', { running: false })
   }
@@ -340,6 +308,9 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     // agentes siempre, sin depender de qué pestaña sostenga el lock del daemon.
     listVaultDevices: async () => {
       if (kv.getItem(SELF_FLAG) !== '1') return handlers.listVaultDevices({})
+      // Con la bóveda encendida en ESTA pestaña, la lista sale de ella (por el camino
+      // local): trae lo mismo que la del binario. Sin ella encendida, se lee lo guardado.
+      if (daemon) return handlers.listVaultDevices({})
       const { issued, revoked } = await handlers.listDelegations({})
       const now = Date.now()
       const bySub = new Map()
@@ -491,7 +462,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     selfVaultLoginRemove: async ({ user } = {}) => {
       const d = pidaDaemon()
       const fila = d.listLogins().find((x) => x.user === user)
-      const r = d.removeLogin({ user })
+      const r = await d.removeLogin({ user })
       if (r?.ok && fila?.pub) {
         try { await handlers.revokeDevice({ sub: fila.pub }) } catch (e) {
           throw Object.assign(new Error(`the login is gone but its key is still in the record: ${e.message}`), { code: 'revoke-failed' })

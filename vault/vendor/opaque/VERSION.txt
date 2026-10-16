@@ -1,4 +1,4 @@
-Copia vendorizada de @dotrino/opaque@0.1.0 (dotrino-opaque/{src/index,build/opaque,build/wasm-bytes}.js).
+Copia vendorizada de @dotrino/opaque@0.1.0 (dotrino-opaque/{build/opaque,build/wasm-bytes,src/index}.js).
 NO se edita a mano: la escribe `node vendor.mjs` y la vigila test/vendor-up-to-date.test.mjs.
 src/index.js importa ../build/{opaque,wasm-bytes}.js, así que la copia CONSERVA
 esas dos carpetas: aplanarla rompería el import relativo.

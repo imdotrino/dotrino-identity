@@ -24,7 +24,7 @@ import * as Content from './content.js'
 import { syncPeers, stampOf } from './peerSync.js'
 import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_TTL_MS } from './assertion.js'
 import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
-import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck } from './remote.js'
+import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck, registerLocalVault } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
@@ -791,6 +791,33 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const encKeyId = async (encPub) => (await pubkeyIdOf(encPub)).slice(0, 16)
 
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
+
+  /**
+   * LA BÓVEDA QUE CORRE AQUÍ MISMO. Cuando esta pestaña o esta extensión ES la bóveda de la
+   * cuenta (`startBrowserVault` de `@dotrino/vault`), administrarla y aprobar sus pedidos se
+   * hace con el MISMO protocolo que contra el binario, firmado con la llave del perfil y con
+   * el papel que la bóveda se da a sí misma; el viaje lo hace el camino local de
+   * `remote.js`, sin proxio.
+   *
+   * Vive en memoria y NO se guarda como emparejamiento: este navegador no tiene «una bóveda
+   * aparte», y fingirlo haría creer, por ejemplo, que lo suyo está respaldado en otro sitio.
+   * Lo pone quien levanta la bóveda (`setSelfVault`) y lo quita al pararla.
+   */
+  let selfLink = null
+  let selfLinkOff = null
+  /** El enlace con el que administrar: el emparejamiento si lo hay, y si no, la bóveda local. */
+  const adminLink = () => {
+    const v = loadVaultCert(); const device = loadVaultDevice()
+    if (v?.cert && device) return { v, device, self: false }
+    if (selfLink && publickeyJwkStr && masterKey()) {
+      return {
+        v: { cert: selfLink.cert, master: publickeyJwkStr, proxy: selfLink.proxy },
+        device: { publickey: publickeyJwkStr, privateKey: masterKey(), ...(pageMachine ? { machine: pageMachine } : {}) },
+        self: true
+      }
+    }
+    return null
+  }
   // DÓNDE CORRE ESTE APARATO (`machine.js`). Lo dice la PÁGINA al conectar (`setMachine`),
   // porque el iframe no ve si está dentro de una extensión o de la app nativa, y viaja con
   // cada pedido firmado a la bóveda para que su lista lo enseñe al día. Sin página que lo
@@ -3097,8 +3124,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * master, en su máquina.
      */
     async vaultAdmin ({ op, ...rest } = {}) {
-      const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
+      const link = adminLink()
+      if (!link) throw new Error('this device is not paired with a vault')
+      const { v, device } = link
+      if (link.self) return remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest })
       maybeRenewVaultCert()
       try { return await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
@@ -3114,8 +3143,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      */
     async vaultApprovals ({ op, id, profile = null, notify } = {}) {
       if (profile && profile !== currentPid) return approvalsDeOtroPerfil(profile, { op, id })
-      const v = loadVaultCert(); const device = loadVaultDevice()
-      if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
+      const link = adminLink()
+      if (!link) throw new Error('this device is not paired with a vault')
+      const { v, device } = link
+      if (link.self) {
+        const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, notify })
+        if (Array.isArray(r?.items)) return { ...r, items: await abrirContextos(r.items, currentPid) }
+        return r
+      }
       maybeRenewVaultCert()
       const ask = (cert) => remoteApproval({ master: v.master, proxy: v.proxy, device, cert, op, id, notify, onRevoked: wipeVaultLink })
       try {
@@ -3164,12 +3199,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       try { maybeRenewVaultCert() } catch (_) {}
       const perfiles = loadProfiles()
       const salida = await Promise.all(perfiles.map(async (p) => {
-        const v = p.id === currentPid ? loadVaultCert() : vaultCertOf(p.id)
+        // La activa: su emparejamiento, o la bóveda que corre aquí mismo si no tiene otro.
+        const propia = p.id === currentPid && !loadVaultCert() ? adminLink() : null
+        const v = p.id === currentPid ? (loadVaultCert() || propia?.v || null) : vaultCertOf(p.id)
         if (!v?.cert) return null                                             // sin bóveda: no es asunto suyo
         if (!(v.cert.scope || []).includes('vault:approve')) return null      // no aprueba: tampoco
         const base = { profile: p.id, name: p.name || '', current: p.id === currentPid }
         let device = null
-        try { device = p.id === currentPid ? loadVaultDevice() : await signerForProfile(p.id) } catch (e) {
+        try { device = p.id === currentPid ? (propia?.device || loadVaultDevice()) : await signerForProfile(p.id) } catch (e) {
           return { ...base, items: [], error: e?.code || 'no-key' }
         }
         if (!device) return { ...base, items: [], error: 'no-key' }
@@ -3210,6 +3247,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
     /** ¿Puede ESTE dispositivo aprobar pedidos? Mismo criterio que `canAdminVault`. */
     async canApproveVault () {
+      if (!loadVaultCert() && selfLink) return (adminLink()?.v.cert.scope || []).includes('vault:approve')
       if (certDesfasadoDelActa()) { try { await renovarCert() } catch (_) {} }
       const v = loadVaultCert()
       return !!v?.cert && (v.cert.scope || []).includes('vault:approve')
@@ -3225,6 +3263,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // renovarlo aquí mismo. Disparar la renovación y contestar «no» dejaba la consola
       // escondida hasta la siguiente visita, y el dueño —que acababa de dar el permiso— no
       // tenía forma de saber que solo faltaba recargar.
+      if (!loadVaultCert() && selfLink) return (adminLink()?.v.cert.scope || []).includes('vault:admin')
       if (certDesfasadoDelActa()) { try { await renovarCert() } catch (_) {} }
       const v = loadVaultCert()
       return !!v?.cert && (v.cert.scope || []).includes('vault:admin')
@@ -3233,6 +3272,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
     async listVaultDevices () {
       const v = loadVaultCert(); const device = loadVaultDevice()
+      // ESTE NAVEGADOR ES LA BÓVEDA: la lista sale de ella, por el camino local, con lo mismo
+      // que da el binario (qué versión corre cada aparato, dónde corre, si le llegan avisos).
+      // El acta es la nuestra: no hay nada que adoptar.
+      if ((!v?.cert || !device) && adminLink()?.self) {
+        const self = adminLink()
+        return remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0 })
+      }
       if (!v?.cert || !device) {
         // SOLO SE AVISA SI ES RARO. Un aparato que manda en su propia cuenta —o que aún no
         // entró en ninguna bóveda— no está paired y no pasa absolutamente nada: avisar ahí
@@ -3640,6 +3686,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `handlers`) porque ninguna aplicación tiene por qué poder instalar una identidad.
      */
     adoptLogin,
+    /**
+     * La bóveda que corre aquí mismo se presenta (`startBrowserVault`): `{ cert, proxy, open }`
+     * —`open` es su canal local, ver `registerLocalVault` en `remote.js`—, o `null` al
+     * pararse (ver `adminLink`). En el núcleo y no en `handlers`: ninguna
+     * aplicación tiene por qué poder decir dónde está la bóveda de esta cuenta.
+     */
+    setSelfVault (self = null) {
+      if (self && (!self.cert || typeof self.proxy !== 'string' || typeof self.open !== 'function')) throw new Error('setSelfVault: cert, proxy and open are required')
+      try { selfLinkOff?.() } catch (_) {}
+      selfLinkOff = null
+      selfLink = self ? { cert: self.cert, proxy: self.proxy } : null
+      if (self && publickeyJwkStr) selfLinkOff = registerLocalVault(publickeyJwkStr, self.open)
+    },
     onSyncStatus (fn) { if (sync) sync.onStatus(fn) },
     onVaultEvent (fn) { vaultListeners.add(fn); return () => vaultListeners.delete(fn) }
   }

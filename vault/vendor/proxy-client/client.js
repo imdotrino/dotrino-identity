@@ -67,6 +67,12 @@ export class WebSocketProxyClient {
     this.autoReconnect = options.autoReconnect !== false
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5
     this.reconnectDelay = options.reconnectDelay ?? 3000
+    // UN SOCKET QUE NO ABRE NI FALLA. El WebSocket de Node (y el del navegador) no tiene
+    // tope para el saludo: si el TCP entra y nadie contesta el upgrade, se queda en
+    // CONNECTING sin disparar `open`, `error` ni `close`. Como el siguiente reintento solo
+    // se programa desde esos eventos, la cadena de reconexión se paraba ahí, en silencio.
+    // Se abandona el intento pasado este tiempo y cuenta como un fallo más.
+    this.connectTimeout = options.connectTimeout ?? 15000
     this.enableWebRTC = options.enableWebRTC !== false
     this.iceServers = options.iceServers || null
 
@@ -225,6 +231,8 @@ export class WebSocketProxyClient {
   connect () {
     return new Promise((resolve, reject) => {
       if (this._connected) return resolve(this.token)
+      // Un reintento que estaba esperando su turno sobra: este `connect()` ya abre uno.
+      if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
       this._connectResolve = resolve
       this._connectReject = reject
       this._open()
@@ -1242,11 +1250,21 @@ export class WebSocketProxyClient {
 
   _open () {
     registerTransport(this)
+    // El intento anterior, si sigue a medio abrir, se suelta: sus eventos tardíos ya se
+    // ignoran (`ws !== this.ws`), pero el socket quedaría abierto sin dueño.
+    const prev = this.ws
+    if (prev && prev.readyState === 0 /* CONNECTING */) {
+      this.ws = null   // antes de cerrarlo: su `close` ya no es de este cliente
+      try { prev.close() } catch (_) {}
+    }
     const ws = new WebSocket(this.url)
     this.ws = ws
+    const openTimer = this.connectTimeout > 0 ? setTimeout(() => this._onConnectTimeout(ws), this.connectTimeout) : null
+    openTimer?.unref?.()
     // `ws !== this.ws` ⇒ es un socket que ya abandonamos (p.ej. por heartbeat
     // muerto). Ignoramos sus eventos tardíos para no disparar reconexiones dobles.
     ws.addEventListener('open', () => {
+      if (openTimer) clearTimeout(openTimer)
       if (ws !== this.ws) return
       this._connected = true
       this._reconnectAttempts = 0
@@ -1269,6 +1287,7 @@ export class WebSocketProxyClient {
       }
     })
     ws.addEventListener('close', (ev) => {
+      if (openTimer) clearTimeout(openTimer)
       if (ws !== this.ws) return
       this._stopHeartbeat()
       const wasConnected = this._connected
@@ -1299,6 +1318,23 @@ export class WebSocketProxyClient {
         this._scheduleReconnect()
       }
     })
+  }
+
+  // El intento no abrió ni falló a tiempo: se suelta y se trata como un cierre fallido.
+  _onConnectTimeout (ws) {
+    if (ws !== this.ws || this._connected) return
+    this.ws = null   // a partir de acá, los eventos tardíos de `ws` se ignoran
+    try { ws.close() } catch (_) {}
+    const err = errorCon(`could not open the connection to ${this.url} in ${Math.round(this.connectTimeout / 1000)}s`, 'CONNECT_TIMEOUT')
+    this._emit('error', { type: 'connect_timeout', error: err })
+    if (this._connectReject) {
+      this._connectReject(err)
+      this._connectResolve = null
+      this._connectReject = null
+    }
+    // Lo mismo que en `close`: se sigue reintentando solo si esto ya era un reintento. Un
+    // `connect()` inicial que no abre se rechaza y ya.
+    if (this._reconnectAttempts > 0 && this.autoReconnect) this._scheduleReconnect()
   }
 
   // ---------- heartbeat ----------

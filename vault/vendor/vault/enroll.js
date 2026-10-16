@@ -31,6 +31,7 @@
  */
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
 import { verifyContinuity, canSeal, DEVICE_CAPS, VAULT_CN } from '@dotrino/identity/acta'
+import { cleanMachine } from '@dotrino/identity/machine'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -113,7 +114,7 @@ export async function deviceIdOf (pub) {
  * @param {(pub:string, obj:object)=>void} opts.sendByPubkey   dirigir por pubkey (cola offline 24 h).
  * @param {(op:string, info?:object)=>void} [opts.audit]
  * @param {(...a:any[])=>void} [opts.log]
- * @param {(c:{deviceId:string, scope:any, label:string})=>void} [opts.onChallenge]  un dispositivo espera aprobación.
+ * @param {(c:{deviceId:string, scope:any, label:string, machine?:any, mode?:string})=>void} [opts.onChallenge]  un dispositivo espera aprobación.
  * @param {()=>void} [opts.onPendingChange]
  * @param {(sub:string)=>void} [opts.onDeviceRemoved]  se quitó un aparato (fuera del acta y sin papeles):
  *   para que quien guarde algo indexado por esa llave lo suelte. Se avisa desde AQUÍ y no desde
@@ -210,7 +211,7 @@ export function createEnrollDesk ({
   function listPending () {
     return [...pending.values()]
       .filter((p) => p.state === 'PENDING_CONFIRM')
-      .map((p) => ({ deviceId: p.deviceId, label: p.label || '', scope: p.scope }))
+      .map((p) => ({ deviceId: p.deviceId, label: p.label || '', scope: p.scope, machine: p.machine || null }))
   }
 
   function findPending (deviceId) {
@@ -314,12 +315,15 @@ export function createEnrollDesk ({
     // cuál era cuál. Si en `pair` le diste un nombre, ese es el nombre; el del aparato
     // sigue valiendo como propuesta cuando no dijiste nada.
     if (d.label && !pend.label) pend.label = String(d.label).slice(0, 60)
+    // DÓNDE CORRE (`@dotrino/identity/machine`): entra al acta con el aparato, para que la
+    // lista lo distinga de los demás aunque todos se llamen igual.
+    pend.machine = cleanMachine(d.machine)
     // Camino A: de qué cuenta estamos hablando. Se guarda para poder comprobar, cuando
     // llegue el acta sellada, que es la que este dispositivo dijo que iba a entregar.
     if (intent === 'adopt' && typeof d.profileId === 'string') pend.profileId = d.profileId
 
     reply(from, { type: MSG_ENROLL_CHALLENGE, deviceId })
-    fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', mode: pend.mode || 'join' })
+    fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', machine: pend.machine || null, mode: pend.mode || 'join' })
     fire(onPendingChange)
     return { deviceId }
   }
@@ -396,7 +400,7 @@ export function createEnrollDesk ({
     const { cert } = await identity.signDelegation(pend.dpub, pend.scope, { ttlMs: pend.ttlMs, label: pend.label })
 
     try {
-      await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null })
+      await identity.admitMember({ pub: pend.dpub, encPub: pend.encPub || null, label: pend.label || '', cn, caps, cert, continuity: pend.continuity || null, machine: pend.machine || null })
     } catch (e) {
       // El certificado ya está firmado y no se entrega: se revoca, para que no quede uno
       // válido suelto. Si ni eso sale, se dice también.

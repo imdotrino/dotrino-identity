@@ -281,11 +281,53 @@ function vaultError (p) {
   return e
 }
 
-async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
-  if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function') || !cert) throw new Error('missing pairing data')
+/**
+ * LA BÓVEDA DE ESTE MISMO NAVEGADOR, sin dar la vuelta por el proxio.
+ *
+ * Cuando esta pestaña o esta extensión ES la bóveda (`@dotrino/vault`, `startBrowserVault`),
+ * lo que el aparato le pide a su bóveda —administrar, aprobar, firmar— va directo al núcleo
+ * que corre aquí. Es el mostrador local del binario en el navegador: el MISMO protocolo, la
+ * misma firma y el mismo certificado, comprobados igual. Alcanzar el atajo no autoriza nada.
+ *
+ * `open(onReply)` → `{ send(payload), close() }`. Lo registra quien levanta la bóveda.
+ */
+const localVaults = new Map()
+export function registerLocalVault (master, open) {
+  if (typeof master !== 'string' || typeof open !== 'function') throw new Error('registerLocalVault: master and open are required')
+  localVaults.set(master, open)
+  return () => { if (localVaults.get(master) === open) localVaults.delete(master) }
+}
+
+/** Un cliente con la forma del del proxio que habla con la bóveda local. */
+function localClient (open) {
+  const handlers = new Set()
+  const chan = open((reply) => { for (const h of [...handlers]) { try { h('local', reply) } catch (_) {} } })
+  return {
+    connect: async () => {},
+    identifyAs: async () => {},
+    on (ev, fn) {
+      if (ev !== 'message') return () => {}
+      handlers.add(fn)
+      return () => handlers.delete(fn)
+    },
+    sendByPubkey (_to, payload) { chan.send(payload) },
+    close () { handlers.clear(); chan.close() }
+  }
+}
+
+/** El cliente para hablar con `master`: el local si esa bóveda corre aquí, y si no el del proxio. */
+async function clientFor (proxy, master) {
+  const open = master ? localVaults.get(master) : null
+  if (open) return localClient(open)
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
   await client.connect()
+  return client
+}
+
+async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
+  if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function') || !cert) throw new Error('missing pairing data')
+  const client = await clientFor(proxy, master)
   try {
     try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
     const signed = { ...data, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
@@ -336,9 +378,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
  */
 export async function checkMembership ({ master, proxy, device, onRevoked, timeoutMs = 12000 } = {}) {
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function')) throw new Error('missing device data')
-  const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
-  await client.connect()
+  const client = await clientFor(proxy, master)
   try {
     // Identificarse hace además que el proxy entregue lo ENCOLADO (un aviso de cuando
     // estaba apagado, si todavía está dentro de las 24 h).

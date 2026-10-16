@@ -20,14 +20,18 @@ import { readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { VENDORED, siblingPath } from '../vendor.mjs'
+import { VENDORED, siblingPath, filesOf } from '../vendor.mjs'
 
 const here = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+// Las carpetas (`core/`) se expanden a sus archivos: es lo que de verdad se copia.
+const FILES = new Map()
+for (const v of VENDORED) FILES.set(v, siblingPath(v.from) ? await filesOf(v) : v.files.filter((f) => !f.endsWith('/')))
 
 for (const v of VENDORED) {
   const src = siblingPath(v.from)
   test(`vendor: ${v.name} está al día`, { skip: src ? false : `sin ${v.repo}/ al lado` }, async () => {
-    for (const f of v.files) {
+    for (const f of FILES.get(v)) {
       const [fuente, copia] = await Promise.all([
         readFile(join(src, f), 'utf8'),
         readFile(join(here, v.to, f), 'utf8'),
@@ -56,7 +60,7 @@ test('el import map resuelve todo lo que el vendor importa por nombre', async ()
 
   const desnudos = new Set()
   for (const v of VENDORED) {
-    for (const f of v.files) {
+    for (const f of FILES.get(v)) {
       const code = await readFile(join(here, v.to, f), 'utf8')
       for (const m of code.matchAll(/(?:from|import)\s*\(?\s*['"](@[^'"]+)['"]/g)) desnudos.add(m[1])
     }
@@ -77,7 +81,7 @@ test('cada import relativo de lo vendorizado está en la copia', async () => {
   const { existsSync } = await import('node:fs')
   const faltan = []
   for (const v of VENDORED) {
-    for (const f of v.files) {
+    for (const f of FILES.get(v)) {
       const code = await readFile(join(here, v.to, f), 'utf8')
       for (const m of code.matchAll(/(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
         const dest = join(here, v.to, dirname(f), m[1])
@@ -106,7 +110,7 @@ test('cada import relativo de lo vendorizado está en la copia', async () => {
  */
 test('nada de lo vendorizado está fuera de git', async () => {
   const { execFileSync } = await import('node:child_process')
-  const rutas = VENDORED.flatMap((v) => v.files.map((f) => `${v.to}/${f}`))
+  const rutas = VENDORED.flatMap((v) => FILES.get(v).map((f) => `${v.to}/${f}`))
   const ignorados = []
   for (const r of rutas) {
     try {
