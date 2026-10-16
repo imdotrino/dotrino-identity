@@ -3,6 +3,7 @@ import { seal, open, isSealed } from './sealing.js'
 import { buildEncPubStatement, readEncPubStatement, isEncPub } from './encpub.js'
 import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection, pinTurnToIPv4 } from './webrtc.js'
 import { TrafficStats, utf8Length, registerTransport, unregisterTransport } from './stats.js'
+import { splitParts, isPart, Reassembler, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS } from './parts.js'
 
 /**
  * Error con un `code` estable.
@@ -186,7 +187,12 @@ export class WebSocketProxyClient {
     this._handlers = new Map()
     this._pending = new Map() // messageId -> { resolve, reject, timer }
     this._nextId = 1
-    this._tokenWatch = new Map() // messageId -> { token, sobre, peerPubkey, timer }
+    this._tokenWatch = new Map() // messageId -> { token, sobre, peerPubkey, timer, queueFallback }
+    // Mensajes grandes que llegan en partes (parts.js). Uno que se queda a medias se DICE:
+    // con él se pierde el mensaje entero, y eso no puede pasar callado.
+    this._parts = new Reassembler({
+      onExpire: (info) => this._emit('error', { type: 'parts_incomplete', code: 'parts-incomplete', ...info })
+    })
     this._traffic = new TrafficStats()
 
     this._rtc = this.enableWebRTC ? new WebRTCManager({
@@ -501,10 +507,19 @@ export class WebSocketProxyClient {
    */
   async sendSealed (toPubkeys, payload, { peerEncPub, ...opts } = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
+    // Por pubkey el mensaje puede quedarse ESPERANDO en el proxio, y ahí se deja como mucho
+    // 1 MB (parts.js). Lo que pasa de eso no se manda: se dice, y la app decide.
+    const json = JSON.stringify(payload)
+    if (json.length > QUEUE_MAX_CHARS) {
+      throw errorCon(`sendSealed: ${json.length} chars is more than can wait in the proxy (${QUEUE_MAX_CHARS}); send it by token while both ends are connected`, 'too-big-for-queue')
+    }
+    const pieces = json.length > PROXY_PART_CHARS ? splitParts(json, PROXY_PART_CHARS) : [payload]
     // Con la llave puesta a mano se respeta tal cual: quien la pasa está diciendo que ya
     // sabe de quién es (se emparejaron), y un sobre vale para todos los destinatarios.
     if (peerEncPub) {
-      this._sendByPubkeyRaw(list, await this._seal(payload, peerEncPub, list.length === 1 ? list[0] : undefined), opts)
+      for (const piece of pieces) {
+        this._sendByPubkeyRaw(list, await this._seal(piece, peerEncPub, list.length === 1 ? list[0] : undefined), opts)
+      }
       return
     }
     // Sin ella, se averigua. UNA ENVOLTURA POR DESTINATARIO: cada uno tiene su llave, así
@@ -515,7 +530,7 @@ export class WebSocketProxyClient {
     // sin forma de saber cuál mitad.
     const llaves = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
     for (const [pk, encPub] of llaves) {
-      this._sendByPubkeyRaw([pk], await this._seal(payload, encPub, pk), opts)
+      for (const piece of pieces) this._sendByPubkeyRaw([pk], await this._seal(piece, encPub, pk), opts)
     }
   }
 
@@ -547,10 +562,70 @@ export class WebSocketProxyClient {
       peerEncPub = await this.encPubOf(peerPubkey)
     }
     if (!peerPubkey && tokens.length === 1) peerPubkey = this.pubkeyOfToken(tokens[0]) || undefined
-    const sobre = await this._seal(payload, peerEncPub, peerPubkey)
-    if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], sobre, peerPubkey); return }
-    // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
-    this.send(tokens, sobre)
+    // Por token los dos están conectados y NO HAY TOPE (parts.js): lo que no cabe en un
+    // mensaje del camino que toca sale en partes. El tamaño de parte lo decide el camino
+    // de ahora: el canal directo admite mucho menos por mensaje que el proxio.
+    const json = JSON.stringify(payload)
+    const direct = tokens.length === 1 && !!this._rtc?.isOpen(tokens[0])
+    const size = direct ? DIRECT_PART_CHARS : PROXY_PART_CHARS
+    if (json.length <= size) {
+      const sobre = await this._seal(payload, peerEncPub, peerPubkey)
+      if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], sobre, peerPubkey); return }
+      // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
+      this.send(tokens, sobre)
+      return
+    }
+    // Por el proxio en vivo hay tope (parts.js): lo que pasa de él solo sale por canal
+    // directo. Se pide el canal para que el siguiente intento lo encuentre abierto.
+    if (!direct && json.length > RELAY_MAX_CHARS) {
+      this._upgradeDirect(tokens)
+      throw errorCon(`sendSealedTo: ${json.length} chars is more than goes through the proxy live (${RELAY_MAX_CHARS}); it needs a direct channel`, 'too-big-for-relay')
+    }
+    // Si el token muere a mitad, lo que quede se iría a la cola por pubkey; solo se permite
+    // si el mensaje entero cabe ahí. Si no, se dice (`too-big-for-queue`), no se deja.
+    const queueFallback = json.length <= QUEUE_MAX_CHARS
+    // Y si el canal directo se cae a mitad, el resto va por el proxio en vivo solo si el
+    // mensaje entero cabe por ahí; si no, se para y se dice (`direct-lost`).
+    const relayFallback = json.length <= RELAY_MAX_CHARS
+    for (const piece of splitParts(json, size)) {
+      const sobre = await this._seal(piece, peerEncPub, peerPubkey)
+      if (tokens.length === 1 && peerPubkey) await this._sendPiece(tokens[0], sobre, peerPubkey, queueFallback, relayFallback)
+      else this.send(tokens, sobre)
+    }
+  }
+
+  /**
+   * POR DÓNDE LE LLEGA AHORA un mensaje a este token: `socket` (la otra punta en esta
+   * máquina), `direct` (WebRTC sin nadie en medio), `turn` (WebRTC por el relevo, que no puede
+   * leer lo que pasa), `proxy` (en vivo por el proxio) u `offline` (no hay conexión: por
+   * pubkey quedaría esperando en el proxio). Cada camino tiene su tope (parts.js), y para eso
+   * existe esto: que la app lo enseñe antes de que el usuario intente algo que no cabe.
+   * `webrtc` es un canal directo abierto del que todavía no se sabe si va por TURN.
+   * @param {string|null} token
+   * @returns {Promise<'socket'|'direct'|'turn'|'webrtc'|'proxy'|'offline'>}
+   */
+  async routeTo (token) {
+    if (!this._connected) return 'offline'
+    if (!token) return 'offline'
+    if (this._rtc?.isOpen(token)) {
+      const peer = this._rtc.peers.get(token)
+      try { return (await this._rtc.probeRoute(peer)) || 'webrtc' } catch (_) { return 'webrtc' }
+    }
+    return 'proxy'
+  }
+
+  /**
+   * Una parte por token: por el canal directo esperando a que vacíe su búfer (sin eso, un
+   * archivo grande lo desborda y el navegador cierra el canal), o por el proxio en vivo con
+   * una pausa corta entre partes, para no chocar con su límite de mensajes por segundo.
+   */
+  async _sendPiece (token, sobre, peerPubkey, queueFallback, relayFallback = true) {
+    if (this._rtc && await this._rtc.sendDirect(token, JSON.stringify(sobre))) return
+    if (!relayFallback) {
+      throw errorCon('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
+    }
+    this._sendToTokenOrQueue(token, sobre, peerPubkey, { queueFallback, skipDirect: true })
+    await new Promise((r) => setTimeout(r, 20))
   }
 
   /**
@@ -585,16 +660,16 @@ export class WebSocketProxyClient {
    * `token_gone` para que la app deje de usar ese token. No bloquea a nadie: se manda ya y
    * el arreglo, si hace falta, llega detrás.
    */
-  _sendToTokenOrQueue (token, sobre, peerPubkey) {
+  _sendToTokenOrQueue (token, sobre, peerPubkey, { queueFallback = true, skipDirect = false } = {}) {
     if (this.requireSealed && !this._isSealed(sobre)) {
       throw errorCon('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
     }
     const messageStr = JSON.stringify(sobre)
-    if (this._rtc && this._rtc.trySend(token, messageStr)) return
+    if (!skipDirect && this._rtc && this._rtc.trySend(token, messageStr)) return
     const id = `msg_${this._nextId++}`
     const timer = setTimeout(() => this._tokenWatch.delete(id), 15000)
     timer.unref?.()
-    this._tokenWatch.set(id, { token, sobre, peerPubkey, timer })
+    this._tokenWatch.set(id, { token, sobre, peerPubkey, timer, queueFallback })
     try {
       this._sendRaw({ to: [token], message: messageStr, id })
     } catch (e) {
@@ -613,6 +688,11 @@ export class WebSocketProxyClient {
     this._tokenWatch.delete(data.id)
     if (!Array.isArray(data.failed) || !data.failed.includes(w.token)) return
     this._emit('token_gone', w.token, w.peerPubkey)
+    // Una parte de un mensaje que no cabe en la cola no se deja en el proxio (parts.js).
+    if (!w.queueFallback) {
+      this._emit('error', { type: 'client', error: 'the peer left in the middle of a message too big to wait in the proxy', code: 'too-big-for-queue', peerPubkey: w.peerPubkey })
+      return
+    }
     try { this._sendByPubkeyRaw([w.peerPubkey], w.sobre) } catch (e) { this._emit('error', { type: 'client', error: e.message, code: e.code || null }) }
   }
 
@@ -813,7 +893,16 @@ export class WebSocketProxyClient {
         // Quién selló (la llave de cifrado), si el sobre lo dice: es lo que autentica al
         // remitente, porque solo quien tiene esa privada pudo armarlo.
         const senderEncPub = this.sealing?.senderOf?.(payload) || null
-        this._emit('message', from, opened, { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) })
+        const fullMeta = { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) }
+        if (isPart(opened)) {
+          // Se agrupa por quien selló: solo esa llave pudo armar cada parte.
+          let whole
+          try { whole = this._parts.add(senderEncPub || meta.fromPubkey || from || '', opened) }
+          catch (e) { this._emit('error', { type: 'bad_part', from, code: e.code || 'bad-part', error: e }); return }
+          if (whole !== null) this._emit('message', from, whole, { ...fullMeta, parts: opened.__dotrino_part.n })
+          return
+        }
+        this._emit('message', from, opened, fullMeta)
       } catch (e) {
         // Sealed to somebody else, or tampered with. Staying quiet is the point.
         this._emit('error', { type: 'undecipherable', from, error: e })

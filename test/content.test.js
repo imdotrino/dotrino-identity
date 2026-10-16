@@ -182,3 +182,16 @@ test('resealStale para si un sobre MARCADO no se puede volver a cerrar', async (
   const sobre = await sealAccount({ cek: g1.cek, gen: 1, plaintext: 'x' })
   await assert.rejects(resealStale({ sobre }, { gen: 2, reseal: async () => { throw new Error('no abre') } }), /no abre/)
 })
+
+test('bytes cifrados con una CEK: viajan como bytes, ocupan lo mismo (+16) y no se pueden tocar', async () => {
+  const { encryptBytesWithCek, decryptBytesWithCek } = await import('../vault/content.js')
+  const cek = await makeContentKey()
+  const bytes = new Uint8Array(100000).map((_, i) => (i * 7919) & 255)
+  const { iv, ct } = await encryptBytesWithCek({ cek, bytes })
+  assert.ok(ct instanceof Uint8Array)
+  assert.equal(ct.length, bytes.length + 16)
+  assert.deepEqual(await decryptBytesWithCek({ cek, iv, ct }), bytes)
+  ct[5] ^= 1
+  await assert.rejects(decryptBytesWithCek({ cek, iv, ct }))
+  await assert.rejects(decryptBytesWithCek({ cek: await makeContentKey(), iv, ct: (await encryptBytesWithCek({ cek, bytes })).ct }))
+})

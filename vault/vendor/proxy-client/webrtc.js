@@ -192,6 +192,29 @@ export class WebRTCManager {
     return false
   }
 
+  /**
+   * Mandar por el canal directo ESPERANDO a que su búfer baje. Para las partes de un
+   * mensaje grande: soltarlas todas de golpe desborda el búfer del canal, el navegador lo
+   * cierra y el resto se pierde. Devuelve false si el canal no está (o se cerró), y quien
+   * llama sigue por el proxio.
+   */
+  async sendDirect (to, payloadString, highWater = 1024 * 1024) {
+    const peer = this.peers.get(to)
+    const dc = peer && peer.dc
+    if (!dc || dc.readyState !== 'open') return false
+    while (dc.bufferedAmount > highWater) {
+      await new Promise((r) => setTimeout(r, 15))
+      if (dc.readyState !== 'open') return false
+    }
+    try {
+      dc.send(payloadString)
+      this.count?.('out', to, utf8Length(payloadString), peer.route || 'webrtc')
+      return true
+    } catch (_) {
+      return false
+    }
+  }
+
   /** Optional: explicitly preconnect to a peer. */
   connect (to) {
     const peer = this._ensurePeer(to)

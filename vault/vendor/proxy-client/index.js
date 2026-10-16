@@ -11,6 +11,7 @@ export {
 } from './encpub.js'
 
 export { listTransports, routeOf } from './stats.js'
+export { PART_TAG, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS } from './parts.js'
 export { logStats, formatStats, netReport, splitPeers } from './stats-log.js'
 
 import { WebSocketProxyClient } from './client.js'

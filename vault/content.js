@@ -133,6 +133,33 @@ export async function encryptWithCek ({ cek, gen, plaintext }) {
   return { gen, iv: b64(iv), ct: b64(ct) }
 }
 
+/**
+ * Cifra BYTES con una clave simétrica, y devuelve bytes: `{ iv, ct }` como `Uint8Array`.
+ *
+ * Es la hermana binaria de `encryptWithCek`, para lo que no tiene por qué pasar por texto:
+ * un archivo de 5 MB cifrado y en base64 ocupa 6,7 MB, y si además iba dentro de un JSON en
+ * base64, 8,9 MB. Así viaja con lo que ocupa. Lo usa el transporte para los mensajes con
+ * archivos: el archivo se cifra con una CEK nueva y solo la CEK pasa por el sellado de
+ * siempre (`wrapForMember`, o la bóveda).
+ *
+ * @param {{ cek: string, bytes: Uint8Array }} o
+ * @returns {Promise<{ iv: Uint8Array, ct: Uint8Array }>}
+ */
+export async function encryptBytesWithCek ({ cek, bytes }) {
+  if (!(bytes instanceof Uint8Array)) throw new Error('encryptBytesWithCek: bytes must be a Uint8Array')
+  const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['encrypt'])
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv }, k, bytes))
+  return { iv, ct }
+}
+
+/** El inverso de `encryptBytesWithCek`. Lanza si los bytes no son de esa clave o se tocaron. */
+export async function decryptBytesWithCek ({ cek, iv, ct }) {
+  if (!(iv instanceof Uint8Array) || !(ct instanceof Uint8Array)) throw new Error('decryptBytesWithCek: iv and ct must be Uint8Array')
+  const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['decrypt'])
+  return new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv }, k, ct))
+}
+
 /** Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca. */
 export async function sealAccount ({ cek, gen, plaintext }) {
   if (!Number.isInteger(gen) || gen < 1) throw new Error('sealAccount: the account key generation starts at 1')
@@ -243,5 +270,5 @@ export async function resealStale (value, { gen, reseal, now = Date.now() }) {
 
 export default {
   makeContentKey, wrapForMember, openWrap, makeGeneration, myContentKey,
-  encryptWithCek, sealAccount, decryptWithCek, decryptWithKeyring, CEK_ENVELOPE, isCekEnvelope, isLegacyCekEnvelope, LEGACY_UNMARKED_UNTIL, resealStale
+  encryptWithCek, encryptBytesWithCek, decryptBytesWithCek, sealAccount, decryptWithCek, decryptWithKeyring, CEK_ENVELOPE, isCekEnvelope, isLegacyCekEnvelope, LEGACY_UNMARKED_UNTIL, resealStale
 }
