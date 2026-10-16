@@ -262,7 +262,11 @@ export class SealedVault {
         fields: actual.fieldKeys.some((k) => !FIXED.includes(k)),
         webauthn: actual.hasWebauthn
       },
-      ...(actual.webauthn ? { webauthn: actual.webauthn } : {})
+      // El contador de la passkey sube en cada firma y vive en la vista: cambiarlo no toca
+      // la llave, así que no es reemplazarla (no pide aprobación).
+      ...(actual.webauthn
+        ? { webauthn: Number.isInteger(changes.signCount) ? { ...actual.webauthn, signCount: changes.signCount } : actual.webauthn }
+        : {})
     }
     const idx = sites ? await Promise.all(sites.map((s) => siteIndex(keys.kidx, s))) : null
     const parche = await buildSealedPatch({

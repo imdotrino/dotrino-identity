@@ -78,7 +78,7 @@ export async function sealEntry ({ plain, main, passkeys = null, keys }) {
     if (e.webauthn.privateKey) {
       if (!passkeys?.cek || typeof passkeys.gen !== 'number') {
         throw Object.assign(
-          new Error('this entry carries a passkey: it needs its own generation, wrapped only to devices with `passkeys`'),
+          new Error('this entry carries a passkey: it needs its own generation'),
           { code: 'passkeys-generation-missing' })
       }
       fields[PASSKEY_FIELD] = await sealV(passkeys.cek, passkeys.gen, e.webauthn.privateKey)

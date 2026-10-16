@@ -142,13 +142,12 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   // `sealer` entra en la lista desde 2026-08-30: sellar es un permiso de aparato, y este
   // miembro los tiene todos. De paso queda probado que una bóveda puede RENUNCIAR a sellar.
   // `sealer` entra desde 2026-08-30, `unattended` desde 2026-09-01, `replica` desde
-  // 2026-09-02 y `passkeys` desde 2026-09-19: son permisos de aparato, y este miembro los
-  // tiene TODOS (se admitió con `...CAPS`). Se listan a mano —y no como `CAPS.filter(...)`—
-  // para que añadir un permiso nuevo ponga esta prueba en rojo: que la lista crezca sin que
-  // nadie lo mire es justo lo que no se quiere. Y funcionó: `replica` la puso en rojo, y
-  // `passkeys` también.
+  // 2026-09-02 (`passkeys` estuvo de 2026-09-19 a 2026-10-16, fusionado en `passwords`):
+  // son permisos de aparato, y este miembro los tiene TODOS (se admitió con `...CAPS`). Se
+  // listan a mano —y no como `CAPS.filter(...)`— para que añadir o quitar un permiso ponga
+  // esta prueba en rojo: que la lista cambie sin que nadie lo mire es justo lo que no se quiere.
   assert.deepEqual(effectiveCaps(dos, b.pub, [r]),
-    ['admin', 'approve', 'passkeys', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'],
+    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'],
     'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
@@ -158,7 +157,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
   assert.deepEqual(effectiveCaps(tres, b.pub),
-    ['admin', 'approve', 'passkeys', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'])
+    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'])
   assert.equal(tres.renounced.length, 1)
 })
 
@@ -314,33 +313,18 @@ test('passwords: es de dispositivo, tiene su scope y NO viene con el emparejamie
 })
 
 /**
- * `passkeys`: EL PERMISO DE ABRIR UNA PASSKEY, aparte del de las contraseñas.
- *
- * Una passkey copiada sirve hasta que la borres en cada sitio donde la registraste: no hay
- * nada que «cambiar», como sí lo hay con una contraseña. Por eso su envoltura solo se le
- * hace a quien tenga los dos permisos (`sealed-passwords.md` §2.8).
- *
- * Y NO tiene scope de certificado, igual que `unattended`: no es algo que un aparato pida a
- * la bóveda enseñando un papel, es a quién se le envuelve una llave. La política vive en el
- * acta y se mira ahí.
+ * `passkeys` YA NO EXISTE: se fusionó en `passwords` (dueño, 2026-10-16). Un acta firmada
+ * antes que todavía lo nombre se sigue leyendo —el permiso desconocido se ignora— y quien lo
+ * tenía, si tenía `passwords`, lo puede todo igual.
  */
-test('passkeys: es de dispositivo, no tiene scope, y una sesión no lo lleva nunca', async () => {
+test('passkeys se fusionó en passwords: no es un permiso, y un acta vieja que lo nombra sigue valiendo', async () => {
   const a = await key(); const b = await key()
   const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
 
-  assert.ok(CAPS.includes('passkeys') && DEVICE_CAPS.includes('passkeys'))
-  assert.ok(!PAIRED_CAPS.includes('passkeys'), 'no lo recibe cualquier aparato por emparejarse')
-  assert.equal(capScope('passkeys'), null, 'no es un scope de certificado, es política del acta')
-  assert.ok(SESSION_FORBIDDEN.includes('passkeys'), 'una sesión podría llevarse una passkey')
-
-  // Tener `passwords` NO da `passkeys`: son dos decisiones.
-  const soloPass = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['passwords'] } }], a)
-  assert.equal(memberCan(soloPass, b.pub, 'passwords'), true)
-  assert.equal(memberCan(soloPass, b.pub, 'passkeys'), false)
-
-  const conLas2 = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['passwords', 'passkeys'] } }], a)
-  assert.ok(memberCan(conLas2, b.pub, 'passkeys'))
-  assert.ok(!memberScopes(conLas2, b.pub).includes('vault:passkeys'), 'se coló un scope que no existe')
+  assert.ok(!CAPS.includes('passkeys') && !DEVICE_CAPS.includes('passkeys'))
+  const vieja = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['passwords', 'passkeys'] } }], a)
+  assert.equal(memberCan(vieja, b.pub, 'passwords'), true)
+  assert.equal(memberCan(vieja, b.pub, 'passkeys'), false, 'un permiso que ya no existe no da nada')
 })
 
 test('admin: un miembro con cajón solo administra si el master se lo da, como cualquier aparato', async () => {

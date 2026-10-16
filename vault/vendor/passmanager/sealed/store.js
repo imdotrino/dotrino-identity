@@ -38,8 +38,9 @@ export class SealedStore {
    * @param {object} store  `{ get(k), set(k, v) }`
    * @param {object} opts
    *   `recipients(kind)` → `[{ pub, encPub }]` quién DEBE tener envoltura. `kind` es
-   *     `'main'` (los aparatos con `passwords`) o `'passkeys'` (los que además tienen
-   *     `passkeys`). Lo pone quien conoce el acta: esta pieza no la lee.
+   *     `'main'` o `'passkeys'` (la generación aparte de la privada de una passkey). Desde
+   *     2026-10-16 las dos son los aparatos con `passwords`: el permiso `passkeys` se fusionó
+   *     en ese. Lo pone quien conoce el acta: esta pieza no la lee.
    *   `verifyAuthor({ body, author })` → ¿la firmó quien dice, y puede escribir? Lo
    *     contesta quien tiene el acta. **No es opcional**: sin ella, cualquiera que llegue
    *     al almacén podría dejar una entrada a nombre de otro, y la bóveda no puede mirar
@@ -97,13 +98,12 @@ export class SealedStore {
         'the wraps must include the recovery one (#recovery), or this entry could never be handed out again')
     }
     const deben = (await this.recipients(kind)).filter((m) => m?.encPub).map((m) => m.pub)
-    // NADIE A QUIEN ENVOLVÉRSELA NO ES «CERO DESTINATARIOS», ES UN ERROR. Guardar una
-    // passkey que ningún aparato puede abrir la deja viva solo para la frase del perfil: no
-    // se pierde, pero no sirve, y el usuario se entera el día que la necesita. Se dice
-    // ahora, con un código que explica qué falta.
-    if (kind === 'passkeys' && !deben.length) {
+    // Una passkey no se guarda para NADIE: sin aparatos que puedan abrirla y sin copia de
+    // recuperación, se perdería entera. Con la copia basta: quien reciba el permiso después
+    // la recibe al re-repartir (`rewrapAll`).
+    if (kind === 'passkeys' && !deben.length && !wraps[RECOVERY]) {
       throw new SealedError('no-passkeys-device',
-        'no device in the account record can open passkeys: grant `passkeys` to one (`dotrino-vault caps <ID> +passkeys`) before saving it')
+        'nobody could ever open this passkey: no device has `passwords` and the account has no recovery copy')
     }
     const hay = Object.keys(wraps).filter((k) => k !== RECOVERY)
     if (!same(deben, hay)) {
@@ -127,7 +127,7 @@ export class SealedStore {
     // reparte una llave que nadie va a usar.
     if (llevaPasskey && !tienePasskeys) {
       throw new SealedError('passkeys-generation-missing',
-        'this entry carries a passkey: it needs its own wraps, only for devices with `passkeys`')
+        'this entry carries a passkey: it needs its own wraps (its own generation)')
     }
     if (!llevaPasskey && tienePasskeys) {
       throw new SealedError('passkeys-generation-unused', 'there is no passkey in this entry to wrap')
@@ -225,7 +225,7 @@ export class SealedStore {
     if (passkeys) await this.#checkWraps('passkeys', passkeys.wraps)
     if (fields[PASSKEY_FIELD] && !passkeys) {
       throw new SealedError('passkeys-generation-missing',
-        'that patch carries a passkey: it needs its own wraps, only for devices with `passkeys`')
+        'that patch carries a passkey: it needs its own wraps (its own generation)')
     }
 
     const s = await this.#state()
@@ -341,6 +341,12 @@ export class SealedStore {
   async privateKeysOf (id) {
     const s = await this.#state()
     return s.entries.find((e) => e.id === id)?.priv || []
+  }
+
+  /** ¿Esa entrada lleva una passkey? La bóveda lo sabe sin abrir nada: por su huella `wa`. */
+  async hasPasskey (id) {
+    const s = await this.#state()
+    return !!s.entries.find((e) => e.id === id)?.wa
   }
 
   async remove (id) {

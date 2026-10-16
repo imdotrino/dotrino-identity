@@ -311,14 +311,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * eso se filtran explícitamente aquí, que es donde se construye la lista, y no en quien la
    * consume (`sealed-passwords.md` §2.1).
    *
-   * `main` son los aparatos con `contraseñas`; `passkeys`, los que además pueden abrir la
-   * privada de una passkey (§2.8). Un miembro sin llave de cifrado no puede recibir nada: se
+   * `main` y `passkeys` (la generación aparte de la privada de una passkey) son los MISMOS:
+   * los aparatos con `contraseñas`. Hubo un permiso `passkeys` aparte y se fusionó en ese
+   * (dueño, 2026-10-16: «realmente deberían ser uno solo»); `kind` se queda por el formato. Un miembro sin llave de cifrado no puede recibir nada: se
    * queda fuera y se ve en `incompleteMembers`.
    */
   const noEsLaBoveda = (pub) => pub !== master && pub !== commKey.pub()
-  const passwordRecipients = (kind = 'main') => (actaCache?.members || [])
+  const passwordRecipients = (_kind = 'main') => (actaCache?.members || [])
     .filter((m) => m.encPub && noEsLaBoveda(m.pub) && Acta.memberCan(actaCache, m.pub, 'passwords'))
-    .filter((m) => kind !== 'passkeys' || Acta.memberCan(actaCache, m.pub, 'passkeys'))
     .map((m) => ({ pub: m.pub, encPub: m.encPub }))
 
   /**

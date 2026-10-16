@@ -119,8 +119,25 @@ export class SealedResponder {
     }
   }
 
+  /**
+   * ¿CAMBIA O QUITA UNA PASSKEY QUE YA ESTÁ? Añadir es directo y no pregunta; reemplazarla o
+   * borrarla, sí — como las variables de `dotrino-env` (dueño, 2026-10-16). Una passkey
+   * borrada o pisada deja a alguien fuera de un sitio, y no hay forma de deshacerlo.
+   *
+   * Subir el contador al entrar NO es reemplazar: cambia la vista, no la llave.
+   */
+  async replacesPasskey (op, payload) {
+    if (op === 'pm2.remove') return this.store.hasPasskey(payload?.id)
+    if (op === 'pm2.put') return this.store.hasPasskey(payload?.entry?.id)
+    if (op === 'pm2.patch') {
+      return !!payload?.fields?.[PASSKEY_FIELD] || (payload?.drop || []).includes(PASSKEY_FIELD)
+    }
+    return false
+  }
+
   async #needsApproval (op, payload, pubkey) {
-    return await this.needsApproval(pubkey) && await this.wantsPrivate(op, payload)
+    if (!await this.needsApproval(pubkey)) return false
+    return await this.wantsPrivate(op, payload) || await this.replacesPasskey(op, payload)
   }
 
   async #run (op, payload = {}, pubkey) {

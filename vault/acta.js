@@ -105,7 +105,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -119,14 +119,12 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 
  * pedirle algo a la bóveda es exactamente lo que decide el acta — tener dos registros
  * de lo mismo obliga a acordarse de los dos al quitar un aparato.
  *
- * `passkeys` es ABRIR LA PRIVADA DE UNA PASSKEY. Una passkey no se parece a una
- * contraseña: es una llave privada que firma el reto de un sitio, y si se copia sirve
- * **hasta que la borres en cada sitio** donde la registraste — no hay nada que «cambiar».
- * Por eso su envoltura solo se le hace a quien tenga `passwords` **y** esto
- * (`dotrino-passmanager/docs/sealed-passwords.md` §2.8).
- *
- * Sin `passwords` no significa nada: la passkey vive en una entrada de contraseñas. Y una
- * SESIÓN no lo lleva nunca, como `passwords` (`session.js`).
+ * Y `passwords` cubre TAMBIÉN LAS PASSKEYS (dueño, 2026-10-16: «realmente deberían ser uno
+ * solo»). Hasta la 0.117 había un `passkeys` aparte para abrir la privada de una passkey;
+ * se fusionó en este. Un acta vieja que todavía lo nombre sigue valiendo: un permiso
+ * desconocido se ignora (ver `checkShape`), y al siguiente cambio del acta desaparece.
+ * Lo que distingue una passkey es la POLÍTICA de la bóveda, no un permiso: añadirla es
+ * directo, reemplazarla o borrarla pide aprobación (`@dotrino/passmanager`).
  *
  * `replica` es REPARTIR, NO DECIDIR. Un replicador no tiene maestra: guarda el acta y los
  * sobres —que ya vienen sellados a su destinatario, así que tampoco puede abrirlos— y los
@@ -151,7 +149,7 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 
  * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
  * sin acordarse de un segundo registro escondido.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'passkeys', 'sealer', 'unattended', 'replica'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se

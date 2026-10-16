@@ -23,7 +23,6 @@ import { SealedStore, SealedResponder } from '@dotrino/passmanager'
 import { verifyDeviceSig } from '@dotrino/identity/capabilities'
 
 export const PASSWORDS_CAP = 'passwords'
-export const PASSKEYS_CAP = 'passkeys'
 
 /**
  * @param {object} opts

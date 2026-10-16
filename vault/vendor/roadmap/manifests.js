@@ -8,7 +8,7 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 28,
+    "seq": 29,
     "issued": "2026-10-15",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.117.1",
+        "current": "0.117.2",
         "protocol": 1,
         "requires": {}
       },
@@ -47,11 +47,11 @@ export const MANIFESTS = Object.freeze({
       },
       "messenger": {
         "repo": "imdotrino/dotrino-messenger",
-        "current": "0.8.0",
+        "current": "0.8.1",
         "protocol": 2,
         "requires": {
           "identity": ">=0.117.0",
-          "proxy-client": ">=0.35.0",
+          "proxy-client": ">=0.36.1",
           "store": ">=0.12.3",
           "proxy": "1.6.1+"
         }
@@ -119,7 +119,7 @@ export const MANIFESTS = Object.freeze({
       "proxy-client": {
         "repo": "imdotrino/dotrino-proxy-client",
         "npm": "@dotrino/proxy-client",
-        "current": "0.35.0",
+        "current": "0.36.1",
         "protocol": 2,
         "requires": {
           "identity": ">=0.53.0",
@@ -129,25 +129,25 @@ export const MANIFESTS = Object.freeze({
       "remote-agent": {
         "repo": "imdotrino/dotrino-remote-agent",
         "npm": "@dotrino/remote-agent",
-        "current": "0.19.1",
+        "current": "0.20.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.115.0",
+          "identity": ">=0.117.2",
           "vault": ">=0.85.0",
-          "proxy-client": ">=0.30.0",
+          "proxy-client": ">=0.36.1",
           "vaultd": ">=0.154.0"
         }
       },
       "terminal-agent": {
         "repo": "imdotrino/dotrino-terminal",
         "npm": "@dotrino/terminal-agent",
-        "current": "0.47.4",
+        "current": "0.48.0",
         "protocol": 2,
         "requires": {
-          "remote-agent": ">=0.18.3",
-          "identity": ">=0.116.0",
-          "vault": ">=0.86.0",
-          "proxy-client": ">=0.31.1",
+          "remote-agent": ">=0.20.1",
+          "identity": ">=0.117.2",
+          "vault": ">=0.87.0",
+          "proxy-client": ">=0.36.1",
           "vaultd": ">=0.142.0"
         }
       },
@@ -250,12 +250,12 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.86.0",
+        "current": "0.87.0",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
-          "proxy-client": "0.24.0+",
-          "identity": ">=0.116.0",
+          "proxy-client": ">=0.36.1",
+          "identity": ">=0.117.2",
           "opaque": ">=0.1.0",
           "compat": ">=0.4.0",
           "roadmap": ">=0.4.13",
@@ -266,11 +266,11 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.157.0",
+        "current": "0.159.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.116.0",
-          "proxy-client": ">=0.30.1",
+          "identity": ">=0.117.2",
+          "proxy-client": ">=0.36.1",
           "store": ">=0.11.0",
           "passmanager": ">=0.17.0",
           "compat": ">=0.4.0",
@@ -290,11 +290,11 @@ export const MANIFESTS = Object.freeze({
       "passmanager": {
         "repo": "imdotrino/dotrino-passmanager",
         "npm": "@dotrino/passmanager",
-        "current": "0.17.0",
+        "current": "0.18.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.61.0",
-          "proxy-client": ">=0.13.0"
+          "identity": ">=0.117.2",
+          "proxy-client": ">=0.36.1"
         }
       },
       "passmanager-android": {
@@ -317,12 +317,12 @@ export const MANIFESTS = Object.freeze({
       },
       "passmanager-extension": {
         "repo": "imdotrino/dotrino-passmanager",
-        "current": "0.49.1",
+        "current": "0.51.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.116.0",
-          "proxy-client": ">=0.32.2",
-          "vault": ">=0.86.0",
+          "identity": ">=0.117.2",
+          "proxy-client": ">=0.36.1",
+          "vault": ">=0.87.0",
           "proxy": "1.1.0+"
         }
       },
@@ -349,6 +349,30 @@ export const MANIFESTS = Object.freeze({
       }
     },
     "broken": [
+      {
+        "product": "passmanager-extension",
+        "versions": "0.50.0",
+        "why": "la página que pide una passkey decía ella misma de qué sitio era (rpId y origen salían del mensaje, no del remitente): un sitio cualquiera podía pedir la firma de la passkey de otro sitio guardada en Dotrino",
+        "fix": "sube a la extensión 0.51.0 (se actualiza sola desde pass.dotrino.com/app)"
+      },
+      {
+        "product": "passmanager-extension",
+        "versions": "0.49.1",
+        "why": "la página que pide una passkey decía ella misma de qué sitio era (rpId y origen salían del mensaje, no del remitente): un sitio cualquiera podía pedir la firma de la passkey de otro sitio guardada en Dotrino",
+        "fix": "sube a la extensión 0.51.0 (se actualiza sola desde pass.dotrino.com/app)"
+      },
+      {
+        "product": "passmanager-extension",
+        "versions": "0.49.0",
+        "why": "la página que pide una passkey decía ella misma de qué sitio era (rpId y origen salían del mensaje, no del remitente): un sitio cualquiera podía pedir la firma de la passkey de otro sitio guardada en Dotrino",
+        "fix": "sube a la extensión 0.51.0 (se actualiza sola desde pass.dotrino.com/app)"
+      },
+      {
+        "product": "passmanager-extension",
+        "versions": "0.48.4",
+        "why": "la página que pide una passkey decía ella misma de qué sitio era (rpId y origen salían del mensaje, no del remitente): un sitio cualquiera podía pedir la firma de la passkey de otro sitio guardada en Dotrino",
+        "fix": "sube a la extensión 0.51.0 (se actualiza sola desde pass.dotrino.com/app)"
+      },
       {
         "product": "terminal-agent",
         "versions": "0.46.4",
@@ -802,6 +826,12 @@ export const MANIFESTS = Object.freeze({
         "versions": "1.6.0",
         "why": "pasa a base64 los mensajes binarios para cruzar la malla, y una parte de 768 KB así pasa de la trama de 1 MB del otro nodo: el enlace se cae en cada reconexión al reenviarla y todo lo que va detrás entre los dos nodos se queda atascado",
         "fix": "websocket-proxy 1.6.1"
+      },
+      {
+        "product": "proxy-client",
+        "versions": "0.36.0",
+        "why": "por token frena los bytes por lo recordado de la identidad (que puede ser de antes de que el otro se actualizara), y no solo por lo que dijo esa conexión en su saludo",
+        "fix": "@dotrino/proxy-client 0.36.1"
       }
     ]
   }
