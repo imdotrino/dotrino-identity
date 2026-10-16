@@ -15,6 +15,7 @@
  */
 import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
 import { checkVaultReply } from './acta.js'
+import { cleanMachine, browserMachine } from './machine.js'
 
 const MSG = {
   HELLO: 'vault.hello',
@@ -130,7 +131,7 @@ async function askVault (client, qr) {
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string, account:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null, machine = undefined } = {}) {
   if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('invalid qr: missing vault or nonce')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
@@ -162,12 +163,16 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // rechaza el que no coincida con el modo con el que ella abrió el emparejamiento. Así
     // ninguno de los dos puede hacer, a mitad de camino, algo distinto de lo que el humano
     // vio anunciado en las dos pantallas.
+    // DÓNDE CORRE (`machine.js`), para que la bóveda lo reconozca en su lista. Quien llama
+    // puede pasarlo (lo sabe mejor); si no, se mira el navegador. `null` es no decir nada.
+    const maquina = cleanMachine(machine === undefined ? browserMachine() : machine)
     const adopting = intent === 'adopt'
     if (adopting && typeof onAdopt !== 'function') throw new Error('enrollDevice(adopt): missing onAdopt')
     const data = {
       op: 'enroll', dpub: dev.publickey, token: qr.token || qr.sn, sn: qr.sn, commit, label, ts: Date.now(), intent,
       ...(adopting && profileId ? { profileId } : {}),
-      ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {})
+      ...(continuity ? { continuity } : {}), ...(encPub ? { encPub } : {}),
+      ...(maquina ? { machine: maquina } : {})
     }
     // `dev.sign`: la llave vive fuera (el chip del teléfono) y solo se le pide la firma.
     const { signature } = await signWithDevice({ privateJwk: dev.privateJwk, privateKey: dev.privateKey, publickey: dev.publickey, sign: dev.sign, data })
@@ -283,7 +288,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
   await client.connect()
   try {
     try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
-    const signed = { ...data, publickey: device.publickey, ts: Date.now() }
+    const signed = { ...data, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data: signed })
     const pending = new Promise((resolve, reject) => {
       let graceTimer = null
@@ -338,7 +343,7 @@ export async function checkMembership ({ master, proxy, device, onRevoked, timeo
     // Identificarse hace además que el proxy entregue lo ENCOLADO (un aviso de cuando
     // estaba apagado, si todavía está dentro de las 24 h).
     try { await identifyAsDevice(client, device) } catch (_) {}
-    const data = { op: 'check', publickey: device.publickey, ts: Date.now() }
+    const data = { op: 'check', publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data })
     const res = await new Promise((resolve) => {
       let settled = false

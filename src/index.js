@@ -7,6 +7,8 @@
  * use this library share identity even across different origins.
  */
 
+import { browserMachine } from '../vault/machine.js'
+
 const DEFAULT_VAULT_URL = 'https://id.dotrino.com/'
 
 let singleton = null
@@ -125,6 +127,9 @@ export class Identity {
           this._me = msg.me || null
           this._locked = !!msg.locked
           this._readyResolve(this)
+          // Dónde corre esta página (`vault/machine.js`), para los pedidos a la bóveda. Un
+          // iframe viejo no conoce el método: no pasa nada, solo no se manda.
+          this._call('setMachine', { machine: browserMachine() }).catch(() => {})
           return
         }
 
@@ -427,7 +432,9 @@ export class Identity {
    * @returns {Promise<{ ok:boolean, deviceId:string, master:string, exp:number, scope:string[] }>}
    */
   async enrollDevice (qr, { label = '', join = 'current' } = {}) {
-    return this._call('vaultPair', { qr, label, join }, 200000)
+    // DÓNDE CORRE se mira AQUÍ, en la página, y no dentro del iframe: el iframe no ve si la
+    // página es una extensión o la app nativa (`vault/machine.js`).
+    return this._call('vaultPair', { qr, label, join, machine: browserMachine() }, 200000)
   }
 
   /** Estado de emparejamiento: { paired, deviceId?, master?, scope?, exp?, pairedAt? }. */
@@ -853,4 +860,5 @@ export { makeDeviceKey, makeDeviceEncKey, importDeviceEncKey, signWithDevice, ve
 // PARA QUIÉN vale una firma, y hasta cuándo. Verificar NO necesita el iframe ni la clave
 // de nadie, así que un servicio puede importarlo suelto (`@dotrino/identity/assertion`, que
 // no arrastra el cliente del vault); aquí se reexporta para quien ya tiene esto cargado.
+export { cleanMachine, machineLine, browserMachine, MACHINE_KINDS } from '../vault/machine.js'
 export { verifyAssertion, verifySignedFor, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, SCOPES, SCOPE_CLAIMS, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS } from '../vault/assertion.js'

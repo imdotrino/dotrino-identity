@@ -36,6 +36,8 @@
  */
 import { canonicalStringify } from './core.js'
 import { signWithDevice, verifyDeviceSig, verifyDelegation, pubkeyId } from './capabilities.js'
+import { cleanMachine } from './machine.js'
+export { cleanMachine }
 
 export const ACTA_V = 5
 
@@ -816,7 +818,9 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           addedAt: now,
           cert: m.cert || null,
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
-          ...(m.continuity ? { continuity: m.continuity } : {})
+          ...(m.continuity ? { continuity: m.continuity } : {}),
+          // DÓNDE CORRE (`machine.js`): lo que dijo al emparejar, para reconocerlo en la lista.
+          ...(cleanMachine(m.machine) ? { machine: cleanMachine(m.machine) } : {})
         })
         break
       }

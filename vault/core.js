@@ -791,7 +791,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const encKeyId = async (encPub) => (await pubkeyIdOf(encPub)).slice(0, 16)
 
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
+  // DÓNDE CORRE ESTE APARATO (`machine.js`). Lo dice la PÁGINA al conectar (`setMachine`),
+  // porque el iframe no ve si está dentro de una extensión o de la app nativa, y viaja con
+  // cada pedido firmado a la bóveda para que su lista lo enseñe al día. Sin página que lo
+  // diga (Node, un cliente viejo) no se manda nada: mejor ningún dato que uno equivocado.
+  let pageMachine = null
   const loadVaultDevice = () => {
+    const d = loadVaultDeviceKey()
+    return d && pageMachine ? { ...d, machine: pageMachine } : d
+  }
+  const loadVaultDeviceKey = () => {
     try {
       const d = JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null')
       if (!d) return null
@@ -1293,7 +1302,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * cert contra la bóveda y entra a su cuenta. Aparte para que la decisión de CUÁL cuenta y
    * el deshacerla si esto falla vivan juntos arriba, y aquí solo quede el trámite.
    */
-  async function pairWithVault ({ qr, label = '' }) {
+  async function pairWithVault ({ qr, label = '', machine = undefined }) {
     // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
     // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
     // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
@@ -1307,7 +1316,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     const continuity = (mine && mine.members.length === 1 && !isPendingJoin())
       ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mine.profileId, privateKey: masterKey() })
       : null
-    const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
+    const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', machine: machine === undefined && pageMachine ? pageMachine : machine, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
     kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
     kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
     // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
@@ -2560,6 +2569,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         isService: !!m.cn,
         caps: Acta.effectiveCaps(acta, m.pub, pend),
         addedAt: m.addedAt || null,
+        // Dónde corre, según dijo al emparejarse (`machine.js`). `null` si entró antes.
+        machine: m.machine || null,
         isMe: m.pub === publickeyJwkStr,
         isMaster: Acta.canSeal(acta, m.pub),
         // La llave de CIFRADO del miembro y, derivado, si se le puede envolver algo.
@@ -2605,7 +2616,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.
      * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
      */
-    async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null } = {}) {
+    async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null, machine = null } = {}) {
       // `cn`: si viene, este miembro es un SERVICIO: abre el cajón de secretos de ESE nombre
       // por llevarlo, sin permiso aparte, y no ve nada más del usuario. Sin `cn` es un dispositivo.
       const finales = caps || (cn ? [] : ['store', 'read'])
@@ -2622,7 +2633,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const mine = encPub ? await myCek() : null
         if (mine) wrap = { op: 'wrap', gen: mine.gen, pub, wrap: await Content.wrapForMember({ cek: mine.cek, memberEncPub: encPub }) }
       } catch (_) { wrap = null }
-      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity } }, ...(wrap ? [wrap] : [])])
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity, machine } }, ...(wrap ? [wrap] : [])])
       return { ok: true, seq: acta.seq, wrapped: !!wrap }
     },
 
@@ -2898,8 +2909,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *                   master: si esta cuenta ya la manda otra bóveda, no hay nada que
      *                   regalar y falla en voz alta.
      */
-    async vaultPair ({ qr, label = '', join = 'current' }) {
-      if (join === 'adopt') return handlers.vaultAdopt({ qr, label })
+    async vaultPair ({ qr, label = '', join = 'current', machine = undefined }) {
+      if (join === 'adopt') return handlers.vaultAdopt({ qr, label, machine })
       // La cuenta abierta AQUÍ y la que se cree para este intento. `born` es la que hay que
       // tirar si el emparejamiento no llega a término: nació para él y no tiene nada dentro.
       const from = currentPid
@@ -2929,7 +2940,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         }
       }
       try {
-        return await pairWithVault({ qr, label })
+        return await pairWithVault({ qr, label, machine })
       } catch (e) {
         // El intento falló (código vencido, la bóveda dijo que no, se agotó la espera): la
         // cuenta que nació para él se va con él. Si no, cada reintento dejaba una cuenta
@@ -2953,7 +2964,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * bóveda, este aparato no puede regalar lo que no tiene; el traspaso se hace desde la
      * que manda hoy.
      */
-    async vaultAdopt ({ qr, label = '' } = {}) {
+    async vaultAdopt ({ qr, label = '', machine = undefined } = {}) {
       const mine = loadActa()
       if (!mine) throw new Error('this device has no account to hand over yet')
       if (!amMaster()) throw new Error('not-the-master: another device or vault is in charge of this account; the handover is done from there')
@@ -2963,6 +2974,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         qr,
         device,
         intent: 'adopt',
+        machine,
         profileId: mine.profileId,
         encPub: encPublickeyJwkStr,
         label: label || me?.nickname || '',
@@ -3007,6 +3019,15 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const e = list.find((p) => p.id === currentPid)
       if (e) { e.pendingJoin = true; saveProfiles(list) }
       return { ok: true, pending: true }
+    },
+
+    /**
+     * La página dice dónde corre (`machine.js`); se manda con los pedidos a la bóveda.
+     * @param {any} [args]
+     */
+    async setMachine ({ machine } = {}) {
+      pageMachine = Acta.cleanMachine(machine)
+      return { ok: true }
     },
 
     async vaultStatus () {
