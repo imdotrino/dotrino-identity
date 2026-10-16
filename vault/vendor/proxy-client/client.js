@@ -24,6 +24,13 @@ import { pack, unpack, hasBinary, encodeFrame, decodeFrame } from './binpack.js'
  * proxio ya tiene atada a esta conexión desde `identify`. Nada del usuario viaja aquí.
  */
 const HELLO_TAG = '__cc_hello__'
+/**
+ * Lo que este cliente entiende, y lo dice en el saludo (0.36.0). Hoy una cosa: `binary`, las
+ * tramas con bytes (binpack.js). Quien saluda sin decirlo es anterior y no las entiende, así
+ * que no se le mandan: se lanza `peer-no-binary` y la app lo enseña. La idea del dueño es que
+ * todo pase a binario con el tiempo, y esta lista es por donde se sabrá quién ya puede.
+ */
+const SPEAKS = ['binary']
 
 function errorCon (mensaje, code) {
   const e = /** @type {Error & { code: string }} */ (new Error(mensaje))
@@ -136,6 +143,10 @@ export class WebSocketProxyClient {
      * son de nadie.
      */
     this._tokenPubkeys = new Map()
+    // Lo que dijo entender cada token en su saludo, y cada identidad (para lo que va por
+    // pubkey). Sin saludo no se sabe, y entonces no se frena nada.
+    this._tokenSpeaks = new Map()
+    this._pubkeySpeaks = new Map()
     this._helloSent = new Set()
 
     /** Mi propia identidad en el cable, la que `identify` dejó atada a este token. */
@@ -518,8 +529,9 @@ export class WebSocketProxyClient {
     if (m.len > queueMax) {
       throw errorCon(`sendSealed: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than can wait in the proxy (${queueMax}); send it by token while both ends are connected`, 'too-big-for-queue')
     }
-    // Por pubkey todo va por el proxio: si no admite bytes, se dice antes de mandar nada.
-    if (m.bin) this._needBinaryProxy()
+    // Por pubkey todo va por el proxio: si no admite bytes, se dice antes de mandar nada. Y
+    // si alguno de los destinatarios dijo que no los entiende, tampoco.
+    if (m.bin) { this._needBinaryProxy(); this._needPeerBinary(list) }
     const partSize = m.bin ? PROXY_PART_BYTES : PROXY_PART_CHARS
     const pieces = m.len <= partSize ? [m.bin ? m.whole : payload]
       : m.bin ? splitBinParts(m.whole, partSize) : splitParts(m.whole, partSize)
@@ -579,6 +591,9 @@ export class WebSocketProxyClient {
     const size = m.bin ? (direct ? DIRECT_PART_BYTES : PROXY_PART_BYTES) : (direct ? DIRECT_PART_CHARS : PROXY_PART_CHARS)
     const relayMax = m.bin ? RELAY_MAX_BYTES : RELAY_MAX_CHARS
     const queueMax = m.bin ? QUEUE_MAX_BYTES : QUEUE_MAX_CHARS
+    // Por token decide lo que dijo ESA conexión: lo recordado de la identidad puede ser de una
+    // versión que ya se actualizó.
+    if (m.bin) this._needPeerBinary(tokens)
     if (m.bin && !direct) this._needBinaryProxy()
     const sealPiece = await this._sealerFor(m.bin, peerEncPub, peerPubkey)
     if (m.len <= size) {
@@ -718,7 +733,8 @@ export class WebSocketProxyClient {
    * Un token es una dirección del proxio y no dice de quién es, así que sin esto no hay
    * a quién sellarle: una sala de desconocidos se queda muda o —lo que pasaba— hablando
    * en claro. El saludo lleva SOLO mi llave pública, la misma que el proxio ya tiene
-   * atada a esta conexión desde `identify`; no hay nada del usuario dentro y por eso no
+   * atada a esta conexión desde `identify`, y lo que este cliente entiende (`SPEAKS`, que es
+   * lo mismo para todos los de esta versión); no hay nada del usuario dentro y por eso no
    * necesita sobre.
    *
    * Quien lo recibe contesta el suyo una vez, así que basta con que salude UNA de las
@@ -737,7 +753,7 @@ export class WebSocketProxyClient {
     for (const t of tokens) {
       if (!t || t === this.token) continue
       this._helloSent.add(t)
-      this._proxySendOne(t, { t: HELLO_TAG, publickey: this.myPublickey })
+      this._proxySendOne(t, { t: HELLO_TAG, publickey: this.myPublickey, speaks: SPEAKS })
     }
   }
 
@@ -748,9 +764,34 @@ export class WebSocketProxyClient {
 
   /** Olvidar un token (se fue, o se quiere volver a preguntar). Sin argumento, todos. */
   forgetToken (token) {
-    if (token == null) { this._tokenPubkeys.clear(); this._helloSent.clear(); return }
+    if (token == null) { this._tokenPubkeys.clear(); this._helloSent.clear(); this._tokenSpeaks.clear(); return }
     this._tokenPubkeys.delete(token)
     this._helloSent.delete(token)
+    this._tokenSpeaks.delete(token)
+  }
+
+  /**
+   * ¿Entiende esto la otra punta? `true` o `false` si lo dijo en su saludo, y `null` si
+   * todavía no ha saludado (no se sabe). Acepta un token o una pubkey.
+   * @param {string} who
+   * @param {string} [feature]
+   * @returns {boolean|null}
+   */
+  speaks (who, feature = 'binary') {
+    let set = this._tokenSpeaks.get(who) || this._pubkeySpeaks.get(who)
+    if (!set) {
+      for (const [pk, s] of this._pubkeySpeaks) if (samePubkey(pk, who)) { set = s; break }
+    }
+    return set ? set.has(feature) : null
+  }
+
+  /** Antes de mandar bytes: si alguno dijo que no los entiende, no sale nada y se dice. */
+  _needPeerBinary (targets) {
+    for (const t of targets) {
+      if (t && this.speaks(t, 'binary') === false) {
+        throw errorCon('the other side does not take binary messages (it needs @dotrino/proxy-client >= 0.36.0)', 'peer-no-binary')
+      }
+    }
   }
 
   _onHello (from, msg) {
@@ -764,6 +805,9 @@ export class WebSocketProxyClient {
       return
     }
     this._tokenPubkeys.set(from, msg.publickey)
+    const speaks = new Set(Array.isArray(msg.speaks) ? msg.speaks.filter((x) => typeof x === 'string').slice(0, 32) : [])
+    this._tokenSpeaks.set(from, speaks)
+    this._pubkeySpeaks.set(msg.publickey, speaks)
     // Contestar UNA vez: el saludo queda simétrico sin rebotar para siempre.
     if (!this._helloSent.has(from) && this.myPublickey) this.helloTo(from)
     this._emit('peer_identity', from, msg.publickey)

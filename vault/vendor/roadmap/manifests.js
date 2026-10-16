@@ -8,7 +8,7 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 27,
+    "seq": 28,
     "issued": "2026-10-15",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.116.0",
+        "current": "0.117.1",
         "protocol": 1,
         "requires": {}
       },
@@ -47,13 +47,13 @@ export const MANIFESTS = Object.freeze({
       },
       "messenger": {
         "repo": "imdotrino/dotrino-messenger",
-        "current": "0.7.0",
+        "current": "0.8.0",
         "protocol": 2,
         "requires": {
-          "identity": ">=0.108.0",
-          "proxy-client": ">=0.34.0",
+          "identity": ">=0.117.0",
+          "proxy-client": ">=0.35.0",
           "store": ">=0.12.3",
-          "proxy": "1.5.2+"
+          "proxy": "1.6.1+"
         }
       },
       "messenger-android": {
@@ -107,7 +107,7 @@ export const MANIFESTS = Object.freeze({
       },
       "proxy": {
         "repo": "imdotrino/dotrino-proxy",
-        "current": "1.5.2",
+        "current": "1.6.1",
         "protocol": 2,
         "requires": {
           "vault": ">=0.86.0",
@@ -119,7 +119,7 @@ export const MANIFESTS = Object.freeze({
       "proxy-client": {
         "repo": "imdotrino/dotrino-proxy-client",
         "npm": "@dotrino/proxy-client",
-        "current": "0.34.0",
+        "current": "0.35.0",
         "protocol": 2,
         "requires": {
           "identity": ">=0.53.0",
@@ -796,6 +796,12 @@ export const MANIFESTS = Object.freeze({
         "versions": "1.9.0",
         "why": "no tiene UI propia: sus tres superficies son iframes a messenger.dotrino.com con ?embed=, y el soporte de ese modo (puente de identidad, espejo de conversaciones, cola de salida, aviso de DM) se quitó del messenger después de la 0.1.0; la PWA servida siempre es la última, así que el panel se inventa una cuenta en cada sitio y no recibe nada",
         "fix": "no hay versión que funcione: hay que elegir el camino del README de dotrino-messenger-extension (extensión autónoma con los pilares, o un modo embed del ecosistema)"
+      },
+      {
+        "product": "proxy",
+        "versions": "1.6.0",
+        "why": "pasa a base64 los mensajes binarios para cruzar la malla, y una parte de 768 KB así pasa de la trama de 1 MB del otro nodo: el enlace se cae en cada reconexión al reenviarla y todo lo que va detrás entre los dos nodos se queda atascado",
+        "fix": "websocket-proxy 1.6.1"
       }
     ]
   }
