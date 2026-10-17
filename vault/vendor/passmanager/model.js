@@ -324,6 +324,10 @@ export function mergePatch (base, changes = {}) {
     ...(changes.totp !== undefined ? { totp: changes.totp } : {}),
     ...(changes.notes !== undefined ? { notes: changes.notes } : {}),
     ...vaciados,
+    // El contador de una passkey sube en cada firma: cambiarlo no toca la llave.
+    ...(Number.isInteger(changes.signCount) && base.webauthn
+      ? { webauthn: { ...base.webauthn, signCount: changes.signCount } }
+      : {}),
     sites,
     fields: quedan,
     id: base.id,

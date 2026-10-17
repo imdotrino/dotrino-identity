@@ -52,18 +52,7 @@ export function createPasswordDesk (opts = {}) {
     log = () => {},
   } = opts
 
-  const sealed = new SealedStore(store, {
-    recipients: (kind) => members(kind),
-    /**
-     * ¿LA FIRMÓ QUIEN DICE, Y PUEDE ESCRIBIR? Es lo único que la bóveda puede comprobar
-     * sobre una entrada cuyo contenido no ve. Las dos mitades importan: la firma ata el
-     * sobre a una llave, y el acta dice si esa llave tiene algo que hacer aquí.
-     */
-    verifyAuthor: async ({ body, author }) => {
-      if (!canWrite(author?.pub)) return false
-      return verifyDeviceSig({ publickey: author.pub, data: body, signature: author.sig })
-    },
-  })
+  const sealed = openSealedPasswords({ store, members, canWrite })
 
   const responder = new SealedResponder({
     client,
@@ -104,6 +93,30 @@ export function createPasswordDesk (opts = {}) {
 }
 
 /**
+ * EL ALMACÉN SELLADO DE LAS CONTRASEÑAS, sin el mostrador. Lo usa el mostrador y lo usa el
+ * respaldo (`backup.js`): el respaldo tiene que poder leer y escribir aunque ningún aparato
+ * tenga todavía `passwords` y el mostrador no se haya levantado. Una sola pieza, para que
+ * la regla de quién puede escribir no se escriba dos veces.
+ */
+/**
+ * @param {{ store?: any, members?: (kind: string) => any[], canWrite?: (pub: string) => boolean }} [o]
+ */
+export function openSealedPasswords ({ store, members = () => [], canWrite = () => false } = {}) {
+  return new SealedStore(store, {
+    recipients: (kind) => members(kind),
+    /**
+     * ¿LA FIRMÓ QUIEN DICE, Y PUEDE ESCRIBIR? Es lo único que la bóveda puede comprobar
+     * sobre una entrada cuyo contenido no ve. Las dos mitades importan: la firma ata el
+     * sobre a una llave, y el acta dice si esa llave tiene algo que hacer aquí.
+     */
+    verifyAuthor: async ({ body, author }) => {
+      if (!canWrite(author?.pub)) return false
+      return verifyDeviceSig({ publickey: author.pub, data: body, signature: author.sig })
+    },
+  })
+}
+
+/**
  * CONVERTIR LO QUE HAY (§2.7). Es un acto único y es **segundo trabajo de la maestra**: se
  * hace al ABRIR la bóveda, que es cuando la frase está a mano y hay con qué reescribirlo
  * todo.
@@ -121,4 +134,67 @@ export async function convertPasswords ({ store, sealed, cek, recipients, author
     store, sealed, cek, recipients, author, dropOldKey,
     log: (m) => log('[vault] ' + m)
   })
+}
+
+/**
+ * LAS CONTRASEÑAS DEL RESPALDO, abiertas con la copia de recuperación (`backup.js`).
+ *
+ * Es lectura, así que pide lo mismo que ver una variable: `openRecovery(wrap)` → la CEK, que
+ * solo funciona con la bóveda abierta. Cada entrada sale entera, con la forma de siempre
+ * (`newEntry`), para poder volver a sellarla en OTRA bóveda con sus propias llaves.
+ *
+ * Lo que no abre la copia de recuperación no se calla: `unreadable` cuenta las entradas sin
+ * envoltura `#recovery` (guardadas antes de que existiera), y `withheld` los campos sueltos
+ * que tampoco la tienen. Un respaldo que se deja cosas tiene que decirlo.
+ */
+export async function exportPasswordEntries ({ sealed, openRecovery }) {
+  const { RECOVERY, openSealedEntry } = await import('@dotrino/passmanager/sealed')
+  const { decryptWithCek } = await import('@dotrino/identity/content')
+  const stats = await sealed.stats()
+  if (!stats.sealed) return { entries: [], unreadable: stats.entries, withheld: 0 }
+  const openSealed = async ({ wrap, envelope }) => decryptWithCek({ cek: await openRecovery(wrap), envelope })
+  const views = await sealed.views({ pub: RECOVERY })
+  const entries = []
+  let withheld = 0
+  for (const v of views) {
+    const got = await sealed.get(v.id, { pub: RECOVERY })
+    const { withheld: lost = [], ...plain } = await openSealedEntry({ got, openSealed })
+    withheld += lost.length
+    entries.push(plain)
+  }
+  return { entries, unreadable: stats.entries - views.length, withheld }
+}
+
+/**
+ * VUELVE A SELLAR entradas de un respaldo en ESTA bóveda: a los aparatos de su acta y a su
+ * copia de recuperación, con la llave del perfil de aquí (la que hace las huellas de sitio).
+ *
+ * Si esta bóveda todavía no tiene llave de perfil (nunca guardó una contraseña), se estrena
+ * aquí: es lo mismo que haría al convertir, y sin ella no hay dónde guardar.
+ *
+ * `writes`: `[{ entry, replaces }]` de `writesOf`. `replaces` es el id de la entrada de aquí
+ * que se pisa; la entrada nueva toma ese id, así que el almacén la reemplaza en su sitio.
+ * `author` firma cada entrada (`{ publickey, sign }`), como cualquier aparato que escribe.
+ */
+export async function importPasswordEntries ({ sealed, openRecovery, recipients, author, writes = [] }) {
+  if (!writes.length) return { written: 0 }
+  const { RECOVERY, profileKeys, buildSealedEntry, buildProfileKey } = await import('@dotrino/passmanager/sealed')
+  const { decryptWithCek } = await import('@dotrino/identity/content')
+  let base
+  if ((await sealed.stats()).sealed) {
+    const p = await sealed.profile({ pub: RECOVERY })
+    base = await decryptWithCek({ cek: await openRecovery(p.wrap), envelope: p.envelope })
+  } else {
+    const k = await buildProfileKey({ recipients })
+    await sealed.setProfile({ envelope: k.envelope, wraps: k.wraps })
+    base = k.base
+  }
+  const keys = await profileKeys(base)
+  let written = 0
+  for (const { entry, replaces } of writes) {
+    const built = await buildSealedEntry({ plain: { ...entry, id: replaces || entry.id }, keys, recipients, author })
+    await sealed.putSealed({ ...built, by: author.publickey })
+    written++
+  }
+  return { written }
 }

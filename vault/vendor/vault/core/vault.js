@@ -40,6 +40,7 @@ import { createApprovals, createGrants, lastApproverGone, PENDING_TTL_MS, GRANT_
 import { sanitizeContext, commandFingerprint, commandLine } from '../procContext.js'
 import { makeContentKey, encryptWithCek, wrapForMember } from '@dotrino/identity/content'
 import { makeSealer } from './sealer.js'
+import { BACKUP_VERSION, PASSWORDS_DRAWER, wants, assertSelected, planImport, resolvePlan, writesOf } from './backup.js'
 import { openSealKeys } from './sealKey.js'
 import { openCommKey, COMM_CN, COMM_CAPS } from './commKey.js'
 import { seal } from '../sealed.js'
@@ -317,6 +318,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * queda fuera y se ve en `incompleteMembers`.
    */
   const noEsLaBoveda = (pub) => pub !== master && pub !== commKey.pub()
+  /**
+   * ¿PUEDE ESCRIBIR UNA CONTRASEÑA? Un aparato del acta con `passwords`… y la MAESTRA de esta
+   * bóveda, que es quien reescribe al convertir (`sealPasswords`) y al importar un respaldo.
+   * Las dos cosas pasan con la bóveda abierta y son rehacer sobres, su segundo trabajo. Sin
+   * ella, las dos fallaban con `bad-author`: firmaban con la maestra y la regla solo miraba
+   * el acta. Escribir no le da a la bóveda ninguna envoltura: sigue sin poder leer nada.
+   */
+  const canWritePasswords = (pub) => !!pub && (pub === master || (!!actaCache && Acta.memberCan(actaCache, pub, 'passwords')))
   const passwordRecipients = (_kind = 'main') => (actaCache?.members || [])
     .filter((m) => m.encPub && noEsLaBoveda(m.pub) && Acta.memberCan(actaCache, m.pub, 'passwords'))
     .map((m) => ({ pub: m.pub, encPub: m.encPub }))
@@ -2330,7 +2339,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // aparato—. Ninguna de las dos abre nada por sí sola.
       members: (kind) => passwordRecipients(kind),
       recoveryPub: () => secrets.recoveryPub(),
-      canWrite: (pub) => !!actaCache && !!pub && Acta.memberCan(actaCache, pub, 'passwords'),
+      canWrite: canWritePasswords,
       // UNA sola condición, y es del ACTA: el aparato tiene la capacidad `passwords`.
       // Quitársela —o quitar el aparato— le corta esto en la siguiente pasada, sin
       // que haya una segunda lista que acordarse de tocar.
@@ -3946,6 +3955,163 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     return secrets.openBundle(ns, devicePub, adminKey)
   }
 
+  // --- EL RESPALDO (`backup.js`, `docs/respaldo.md`) ------------------------------------
+  //
+  // Las dos puntas son de BÓVEDA ABIERTA (dueño, 2026-10-16): exportar lee todo, e importar
+  // compara con lo que ya hay. Cerrada se para y se dice, sin intentar con la llave de la
+  // máquina.
+
+  const needOpen = () => {
+    if (isLocked()) throw Object.assign(new Error('the vault is locked: open it to back up or restore'), { code: 'VAULT_LOCKED' })
+  }
+  /** El almacén sellado de las contraseñas: el del mostrador si está, o uno igual. */
+  const sealedPasswords = async () => {
+    if (passwords?.sealed) return passwords.sealed
+    const { openSealedPasswords } = await import('./passwords.js')
+    return openSealedPasswords({ store: passwordsStore, members: (kind) => passwordRecipients(kind), canWrite: canWritePasswords })
+  }
+  const passwordsRecovery = (adminKey) => (wrap) => secrets.openRecoveryWrap(wrap, adminKey)
+  /** Lo que hay en las contraseñas, abierto. `null` si no hay ni una. */
+  async function passwordEntries (adminKey) {
+    const { exportPasswordEntries } = await import('./passwords.js')
+    return exportPasswordEntries({ sealed: await sealedPasswords(), openRecovery: passwordsRecovery(adminKey) })
+  }
+  /** Cómo se llama un cajón para quien lo lee: el del aparato, con su ID y su nombre. */
+  const drawerLabel = (owner) => {
+    if (!owner.startsWith('dev:')) return null
+    const pub = owner.slice(4)
+    const m = (actaCache?.members || []).find((x) => x.pub === pub)
+    return { id: pubkeyId(pub), label: m?.label || m?.cn || null }
+  }
+
+  /**
+   * LOS CAJONES QUE HAY, con cuántos valores tiene cada uno. Es lo que se enseña antes de
+   * elegir qué respaldar: nombres y cuentas, nunca valores.
+   */
+  async function backupDrawers () {
+    const out = secrets.owners().map((owner) => ({
+      owner,
+      count: owner.startsWith('dev:')
+        ? (secrets.listDevices()[owner.slice(4)] || []).length
+        : (secrets.list()[owner.slice(3)] || []).length,
+      ...(drawerLabel(owner) ? { device: drawerLabel(owner) } : {})
+    }))
+    const st = await (await sealedPasswords()).stats()
+    if (st.entries) out.push({ owner: PASSWORDS_DRAWER, count: st.entries })
+    return out
+  }
+
+  /**
+   * EXPORTA un respaldo: todo, o los cajones pedidos (`drawers`). Devuelve lo que se va a
+   * cifrar (`payload`) y el resumen de lo que lleva — quien llama lo cifra con la contraseña
+   * del respaldo (`sealBackup`), que no tiene por qué pasar por aquí.
+   */
+  async function exportBackup ({ drawers = null, adminKey = null } = {}) {
+    needOpen()
+    await refreshActa()
+    const owners = secrets.owners()
+    const pwd = (!drawers || wants(drawers, PASSWORDS_DRAWER)) ? await passwordEntries(adminKey) : null
+    const available = [...owners, ...(pwd && (pwd.entries.length || pwd.unreadable) ? [PASSWORDS_DRAWER] : [])]
+    assertSelected(drawers, available)
+    /** @type {Array<{owner: string, label?: any, vars?: Object<string,{value:string, public:boolean}>, entries?: any[]}>} */
+    const out = []
+    for (const owner of owners) {
+      if (!wants(drawers, owner)) continue
+      const vars = await secrets.exportDrawer(owner, adminKey)
+      if (!vars) continue
+      const label = drawerLabel(owner)
+      out.push({ owner, ...(label ? { label } : {}), vars })
+    }
+    if (pwd && wants(drawers, PASSWORDS_DRAWER) && pwd.entries.length) out.push({ owner: PASSWORDS_DRAWER, entries: pwd.entries })
+    const payload = { v: BACKUP_VERSION, createdAt: Date.now(), account: fp || null, drawers: out }
+    const summary = {
+      drawers: out.map((d) => ({ owner: d.owner, count: d.entries ? d.entries.length : Object.keys(d.vars).length, ...(d.label ? { device: d.label } : {}) })),
+      ...(pwd?.unreadable ? { passwordsUnreadable: pwd.unreadable } : {}),
+      ...(pwd?.withheld ? { passwordFieldsWithheld: pwd.withheld } : {})
+    }
+    audit('backup.export', { drawers: out.length })
+    return { payload, summary }
+  }
+
+  /** Lo que ya hay en los cajones de destino del plan, abierto, para compararlo. */
+  async function currentFor (payload, { selected, map, adminKey }) {
+    const current = {}
+    for (const d of payload.drawers) {
+      if (d.owner === PASSWORDS_DRAWER || !wants(selected, d.owner)) continue
+      const to = map[d.owner] || d.owner
+      if (!(to in current)) current[to] = await secrets.exportDrawer(to, adminKey)
+    }
+    return current
+  }
+
+  /**
+   * EL PLAN de importar un respaldo ya abierto: qué es nuevo, qué es igual y qué choca. No
+   * escribe nada. `map` mueve un cajón a otro nombre (o a otro aparato).
+   */
+  async function planBackupImport (payload, { drawers = null, map = {}, adminKey = null } = {}) {
+    needOpen()
+    await refreshActa()
+    const current = await currentFor(payload, { selected: drawers, map, adminKey })
+    const withPasswords = payload.drawers.some((d) => d.owner === PASSWORDS_DRAWER && wants(drawers, d.owner))
+    const pwd = withPasswords ? await passwordEntries(adminKey) : null
+    return planImport(payload, {
+      selected: drawers,
+      map,
+      current,
+      devices: (actaCache?.members || []).map((m) => m.pub),
+      passwords: pwd ? { entries: pwd.entries } : null
+    })
+  }
+
+  /**
+   * IMPORTA. Rehace el plan aquí mismo —no se fía de uno viejo: entre el plan y el sí, la
+   * bóveda pudo cambiar— y si queda algún choque sin decidir no escribe nada
+   * (`BACKUP_CONFLICTS`, con la lista).
+   *
+   * Todo lo de los cajones entra en UN guardado por cajón y con un solo aviso a sus
+   * servicios, como una carga en grupo.
+   */
+  async function importBackup (payload, { drawers = null, map = {}, onConflict = null, decisions = {}, adminKey = null } = {}) {
+    const plan = resolvePlan(await planBackupImport(payload, { drawers, map, adminKey }), { onConflict, decisions })
+    const { vars, entries } = writesOf(plan, payload)
+    const touched = new Set()
+    await secrets.batch(async () => {
+      for (const w of vars) {
+        await secrets.importValue(w.to, w.key, w.value, w.public, { by: null })
+        touched.add(w.to)
+      }
+    })
+    let pwdWritten = 0
+    if (entries.length) {
+      const { importPasswordEntries } = await import('./passwords.js')
+      const r = await importPasswordEntries({
+        sealed: await sealedPasswords(),
+        openRecovery: passwordsRecovery(adminKey),
+        recipients: { recoveryPub: secrets.recoveryPub(), main: passwordRecipients('main'), passkeys: passwordRecipients('passkeys') },
+        // LA MAESTRA FIRMA LO QUE ESCRIBE, igual que al convertir (`sealPasswords`): la bóveda
+        // está abierta y esto es rehacer sobres. Lo que se le envuelve sigue siendo nada.
+        author: { publickey: master, sign: (body) => identity.signData(body) },
+        writes: entries
+      })
+      pwdWritten = r.written
+    }
+    // Como cualquier carga en grupo: saldar lo que se deba y un solo aviso por cajón.
+    for (const owner of touched) {
+      await settleDebts(owner)
+      if (owner.startsWith('dev:')) scheduleDeviceNotice(owner.slice(4))
+      else if (owner !== PROFILE_OWNER) scheduleNotice(owner.slice(3))
+    }
+    const result = {
+      written: vars.length + pwdWritten,
+      kept: plan.drawers.reduce((n, d) => n + d.items.filter((i) => i.resolution === 'keep').length, 0),
+      same: plan.counts.same,
+      skipped: plan.drawers.filter((d) => d.status !== 'ok').map((d) => ({ from: d.from, to: d.to, status: d.status })),
+      keptPrivate: vars.filter((w) => w.keptPrivate).map((w) => ({ drawer: w.to, key: w.key }))
+    }
+    audit('backup.import', { written: result.written, kept: result.kept, drawers: touched.size + (pwdWritten ? 1 : 0) })
+    return result
+  }
+
   /**
    * CAMBIA LOS PERMISOS DE UNO O VARIOS APARATOS EN UNA SOLA ACTA. `changes`: `[{ pub, caps }]`,
    * cada `caps` la lista COMPLETA de ese aparato.
@@ -4274,6 +4440,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // frontera de verdad (que el valor de una privada no salga ni dentro del sobre).
     vars: varsDesk,
     setSecret, deleteSecret, renameSecret, renameDeviceSecret, listSecrets, setSecretVisibility, openSecrets,
+    // El respaldo: exportar, ver el plan e importar. Las tres con la bóveda abierta.
+    backupDrawers, exportBackup, planBackupImport, importBackup,
     // Sella un `secrets.json` v3 entero. Es el punto de no retorno del despliegue y
     // por eso es una operación con nombre propio, no algo que ocurra de refilón al
     // desbloquear: deja `secrets.json.v3.bak` para poder volver.

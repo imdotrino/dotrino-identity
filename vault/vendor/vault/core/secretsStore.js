@@ -96,6 +96,16 @@ export function assertProfileKey (key) {
   }
 }
 
+/** Lo más largo que puede ser un dato del perfil (una foto pequeña cabe). */
+const MAX_PROFILE_LEN = 200000
+
+/** Valida un dato del perfil: su nombre (`assertProfileKey`) y su valor. */
+export function assertProfileValue (key, value) {
+  assertProfileKey(key)
+  if (typeof value !== 'string' || !value) throw new Error('value must be a non-empty string')
+  if (value.length > MAX_PROFILE_LEN) throw new Error(`profile value too long (max ${MAX_PROFILE_LEN})`)
+}
+
 /** Cuántas versiones anteriores se conservan, en total. Ver «EL HISTÓRICO» arriba. */
 const MAX_HISTORY = 500
 
@@ -555,6 +565,52 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       return out
     },
 
+    /**
+     * UN CAJÓN ENTERO, ABIERTO. Es para el RESPALDO (`backup.js`), y por eso pide lo mismo
+     * que ver un valor: la copia de recuperación, o sea la bóveda abierta. Se abre UNA vez
+     * y se usa para todas las variables.
+     *
+     * Lo público del perfil (`cls: 'public'`) no tiene sobre: se guarda en claro y firmado,
+     * y sale tal cual. El histórico no sale: un respaldo es lo vigente.
+     *
+     * @returns {Promise<Object<string,{value:string, public:boolean}>|null>} `null` si el
+     *   cajón no existe.
+     */
+    async exportDrawer (owner, adminKey = null) {
+      const [kind, k] = splitOwner(owner)
+      const bag = kind === 'ns' ? data.ns : data.dev
+      if (!bag[k]) return null
+      if (needsMigration()) throw new NeedsMigration()
+      const vars = varsOf(bag, k)
+      /** @type {Object<string,{value:string, public:boolean}>} */
+      const out = {}
+      let priv = null
+      for (const [key, e] of Object.entries(vars)) {
+        if (e?.cls === 'public' && typeof e.pubv === 'string') { out[key] = { value: e.pubv, public: true }; continue }
+        if (isLegacy()) { out[key] = { value: e.v, public: !!e.pub }; continue }
+        if (!priv) priv = await openRecovery(adminKey)
+        out[key] = { value: await sealer.openValue(await this._cekOf(bag, k, e.gen, priv), e.e), public: !!e.pub }
+      }
+      return out
+    },
+
+    /**
+     * ESCRIBE UN VALOR IMPORTADO en cualquier cajón, también en el del perfil.
+     *
+     * Es escribir y nada más (no pide la frase): lo de `@me` público va por
+     * `profilePutPublic`, como lo escribiría un aparato; lo demás, por el mismo camino que
+     * `set`. Lo que decide si se escribe —el conflicto con lo que ya había— lo decide
+     * `backup.js` antes de llegar aquí.
+     */
+    async importValue (owner, key, value, isPublic, { by = null } = {}) {
+      if (owner === PROFILE_OWNER && isPublic) return this.profilePutPublic(key, value, { by })
+      const [kind, k] = splitOwner(owner)
+      if (kind === 'ns' && owner !== PROFILE_OWNER) assertNs(k)
+      else if (kind === 'dev') assertPub(k)
+      else if (kind !== 'ns') throw new Error('invalid drawer: expected "ns:<name>" or "dev:<pubkey>"')
+      return this._put(kind === 'ns' ? data.ns : data.dev, k, owner, key, value, isPublic, by)
+    },
+
     // --- escritura: NO pide la frase (§8.1) --------------------------------------
     /**
      * Escribe en un cajón. `isPublic` es OPCIONAL a propósito: sin decir nada se
@@ -575,7 +631,10 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
     async _put (...a) { return enFila(() => this._putRaw(...a)) },
     /** @private El cuerpo, ya en fila (ver `enFila`). */
     async _putRaw (bag, k, owner, key, value, isPublic, by) {
-      assertKeyValue(key, value)
+      // El cajón del perfil tiene su propio alfabeto (`nickname`, no `NICKNAME`). Por aquí
+      // solo llega con `importValue`: `set` ya rechaza `@me` como nombre de cajón.
+      if (owner === PROFILE_OWNER) assertProfileValue(key, value)
+      else assertKeyValue(key, value)
       const vars = ensureBag(bag, k)
       const before = vars[key]
       const pub = isPublic === undefined ? !!before?.pub : !!isPublic
@@ -949,7 +1008,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
         if (isLegacy()) throw new Error('profile: this store is still v3 (run `migrate` first)')
         if (needsMigration()) throw new NeedsMigration()
         assertProfileKey(key)
-        if (typeof value !== 'string' || value.length > 200000) {
+        if (typeof value !== 'string' || value.length > MAX_PROFILE_LEN) {
           throw new Error('a public profile field must be a string of at most 200 kB')
         }
         const vars = ensureBag(data.ns, PROFILE_NS)

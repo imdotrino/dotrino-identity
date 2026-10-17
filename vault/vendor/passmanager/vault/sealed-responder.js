@@ -107,7 +107,11 @@ export class SealedResponder {
         // `allow`, no `ask`: es el que RECUERDA el sí y junta las simultáneas. `ask` es la
         // función cruda de preguntar, y usarla directamente hacía sonar el teléfono en cada
         // petición — que es como se enseña a aprobar sin mirar.
-        const ok = await this.gate.allow({ op, payload, pubkey })
+        //
+        // Salvo borrar o pisar una passkey: eso no se deshace, así que pregunta CADA vez y
+        // ningún sí anterior del aparato lo cubre.
+        const remember = !(await this.replacesPasskey(op, payload))
+        const ok = await this.gate.allow({ op, payload, pubkey, remember })
         if (!ok) { anota('rejected'); return this.#send(from, pubkey, replyError(rid, CODES.NOT_APPROVED, 'not approved on the trusted device')) }
       }
       const result = await this.#run(op, payload, pubkey)

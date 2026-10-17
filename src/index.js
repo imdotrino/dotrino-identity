@@ -601,6 +601,20 @@ export class Identity {
   /** Cambia la contraseña: hace falta la vieja, y lo que estuviera abierto se cierra. */
   async selfVaultLoginPasswd (opts) { return this._call('selfVaultLoginPasswd', opts || {}, 60000) }
 
+  // ----- el RESPALDO, cuando la bóveda es ESTA pestaña (solo desde la consola) -----
+  //
+  // Bóveda abierta y origen de la consola (`vault.dotrino.com`): cualquier otro recibe
+  // `code: 'not-the-console'`. El archivo vuelve YA CIFRADO con la contraseña dada.
+
+  /** Los cajones que hay: `[{ owner, count, device? }]`. */
+  async selfVaultBackupDrawers () { return this._call('selfVaultBackupDrawers', {}, 30000) }
+  /** Exporta todo (`drawers: null`) o esos cajones. Devuelve `{ file, summary }`. */
+  async selfVaultBackupExport (opts) { return this._call('selfVaultBackupExport', opts || {}, 120000) }
+  /** El plan de importar `file` (qué es nuevo, igual o choca). No escribe nada. */
+  async selfVaultBackupPlan (opts) { return this._call('selfVaultBackupPlan', opts || {}, 120000) }
+  /** Importa. Con un choque sin decidir lanza `BACKUP_CONFLICTS` y no escribe nada. */
+  async selfVaultBackupImport (opts) { return this._call('selfVaultBackupImport', opts || {}, 120000) }
+
   /** Cierra un inicio de sesión abierto (sin `sid`, todos los de ese usuario). */
   async selfVaultLoginClose (opts) { return this._call('selfVaultLoginClose', opts || {}) }
 

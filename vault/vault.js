@@ -469,6 +469,45 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         }
       }
       return { ...r, deviceId: fila?.deviceId || null }
+    },
+
+    // ----- EL RESPALDO (`dotrino-vault/docs/respaldo.md`), cuando la bóveda es ESTA pestaña -----
+    //
+    // Exportar e importar, con la bóveda abierta (lo comprueba el núcleo: `VAULT_LOCKED`).
+    // Y SOLO DESDE LA CONSOLA: este iframe atiende a cualquier `*.dotrino.com`, y quien exporta
+    // elige la contraseña del respaldo — o sea, puede leerlo todo. Un fallo en cualquiera de
+    // las apps no puede convertirse en sacar los secretos de la cuenta.
+    // El archivo se cierra AQUÍ: a la consola le llega ya cifrado.
+    selfVaultBackupDrawers: async ({ __origin } = {}) => {
+      soloConsola(__origin)
+      return pidaDaemon().backupDrawers()
+    },
+    selfVaultBackupExport: async ({ drawers = null, password, __origin } = {}) => {
+      soloConsola(__origin)
+      const { sealBackup } = await import('@dotrino/vault/backup')
+      const { payload, summary } = await pidaDaemon().exportBackup({ drawers })
+      return { file: await sealBackup(payload, password), summary }
+    },
+    selfVaultBackupPlan: async ({ file, password, drawers = null, map = {}, __origin } = {}) => {
+      soloConsola(__origin)
+      const { openBackup } = await import('@dotrino/vault/backup')
+      return pidaDaemon().planBackupImport(await openBackup(file, password), { drawers, map })
+    },
+    selfVaultBackupImport: async ({ file, password, drawers = null, map = {}, onConflict = null, decisions = {}, __origin } = {}) => {
+      soloConsola(__origin)
+      const { openBackup } = await import('@dotrino/vault/backup')
+      return pidaDaemon().importBackup(await openBackup(file, password), { drawers, map, onConflict, decisions })
+    }
+  }
+
+  /**
+   * ¿ES LA CONSOLA? `vault.dotrino.com`, o un origen de desarrollo (localhost / LAN privada),
+   * que es donde se prueba. Lo demás del ecosistema no puede pedir un respaldo.
+   */
+  const CONSOLE_ORIGIN = /^(https:\/\/vault\.dotrino\.com|https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?)$/
+  function soloConsola (origin) {
+    if (!CONSOLE_ORIGIN.test(String(origin || ''))) {
+      throw Object.assign(new Error('only the vault console (vault.dotrino.com) can back up or restore'), { code: 'not-the-console' })
     }
   }
 
