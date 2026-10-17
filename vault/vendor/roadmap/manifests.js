@@ -8,8 +8,8 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 29,
-    "issued": "2026-10-15",
+    "seq": 30,
+    "issued": "2026-10-16",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
       "compat": {
@@ -22,18 +22,20 @@ export const MANIFESTS = Object.freeze({
       "env": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/env",
-        "current": "0.85.0",
+        "current": "0.90.1",
         "protocol": 1,
         "requires": {
-          "vault": ">=0.70.0"
+          "vault": ">=0.90.1"
         }
       },
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.118.0",
+        "current": "0.119.0",
         "protocol": 1,
-        "requires": {}
+        "requires": {
+          "proxy-client": ">=0.13.1"
+        }
       },
       "lobby": {
         "repo": "imdotrino/dotrino-lobby",
@@ -107,7 +109,7 @@ export const MANIFESTS = Object.freeze({
       },
       "proxy": {
         "repo": "imdotrino/dotrino-proxy",
-        "current": "1.6.3",
+        "current": "1.6.4",
         "protocol": 2,
         "requires": {
           "vault": ">=0.87.0",
@@ -215,7 +217,7 @@ export const MANIFESTS = Object.freeze({
       "roadmap": {
         "repo": "imdotrino/dotrino-roadmap",
         "npm": "@dotrino/roadmap",
-        "current": "0.4.29",
+        "current": "0.4.30",
         "protocol": 1,
         "requires": {
           "compat": "0.4.0+"
@@ -251,7 +253,7 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.89.0",
+        "current": "0.90.1",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
@@ -261,13 +263,13 @@ export const MANIFESTS = Object.freeze({
           "compat": ">=0.4.0",
           "roadmap": ">=0.4.26",
           "passmanager": ">=0.18.4",
-          "store": ">=0.11.0"
+          "store": ">=0.12.3"
         }
       },
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.161.0",
+        "current": "0.162.1",
         "protocol": 1,
         "requires": {
           "identity": ">=0.118.0",
@@ -318,12 +320,12 @@ export const MANIFESTS = Object.freeze({
       },
       "passmanager-extension": {
         "repo": "imdotrino/dotrino-passmanager",
-        "current": "0.53.4",
+        "current": "0.54.0",
         "protocol": 1,
         "requires": {
           "identity": ">=0.118.0",
           "proxy-client": ">=0.36.1",
-          "vault": ">=0.88.0",
+          "vault": ">=0.90.0",
           "proxy": "1.1.0+",
           "vaultd": ">=0.160.2"
         }

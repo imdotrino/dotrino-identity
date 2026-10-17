@@ -35,7 +35,7 @@
  * Módulo PURO: sin kv, sin red, sin disco. Cripto de `./capabilities.js`.
  */
 import { canonicalStringify } from './core.js'
-import { signWithDevice, verifyDeviceSig, verifyDelegation, pubkeyId } from './capabilities.js'
+import { signWithDevice, verifyDeviceSig, verifyDelegation, keyLabel } from './capabilities.js'
 import { cleanMachine } from './machine.js'
 export { cleanMachine }
 
@@ -368,8 +368,8 @@ export async function verifySealerLinkChain (chain, { expectedProfileId = null }
 
 /** Id legible de un miembro (mismo formato que el deviceId del emparejamiento). */
 export async function memberId (pub) {
-  const id = (await pubkeyId(pub)).slice(0, 8).toUpperCase()
-  return id.slice(0, 4) + '-' + id.slice(4, 8)
+  if (!pub) throw new Error('memberId: missing key')
+  return keyLabel(pub)
 }
 
 /** ¿Esta acta es un traspaso? (la firmó uno y nombra master a otro) */

@@ -15,14 +15,9 @@
  * second, older copy of a pillar inside every consumer.
  */
 
-const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
+import { errorWithCode } from './errors.js'
 
-/** Un error con `code`: quien llama decide por el código, nunca por la frase. */
-function errorCon (mensaje, code) {
-  const e = /** @type {Error & { code: string }} */ (new Error(mensaje))
-  e.code = code
-  return e
-}
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 
 const VERSION = 1
 
@@ -137,7 +132,7 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
 
   return {
     async seal (msg, peerEncPub, { publickey } = {}) {
-      if (!peerEncPub) throw errorCon('no encryption key for the other side', 'unsealed')
+      if (!peerEncPub) throw errorWithCode('no encryption key for the other side', 'unsealed')
       // Destinatarios como OBJETOS, y CON SU `publickey`: `encrypt` expande cada uno a
       // todos los aparatos de esa persona por su tarjeta de perfil, y la tarjeta se busca
       // por la pubkey. Sin ella el sobre solo lo abría el aparato que anunció la llave, y
@@ -149,7 +144,7 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
       // VACÍO: cifrado de verdad, y que no abre nadie. Eso no es un sobre, es un mensaje
       // perdido con cara de enviado.
       if (!sealed || !sealed.wrap || Object.keys(sealed.wrap).length === 0) {
-        throw errorCon('identitySealing: the vault wrapped the message for nobody', 'unsealed')
+        throw errorWithCode('identitySealing: the vault wrapped the message for nobody', 'unsealed')
       }
       return { app, sealed, from: await myEncPub() }
     },
@@ -189,20 +184,20 @@ export function isBinSealed (env) {
 /** Una CEK nueva para un mensaje con bytes. */
 export async function makeMessageKey () {
   const { makeContentKey } = await crypto_()
-  if (typeof makeContentKey !== 'function') throw errorCon('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  if (typeof makeContentKey !== 'function') throw errorWithCode('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
   return makeContentKey()
 }
 
 /** Cifra `bytes` con la CEK y devuelve los campos del sobre (`iv`, `ct`). */
 export async function encryptBytes (cek, bytes) {
   const { encryptBytesWithCek } = await crypto_()
-  if (typeof encryptBytesWithCek !== 'function') throw errorCon('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  if (typeof encryptBytesWithCek !== 'function') throw errorWithCode('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
   return encryptBytesWithCek({ cek, bytes })
 }
 
 /** Descifra el `ct` de un sobre binario con su CEK ya abierta. */
 export async function decryptBytes (cek, env) {
   const { decryptBytesWithCek } = await crypto_()
-  if (typeof decryptBytesWithCek !== 'function') throw errorCon('opening bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
+  if (typeof decryptBytesWithCek !== 'function') throw errorWithCode('opening bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
   return decryptBytesWithCek({ cek, iv: env.iv, ct: env.ct })
 }

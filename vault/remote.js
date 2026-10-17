@@ -13,7 +13,7 @@
  * No reimplementa cripto: usa `@dotrino/identity/capabilities`. Transporte:
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
-import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, pubkeyId } from './capabilities.js'
+import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, keyLabel } from './capabilities.js'
 import { checkVaultReply } from './acta.js'
 import { cleanMachine, browserMachine } from './machine.js'
 
@@ -146,7 +146,7 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
     // identidad (P) como `device` → el cert delega tu identidad y hay UNA sola (signData/
     // identify/cert son la misma P).
     const dev = device || await makeDeviceKey({ label })
-    const deviceId = (await pubkeyId(dev.publickey)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2')
+    const deviceId = await keyLabel(dev.publickey)
     // El DISPOSITIVO genera el código y manda solo su COMPROMISO (no el código). El vault
     // aprende el código únicamente cuando vos lo tipeás en el PC → aprobar exige tener el dispositivo.
     const code = makePairingCode()

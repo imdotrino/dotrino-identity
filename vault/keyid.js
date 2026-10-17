@@ -32,10 +32,9 @@ export async function pubkeyId (publicJwkStr) {
  */
 export async function keyLabel (publicJwkStr) {
   if (!publicJwkStr) return ''
-  try {
-    const id = (await pubkeyId(publicJwkStr)).slice(0, 8).toUpperCase()
-    return id.slice(0, 4) + '-' + id.slice(4, 8)
-  } catch (_) { return '' }
+  // Una llave que no se puede leer LANZA: un '' callado se pintaba como «sin aparato».
+  const id = (await pubkeyId(publicJwkStr)).slice(0, 8).toUpperCase()
+  return id.slice(0, 4) + '-' + id.slice(4, 8)
 }
 
 export default { pubkeyId, keyLabel }

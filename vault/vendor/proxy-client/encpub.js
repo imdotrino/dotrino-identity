@@ -28,6 +28,7 @@
  */
 import { canonicalStringify } from './canonical.js'
 import { verifyData, samePubkey } from './signature.js'
+import { errorWithCode } from './errors.js'
 
 export const ENCPUB_V = 1
 
@@ -55,17 +56,6 @@ export function isEncPub (v) {
 }
 
 /**
- * @param {string} mensaje
- * @param {string} code
- * @returns {Error & { code: string }}
- */
-function errorCon (mensaje, code) {
-  const e = /** @type {Error & { code: string }} */ (new Error(mensaje))
-  e.code = code
-  return e
-}
-
-/**
  * Firma el anuncio con lo que firma la identidad (`identity.signData`, o la llave local
  * del cliente). No genera llaves ni cifra nada: solo dice de quién es la que ya tienes.
  *
@@ -73,15 +63,15 @@ function errorCon (mensaje, code) {
  * @returns {Promise<{data:any, signature:string}>}
  */
 export async function buildEncPubStatement ({ publickey, encPub, sign } = /** @type {any} */ ({})) {
-  if (typeof publickey !== 'string' || !publickey) throw errorCon('buildEncPubStatement: missing publickey', 'encpub-shape')
-  if (!isEncPub(encPub)) throw errorCon('buildEncPubStatement: encPub is not a P-256 public JWK', 'encpub-shape')
-  if (typeof sign !== 'function') throw errorCon('buildEncPubStatement: missing sign(data)', 'encpub-shape')
+  if (typeof publickey !== 'string' || !publickey) throw errorWithCode('buildEncPubStatement: missing publickey', 'encpub-shape')
+  if (!isEncPub(encPub)) throw errorWithCode('buildEncPubStatement: encPub is not a P-256 public JWK', 'encpub-shape')
+  if (typeof sign !== 'function') throw errorWithCode('buildEncPubStatement: missing sign(data)', 'encpub-shape')
   const data = encPubBody({ publickey, encPub })
   const firmado = await sign(data)
   const signature = typeof firmado === 'string' ? firmado : firmado?.signature
   // «No pude firmar» no es «se cayó la red», y aquí es donde se separan: quien llama
   // decide una cosa u otra según el `code`, nunca según la frase.
-  if (typeof signature !== 'string') throw errorCon('buildEncPubStatement: sign() returned no signature', 'no-signature')
+  if (typeof signature !== 'string') throw errorWithCode('buildEncPubStatement: sign() returned no signature', 'no-signature')
   return { data, signature }
 }
 
@@ -98,21 +88,21 @@ export async function buildEncPubStatement ({ publickey, encPub, sign } = /** @t
  */
 export async function readEncPubStatement (statement, { publickey } = /** @type {any} */ ({})) {
   if (typeof publickey !== 'string' || !publickey) {
-    throw errorCon('readEncPubStatement: missing the publickey to check against', 'encpub-shape')
+    throw errorWithCode('readEncPubStatement: missing the publickey to check against', 'encpub-shape')
   }
   const data = statement?.data
   const signature = statement?.signature
-  if (!data || typeof signature !== 'string') throw errorCon('encpub statement: malformed', 'encpub-unverified')
-  if (data.v !== ENCPUB_V || data.op !== 'encpub') throw errorCon('encpub statement: not an encpub announcement', 'encpub-unverified')
-  if (data.aud !== ENCPUB_AUD) throw errorCon('encpub statement: wrong audience', 'encpub-unverified')
+  if (!data || typeof signature !== 'string') throw errorWithCode('encpub statement: malformed', 'encpub-unverified')
+  if (data.v !== ENCPUB_V || data.op !== 'encpub') throw errorWithCode('encpub statement: not an encpub announcement', 'encpub-unverified')
+  if (data.aud !== ENCPUB_AUD) throw errorWithCode('encpub statement: wrong audience', 'encpub-unverified')
   // `samePubkey` y no `===`: un JWK serializado no es canónico y la misma llave escrita
   // por dos piezas distintas da dos strings distintos.
-  if (!samePubkey(data.publickey, publickey)) throw errorCon('encpub statement: announces another identity', 'encpub-unverified')
-  if (!isEncPub(data.encpub)) throw errorCon('encpub statement: not a P-256 public JWK', 'encpub-unverified')
+  if (!samePubkey(data.publickey, publickey)) throw errorWithCode('encpub statement: announces another identity', 'encpub-unverified')
+  if (!isEncPub(data.encpub)) throw errorWithCode('encpub statement: not a P-256 public JWK', 'encpub-unverified')
   // Se verifica con la llave que ANUNCIA el sobre, que ya se comprobó que es la misma que
   // la pedida: así el texto firmado y la llave que lo comprueba salen del mismo sitio.
   if (!(await verifyData(data.publickey, data, signature))) {
-    throw errorCon('encpub statement: bad signature — the key is not bound to that identity', 'encpub-unverified')
+    throw errorWithCode('encpub statement: bad signature — the key is not bound to that identity', 'encpub-unverified')
   }
   return data.encpub
 }

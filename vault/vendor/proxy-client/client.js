@@ -5,17 +5,8 @@ import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, re
 import { TrafficStats, utf8Length, registerTransport, unregisterTransport } from './stats.js'
 import { splitParts, splitBinParts, isPart, Reassembler, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS, DIRECT_PART_BYTES, PROXY_PART_BYTES, QUEUE_MAX_BYTES, RELAY_MAX_BYTES } from './parts.js'
 import { pack, unpack, hasBinary, encodeFrame, decodeFrame } from './binpack.js'
+import { errorWithCode } from './errors.js'
 
-/**
- * Error con un `code` estable.
- *
- * El contrato es el CODE, no la frase: comprobar por el texto cruza procesos y
- * se rompe en silencio en cuanto alguien lo reescribe o lo traduce.
- *
- * @param {string} mensaje
- * @param {string} code
- * @returns {Error & { code: string }}
- */
 /**
  * EL SALUDO: «este token es de esta identidad».
  *
@@ -31,12 +22,6 @@ const HELLO_TAG = '__cc_hello__'
  * todo pase a binario con el tiempo, y esta lista es por donde se sabrá quién ya puede.
  */
 const SPEAKS = ['binary']
-
-function errorCon (mensaje, code) {
-  const e = /** @type {Error & { code: string }} */ (new Error(mensaje))
-  e.code = code
-  return e
-}
 
 /**
  * Dotrino WebSocket proxy client.
@@ -280,7 +265,7 @@ export class WebSocketProxyClient {
     // las peticiones pendientes). Sin esto, quien esperaba un `publish` se comía
     // los 10 s completos del timeout para enterarse de algo que ya se sabía, y
     // el temporizador mantenía vivo el proceso en Node ese rato.
-    this._rejectAllPending(errorCon('Connection closed', 'CONNECTION_CLOSED'))
+    this._rejectAllPending(errorWithCode('Connection closed', 'CONNECTION_CLOSED'))
   }
 
   /** Corta en seco todo lo que esperaba respuesta, con su motivo. */
@@ -351,7 +336,7 @@ export class WebSocketProxyClient {
     // abierto es no guardar ninguno: la app manda por donde le sale y el proxio lo lee
     // igual. Para sellar por token está `sendSealedTo`.
     if (this.requireSealed && !this._isSealed(payload)) {
-      throw errorCon(
+      throw errorWithCode(
         'requireSealed: refusing to send a directed message in the clear — use sendSealedTo()',
         'unsealed')
     }
@@ -527,7 +512,7 @@ export class WebSocketProxyClient {
     const m = this._measure(payload)
     const queueMax = m.bin ? QUEUE_MAX_BYTES : QUEUE_MAX_CHARS
     if (m.len > queueMax) {
-      throw errorCon(`sendSealed: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than can wait in the proxy (${queueMax}); send it by token while both ends are connected`, 'too-big-for-queue')
+      throw errorWithCode(`sendSealed: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than can wait in the proxy (${queueMax}); send it by token while both ends are connected`, 'too-big-for-queue')
     }
     // Por pubkey todo va por el proxio: si no admite bytes, se dice antes de mandar nada. Y
     // si alguno de los destinatarios dijo que no los entiende, tampoco.
@@ -576,7 +561,7 @@ export class WebSocketProxyClient {
       // solo sobre solo lo abriría una—, así que ahí se exige decirlo.
       if (!peerPubkey && tokens.length === 1) peerPubkey = this.pubkeyOfToken(tokens[0])
       if (!peerPubkey) {
-        throw errorCon(
+        throw errorWithCode(
           'sendSealedTo: nobody has said whose this token is — greet it (helloTo) or pass peerPubkey',
           'no-peer-identity')
       }
@@ -607,7 +592,7 @@ export class WebSocketProxyClient {
     // directo. Se pide el canal para que el siguiente intento lo encuentre abierto.
     if (!direct && m.len > relayMax) {
       this._upgradeDirect(tokens)
-      throw errorCon(`sendSealedTo: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than goes through the proxy live (${relayMax}); it needs a direct channel`, 'too-big-for-relay')
+      throw errorWithCode(`sendSealedTo: ${m.len} ${m.bin ? 'bytes' : 'chars'} is more than goes through the proxy live (${relayMax}); it needs a direct channel`, 'too-big-for-relay')
     }
     // Si el token muere a mitad, lo que quede se iría a la cola por pubkey; solo se permite
     // si el mensaje entero cabe ahí. Si no, se dice (`too-big-for-queue`), no se deja.
@@ -650,7 +635,7 @@ export class WebSocketProxyClient {
   async _sendPiece (token, sobre, peerPubkey, queueFallback, relayFallback = true) {
     if (this._rtc && await this._rtc.sendDirect(token, this._wire(sobre))) return
     if (!relayFallback) {
-      throw errorCon('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
+      throw errorWithCode('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
     }
     if (sobre instanceof Uint8Array) this._needBinaryProxy()
     this._sendToTokenOrQueue(token, sobre, peerPubkey, { queueFallback, skipDirect: true })
@@ -673,7 +658,7 @@ export class WebSocketProxyClient {
    */
   sendToOrQueue (token, payload, { peerPubkey } = /** @type {any} */ ({})) {
     if (!token || !peerPubkey) {
-      throw errorCon('sendToOrQueue: needs the token and whose it is (peerPubkey)', 'no-peer-identity')
+      throw errorWithCode('sendToOrQueue: needs the token and whose it is (peerPubkey)', 'no-peer-identity')
     }
     this._sendToTokenOrQueue(token, payload, peerPubkey)
   }
@@ -691,7 +676,7 @@ export class WebSocketProxyClient {
    */
   _sendToTokenOrQueue (token, sobre, peerPubkey, { queueFallback = true, skipDirect = false } = {}) {
     if (this.requireSealed && !this._isSealed(sobre)) {
-      throw errorCon('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
+      throw errorWithCode('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
     }
     const messageStr = this._wire(sobre)
     if (!skipDirect && this._rtc && this._rtc.trySend(token, messageStr)) return
@@ -747,7 +732,7 @@ export class WebSocketProxyClient {
    */
   helloTo (to) {
     if (!this.myPublickey) {
-      throw errorCon('helloTo: identify first — a greeting with no identity says nothing', 'not-identified')
+      throw errorWithCode('helloTo: identify first — a greeting with no identity says nothing', 'not-identified')
     }
     const tokens = Array.isArray(to) ? to : [to]
     for (const t of tokens) {
@@ -789,7 +774,7 @@ export class WebSocketProxyClient {
   _needPeerBinary (targets) {
     for (const t of targets) {
       if (t && this.speaks(t, 'binary') === false) {
-        throw errorCon('the other side does not take binary messages (it needs @dotrino/proxy-client >= 0.36.0)', 'peer-no-binary')
+        throw errorWithCode('the other side does not take binary messages (it needs @dotrino/proxy-client >= 0.36.0)', 'peer-no-binary')
       }
     }
   }
@@ -815,7 +800,7 @@ export class WebSocketProxyClient {
 
   /** Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar. */
   async _seal (payload, peerEncPub, peerPubkey) {
-    if (!peerEncPub) throw errorCon('seal: missing peerEncPub', 'unsealed')
+    if (!peerEncPub) throw errorWithCode('seal: missing peerEncPub', 'unsealed')
     return this.sealing
       ? this.sealing.seal(payload, peerEncPub, { publickey: peerPubkey })
       : seal(payload, peerEncPub)
@@ -856,7 +841,7 @@ export class WebSocketProxyClient {
   /** Un mensaje con bytes por el proxio necesita uno que admita tramas binarias (websocket-proxy ≥ 1.6.0). */
   _needBinaryProxy () {
     if (!Array.isArray(this.caps) || !this.caps.includes('binary')) {
-      throw errorCon('this proxy does not take binary frames (it needs websocket-proxy >= 1.6.0)', 'no-binary-support')
+      throw errorWithCode('this proxy does not take binary frames (it needs websocket-proxy >= 1.6.0)', 'no-binary-support')
     }
   }
 
@@ -867,7 +852,7 @@ export class WebSocketProxyClient {
     if (!p) {
       p = (async () => {
         const o = this.sealing ? await this.sealing.open(k, meta) : await open(k, this.myEncPrivateKey)
-        if (!o || typeof o.cek !== 'string') throw errorCon('the sealed key of a message has no key inside', 'bad-pack')
+        if (!o || typeof o.cek !== 'string') throw errorWithCode('the sealed key of a message has no key inside', 'bad-pack')
         return o.cek
       })()
       this._msgKeys.set(id, p)
@@ -909,7 +894,7 @@ export class WebSocketProxyClient {
    */
   async encPubOf (publickey) {
     if (typeof publickey !== 'string' || !publickey) {
-      throw errorCon('encPubOf: missing publickey', 'encpub-shape')
+      throw errorWithCode('encPubOf: missing publickey', 'encpub-shape')
     }
     const cacheada = this._encPubs.get(publickey)
     if (cacheada) return cacheada
@@ -931,7 +916,7 @@ export class WebSocketProxyClient {
       const propia = await this.encPubResolver(publickey)
       if (propia) {
         if (!isEncPub(propia)) {
-          throw errorCon('encPubResolver returned something that is not a P-256 public JWK', 'encpub-unverified')
+          throw errorWithCode('encPubResolver returned something that is not a P-256 public JWK', 'encpub-unverified')
         }
         this._encPubs.set(publickey, propia)
         return propia
@@ -941,7 +926,7 @@ export class WebSocketProxyClient {
     // esperar diez segundos a un timeout. Un proxio que no manda `caps` es de antes de
     // que esto existiera y no se sabe: se pregunta igual, y contesta la pregunta.
     if (Array.isArray(this.caps) && !this.caps.includes('encpub')) {
-      throw errorCon(
+      throw errorWithCode(
         `este proxio (${this.url}) no sirve llaves de cifrado: hace falta websocket-proxy >= 1.1.0`,
         'no-encpub-support')
     }
@@ -950,7 +935,7 @@ export class WebSocketProxyClient {
     // la app puede tener el mismo JWK escrito de otra forma.
     const statement = (res.keys || []).find((k) => samePubkey(k?.data?.publickey, publickey))
     if (!statement) {
-      throw errorCon('no encryption key announced for that identity — it cannot be sealed to yet', 'no-encpub')
+      throw errorWithCode('no encryption key announced for that identity — it cannot be sealed to yet', 'no-encpub')
     }
     // AQUÍ ES DONDE EL PROXIO DEJA DE IMPORTAR: la firma se comprueba contra la pubkey a
     // la que vamos a escribir. Si cambió la llave por la suya, esto lanza.
@@ -1015,7 +1000,7 @@ export class WebSocketProxyClient {
         }
         let opened
         try {
-          if (!this._isSealed(env.k)) throw errorCon('the key of a sealed message is not sealed', 'bad-pack')
+          if (!this._isSealed(env.k)) throw errorWithCode('the key of a sealed message is not sealed', 'bad-pack')
           opened = unpack(await decryptBytes(await this._openMessageKey(env.k, meta), env))
         } catch (e) {
           this._emit('error', { type: 'undecipherable', from, error: e })
@@ -1567,7 +1552,7 @@ export class WebSocketProxyClient {
     if (ws !== this.ws || this._connected) return
     this.ws = null   // a partir de acá, los eventos tardíos de `ws` se ignoran
     try { ws.close() } catch (_) {}
-    const err = errorCon(`could not open the connection to ${this.url} in ${Math.round(this.connectTimeout / 1000)}s`, 'CONNECT_TIMEOUT')
+    const err = errorWithCode(`could not open the connection to ${this.url} in ${Math.round(this.connectTimeout / 1000)}s`, 'CONNECT_TIMEOUT')
     this._emit('error', { type: 'connect_timeout', error: err })
     if (this._connectReject) {
       this._connectReject(err)
@@ -1781,7 +1766,7 @@ export class WebSocketProxyClient {
 
   _sendRaw (frame) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw errorCon('WebSocket not connected', 'NOT_CONNECTED')
+      throw errorWithCode('WebSocket not connected', 'NOT_CONNECTED')
     }
     if (frame.message instanceof Uint8Array) {
       this._needBinaryProxy()
@@ -1860,7 +1845,7 @@ export class WebSocketProxyClient {
       const out = { ...frame, id }
       const timer = setTimeout(() => {
         this._pending.delete(id)
-        reject(errorCon(`Timeout waiting for ${expectedType}`, 'REQUEST_TIMEOUT'))
+        reject(errorWithCode(`Timeout waiting for ${expectedType}`, 'REQUEST_TIMEOUT'))
       }, 10000)
       this._pending.set(id, { resolve, reject, timer, expectedType, channelKey })
       try {
@@ -1891,7 +1876,7 @@ export class WebSocketProxyClient {
     this._pending.delete(id)
     // Con su `code`: quien llama distingue los casos por él, no por la frase (que el proxio
     // puede cambiar o traducir). Antes se perdía aquí y solo quedaba comparar el texto.
-    const e = errorCon(data.error || 'Server error', data.code || null)
+    const e = errorWithCode(data.error || 'Server error', data.code || null)
     // «Ahora no» (429) y cuánto esperar, cuando el proxio lo dice.
     if (data.status) e.status = data.status
     if (data.retry_after_ms) e.retryAfterMs = data.retry_after_ms

@@ -246,6 +246,22 @@ Lo que hace que esto no sea una llave maestra de repuesto:
 Diseño y hacia dónde va (inicio de sesión y federación):
 [`dotrino-vault/docs/inicio-de-sesion.md`](../dotrino-vault/docs/inicio-de-sesion.md).
 
+### Canal de sesión de los agentes remotos (0.120.0+)
+
+```js
+import { makeEphemeral, deriveKey, seal, open } from '@dotrino/identity/channel'
+```
+
+ECDH P-256 efímero → HKDF → AES-256-GCM: las dos puntas acuerdan una llave de sesión y la
+usan para muchos mensajes. Lo usa `@dotrino/remote-agent` (antes vivía allí). Para un sobre
+suelto hacia una llave, `wrapForMember`/`openWrap` de `@dotrino/identity/content`.
+
+### Huella de una llave
+
+`keyLabel(pub)` de `@dotrino/identity/keyid` da `AB12-CD34`, la que se enseña en todo el
+ecosistema. Úsala en vez de recortar `pubkeyId` a mano. Desde 0.120.0 una llave ilegible
+LANZA (antes devolvía `''`); sin llave sigue siendo `''`.
+
 ### Backup / migración
 
 - `id.exportIdentity()` → blob JSON con `privateJwk` (ECDSA), `encPrivateJwk` (ECDH), `me`, `peers`. **Sensible** — el host app es responsable de guardarlo de manera segura.

@@ -16,30 +16,13 @@
  * P-256 + AES-GCM, llaves como JWK string.
  */
 
+import { wrapForMember, openWrap } from '@dotrino/identity/content'
+
+// El sobre es el MISMO que el de las llaves de contenido de identity (ECDH P-256 efímero
+// → AES-256-GCM, `epk` en JWK): aquí solo se le mete un JSON en vez de una CEK. Antes
+// estaba escrito otra vez en este archivo, byte a byte igual.
+
 const subtle = globalThis.crypto.subtle
-
-function b64 (buf) {
-  const bytes = new Uint8Array(buf)
-  let s = ''
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
-  return btoa(s)
-}
-
-function fromB64 (str) {
-  const bin = atob(str)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-async function deriveAesKey (privateKey, publicJwkStr) {
-  const pub = await subtle.importKey(
-    'jwk', JSON.parse(publicJwkStr),
-    { name: 'ECDH', namedCurve: 'P-256' }, false, []
-  )
-  const bits = await subtle.deriveBits({ name: 'ECDH', public: pub }, privateKey, 256)
-  return subtle.importKey('raw', bits, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
-}
 
 /**
  * Genera la llave ECDH EFÍMERA del solicitante (una por petición).
@@ -57,17 +40,7 @@ export async function makeEphemeralKey () {
  * @returns {Promise<{epk:string, iv:string, ct:string}>}
  */
 export async function seal ({ ek, payload }) {
-  const eph = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
-  const key = await deriveAesKey(eph.privateKey, ek)
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
-  const pt = new TextEncoder().encode(JSON.stringify(payload))
-  const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, key, pt)
-  const epkJwk = await subtle.exportKey('jwk', eph.publicKey)
-  return {
-    epk: JSON.stringify({ kty: epkJwk.kty, crv: epkJwk.crv, x: epkJwk.x, y: epkJwk.y }),
-    iv: b64(iv),
-    ct: b64(ct)
-  }
+  return wrapForMember({ cek: JSON.stringify(payload), memberEncPub: ek })
 }
 
 /**
@@ -78,7 +51,5 @@ export async function openSealed ({ privateKey, enc }) {
   if (!enc || typeof enc.epk !== 'string' || typeof enc.iv !== 'string' || typeof enc.ct !== 'string') {
     throw new Error('invalid sealed envelope')
   }
-  const key = await deriveAesKey(privateKey, enc.epk)
-  const pt = await subtle.decrypt({ name: 'AES-GCM', iv: fromB64(enc.iv) }, key, fromB64(enc.ct))
-  return JSON.parse(new TextDecoder().decode(pt))
+  return JSON.parse(await openWrap({ wrap: enc, myEncPrivateKey: privateKey }))
 }

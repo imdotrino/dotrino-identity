@@ -13,7 +13,7 @@ import {
   initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty
 } from './peerStore.js'
 import { createIdentityCore } from './core.js'
-import { pubkeyId } from './capabilities.js'
+import { keyLabel } from './capabilities.js'
 import { withExternalKeys, appBridge } from './externalKeys.js'
 import { nativeBackends } from './nativeStore.js'
 import { useBackend as usePeerBackend } from './peerStore.js'
@@ -320,7 +320,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         if (!bySub.has(x.sub) || (x.exp || 0) > (bySub.get(x.sub).exp || 0)) bySub.set(x.sub, x)
       }
       const devices = await Promise.all([...bySub.values()].map(async (x) => ({
-        deviceId: (await pubkeyId(x.sub)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2'),
+        deviceId: await keyLabel(x.sub),
         sub: x.sub, label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce
       })))
       return { devices, revoked: (revoked || []).map((r) => r.nonce || r) }

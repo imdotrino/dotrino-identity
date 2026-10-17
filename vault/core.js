@@ -23,7 +23,7 @@ import * as Acta from './acta.js'
 import * as Content from './content.js'
 import { syncPeers, stampOf } from './peerSync.js'
 import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_TTL_MS } from './assertion.js'
-import { pubkeyId as pubkeyIdOf, signWithDevice } from './capabilities.js'
+import { pubkeyId as pubkeyIdOf, signWithDevice, keyLabel } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck, registerLocalVault } from './remote.js'
 
 export const KEY_STORAGE = 'dotrino.identity.keypair'
@@ -1128,7 +1128,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     } catch (_) { return null }
   }
 
-  const deviceIdDe = async (pub) => (await pubkeyIdOf(pub)).slice(0, 8).toUpperCase().replace(/(.{4})(.{4})/, '$1-$2')
+  const deviceIdDe = keyLabel
 
   /**
    * @param {object} entrada  lo que devuelve `loginWithPassword` del pilar
