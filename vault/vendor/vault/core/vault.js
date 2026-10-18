@@ -80,6 +80,8 @@ const MAX_REPLY_BYTES = 768 * 1024
  *   readProcContext(pid)  lo que el sistema dice de un proceso; `null` si no se puede mirar
  *   openLocalDesk({ name, onMessage, channels, maxBytes, log })  el atajo en la misma máquina
  *   makeClient        quién crea el cliente del proxio (opcional)
+ *   wakeUrl           la URL que despierta a esta bóveda si no vive conectada (opcional, `lambda/`)
+ *   onActivity()      llega un mensaje del proxio (opcional; la Lambda mide con esto su inactividad)
  *   noticeGroupMs     cuánto se agrupan los avisos de cambio
  *   opaque            el servidor de OPAQUE, si no vale el del paquete (opcional)
  *   servePasswords    `false`: el almacén de contraseñas lo atiende quien monta la bóveda,
@@ -492,7 +494,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // ninguna llave y solo sabe la dirección `nombre@AB12-CD34-EF56`— pueda encontrar a quien
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
   const { client, identify: reidentificar, isIdentified } = await createTransport({
-    identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null
+    identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null
   })
 
   // El registro público de cadenas de selladores: deposita, si hay a dónde, los eslabones
@@ -2189,7 +2191,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     reply(from, { type: MSG.INCIDENT_RESULT, id: pend.id, approvers, blocked: false })
   }
 
-  client.on('message', (from, payload) => onMessage(from, payload))
+  client.on('message', (from, payload) => {
+    // Quien monta la bóveda puede querer saber que hay trabajo (la Lambda se apaga cuando
+    // deja de haberlo). Es un aviso, no decide nada.
+    try { platform.onActivity?.() } catch (_) {}
+    onMessage(from, payload)
+  })
 
   // EL MOSTRADOR LOCAL, siempre que se pueda. Si no se puede abrir (un sistema sin sockets
   // de archivo, un directorio de solo lectura) se dice y se sigue: los servicios usan el

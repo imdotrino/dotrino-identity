@@ -37,7 +37,7 @@ export function utf8Length (s) {
 
 export const PATHS = ['proxy', 'direct', 'turn', 'webrtc']
 
-const ceros = () => ({ proxy: 0, direct: 0, turn: 0, webrtc: 0 })
+const zeros = () => ({ proxy: 0, direct: 0, turn: 0, webrtc: 0 })
 
 export class TrafficStats {
   constructor () {
@@ -64,7 +64,7 @@ export class TrafficStats {
     if (!key) return
     let p = this.peers.get(key)
     if (!p) {
-      p = { token: who.token || null, pubkey: who.pubkey || null, bytesIn: ceros(), bytesOut: ceros(), msgsIn: 0, msgsOut: 0, firstAt: Date.now(), lastAt: 0 }
+      p = { token: who.token || null, pubkey: who.pubkey || null, bytesIn: zeros(), bytesOut: zeros(), msgsIn: 0, msgsOut: 0, firstAt: Date.now(), lastAt: 0 }
       this.peers.set(key, p)
     }
     if (who.pubkey && !p.pubkey) p.pubkey = who.pubkey
@@ -104,8 +104,8 @@ export async function routeOf (pc) {
   const local = byId.get(pair.localCandidateId)
   const remote = byId.get(pair.remoteCandidateId)
   if (!local && !remote) return null
-  const tipo = (c) => c && (c.candidateType || c.type)
-  return tipo(local) === 'relay' || tipo(remote) === 'relay' ? 'turn' : 'direct'
+  const typeOf = (c) => c && (c.candidateType || c.type)
+  return typeOf(local) === 'relay' || typeOf(remote) === 'relay' ? 'turn' : 'direct'
 }
 
 /**
@@ -121,7 +121,7 @@ function registry () {
   return globalThis[REGISTRY]
 }
 
-function avisar () {
+function notify () {
   if (typeof globalThis.dispatchEvent === 'function' && typeof Event === 'function') {
     try { globalThis.dispatchEvent(new Event('dotrino-transports')) } catch (_) {}
   }
@@ -131,11 +131,11 @@ export function registerTransport (client) {
   const r = registry()
   if (r.has(client)) return
   r.add(client)
-  avisar()
+  notify()
 }
 
 export function unregisterTransport (client) {
-  if (registry().delete(client)) avisar()
+  if (registry().delete(client)) notify()
 }
 
 /** Los clientes registrados en esta página (o proceso). */

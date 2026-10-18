@@ -80,10 +80,10 @@ export function meets (m, { product, peer, version }) {
   if (!productOf(m, product)) {
     return { ok: false, reason: `the registry does not know "${product}"` }
   }
-  const rango = requirementFor(m, product, peer)
-  if (rango == null) return { ok: true, reason: '' }
-  if (satisfies(version, rango)) return { ok: true, reason: '' }
-  return { ok: false, reason: `${product} needs ${peer} ${rango} and this one is ${version}` }
+  const range = requirementFor(m, product, peer)
+  if (range == null) return { ok: true, reason: '' }
+  if (satisfies(version, range)) return { ok: true, reason: '' }
+  return { ok: false, reason: `${product} needs ${peer} ${range} and this one is ${version}` }
 }
 
 /** La lista de rotas del registro, lista para pasarla a `check` de `@dotrino/compat`. */

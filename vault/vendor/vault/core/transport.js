@@ -36,7 +36,7 @@ export async function masterPubkeyOf (identity) {
  * @param {string} [opts.url] URL del proxy (default wss://proxy.dotrino.com).
  * @returns {Promise<{ client, token:string, identify():Promise<void> }>}
  */
-export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey = null, log = () => {}, makeClient = null, announce = null, recheckMs = 60_000, patienceMs = 5 * 60_000, reannounceMs = 10 * 60_000 }) {
+export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey = null, log = () => {}, makeClient = null, announce = null, wakeUrl = null, recheckMs = 60_000, patienceMs = 5 * 60_000, reannounceMs = 10 * 60_000 }) {
   // Import dinámico DESPUÉS de instalar los globals que el paquete usa.
   // `WebSocketProxyClient` (la clase) y NO el helper `getWebSocketProxyClient`:
   // ese es un SINGLETON de proceso, y con multi-perfil el vault necesita una
@@ -182,6 +182,25 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     }
   }
 
+  /**
+   * DESPIÉRTAME AQUÍ (una bóveda que no vive conectada, `lambda/`). Si la plataforma da una
+   * URL, se registra en el proxio con la llave de comunicación y el acta, para que llame a esa
+   * URL cuando llegue algo para la cuenta y no haya nadie suyo conectado. Va pegado a
+   * `identify` por lo mismo que el anuncio: el acta puede haber cambiado. Si falla, se dice:
+   * lo que se pierde es que la despierten, y eso no se puede callar.
+   */
+  const registerWake = async () => {
+    if (!wakeUrl || !identificado) return
+    const comm = commKey?.pub?.() || null
+    if (!comm || !actaVista) { log('[vault] cannot register the wake URL: no communication key in the record yet'); return }
+    try {
+      await client.registerWake({ publicKey: comm, sign: (d) => commKey.sign(d), url: wakeUrl, acta: actaVista, channel: announce || undefined })
+      log('[vault] wake URL registered on the proxy')
+    } catch (e) {
+      log(`[vault] could not register the wake URL (${e.code || ''} ${e.message}) — the proxy will not wake this vault`)
+    }
+  }
+
   let reintento = null
   let fallos = 0
   const identifyWithRetry = async () => {
@@ -189,6 +208,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     try {
       await identify()
       await announceAccount()
+      await registerWake()
       if (fallos) log(`[vault] identified on the proxy after ${fallos + 1} attempt(s)`)
       fallos = 0
     } catch (e) {

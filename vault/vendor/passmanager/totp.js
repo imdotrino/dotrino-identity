@@ -13,7 +13,7 @@ export function base32Decode (input) {
   const out = []
   for (const ch of s) {
     const idx = B32.indexOf(ch)
-    if (idx === -1) throw new Error('base32: carácter inválido')
+    if (idx === -1) throw new Error('base32: invalid character')
     value = (value << 5) | idx
     bits += 5
     if (bits >= 8) {
@@ -38,12 +38,12 @@ export function normalizeOtpauth (input, label = 'dotrino') {
 /** Parsea `otpauth://totp/Emisor:cuenta?secret=...&digits=6&period=30&algorithm=SHA1`. */
 export function parseOtpauth (uri) {
   const u = new URL(normalizeOtpauth(uri))
-  if (u.protocol !== 'otpauth:') throw new Error('otpauth: esquema inválido')
+  if (u.protocol !== 'otpauth:') throw new Error('otpauth: invalid scheme')
   const type = u.hostname.toLowerCase()
-  if (type !== 'totp' && type !== 'hotp') throw new Error('otpauth: tipo no soportado')
+  if (type !== 'totp' && type !== 'hotp') throw new Error('otpauth: unsupported type')
   const q = u.searchParams
   const secret = q.get('secret')
-  if (!secret) throw new Error('otpauth: falta secret')
+  if (!secret) throw new Error('otpauth: missing secret')
 
   const label = decodeURIComponent(u.pathname.replace(/^\//, ''))
   const [maybeIssuer, account] = label.includes(':') ? label.split(/:(.+)/) : [null, label]
@@ -74,7 +74,7 @@ const HASHES = { SHA1: 'SHA-1', SHA256: 'SHA-256', SHA512: 'SHA-512' }
 
 async function hotp (secretBytes, counter, digits, algorithm) {
   const hash = HASHES[algorithm]
-  if (!hash) throw new Error('otp: algoritmo no soportado: ' + algorithm)
+  if (!hash) throw new Error('otp: unsupported algorithm: ' + algorithm)
 
   const buf = new ArrayBuffer(8)
   const view = new DataView(buf)

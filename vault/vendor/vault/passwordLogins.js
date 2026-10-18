@@ -24,8 +24,8 @@
  * binario, `lib/src/index.js` en la pestaña—. Lo único que no es puro es `registerLogin`, al
  * final, porque hace falta la identidad que firma.
  */
-import { server as opaquePorDefecto, suiteId as suitePorDefecto } from '@dotrino/opaque'
-import { pubkeyId } from '@dotrino/identity/capabilities'
+import { server as opaquePorDefecto, client as opaqueClientePorDefecto, suiteId as suitePorDefecto } from '@dotrino/opaque'
+import { pubkeyId, makeDeviceKey, makeDeviceEncKey } from '@dotrino/identity/capabilities'
 import { DEVICE_CAPS, capScope } from '@dotrino/identity/acta'
 import { deviceIdOf } from './enroll.js'
 import { bytesToB64url, b64urlToBytes } from './b64.js'
@@ -448,6 +448,29 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
  *   `caps`     los PERMISOS del acta que lleva el aparato, cualquiera de `DEVICE_CAPS`;
  *              por defecto firmar, leer y guardar
  */
+/**
+ * DAR DE ALTA UN USUARIO, DEL LADO DE QUIEN TIENE LA CONTRASEÑA: el registro OPAQUE se
+ * termina aquí y las llaves del aparato nacen aquí y salen ya cerradas. La bóveda solo ve
+ * `begin`/`finish`, que es su mitad; quien llama decide por dónde llegan (el canal local de
+ * la CLI, o la propia bóveda en el arranque de una Lambda).
+ *
+ * @param {object} opts
+ *   `begin(req)`  → `{ response }`   (`register-begin` de la bóveda)
+ *   `finish(req)` → lo que devuelva  (`register-finish` de la bóveda)
+ */
+export async function createPasswordLogin ({ user, password, label, caps, begin, finish, opaque = opaqueClientePorDefecto } = {}) {
+  if (!isValidUser(user)) throw Object.assign(new Error('invalid user name'), { code: 'bad-user' })
+  if (typeof password !== 'string' || !password) throw Object.assign(new Error('a password is required'), { code: 'no-password' })
+  const start = opaque.registrationStart({ password })
+  const begun = await begin({ user, request: start.request })
+  // La bóveda contesta con su mitad; el registro se termina AQUÍ, con la contraseña.
+  const fin = opaque.registrationFinish({ state: start.state, response: begun.response, password })
+  const device = await makeDeviceKey({ label })
+  const enc = await makeDeviceEncKey()
+  const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.privateJwk })
+  return finish({ user, upload: fin.upload, pub: device.publickey, encPub: enc.publickey, label, blob, caps })
+}
+
 export async function registerLogin ({
   identity, logins, user, upload, pub, encPub = null, label = '', blob,
   caps = ['sign', 'read', 'store'], scope, replace = false

@@ -38,7 +38,7 @@ export class LocalVault {
   }
 
   #requireKey () {
-    if (!this.key) throw new VaultError(CODES.LOCKED, 'la bóveda está cerrada')
+    if (!this.key) throw new VaultError(CODES.LOCKED, 'the vault is locked')
   }
 
   async #all () {
@@ -73,13 +73,13 @@ export class LocalVault {
   async get (id) {
     this.#requireKey()
     const entry = (await this.#all()).find(e => e.id === id)
-    if (!entry) throw new VaultError(CODES.NOT_FOUND, 'no hay ninguna entrada con ese id')
+    if (!entry) throw new VaultError(CODES.NOT_FOUND, 'there is no entry with that id')
     return openEntry(this.key, entry)
   }
 
   async put (plain) {
     this.#requireKey()
-    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'esta copia solo puede leer')
+    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'this copy is read-only')
     const sealed = await sealEntry(this.key, plain)
     const all = await this.#all()
     const i = all.findIndex(e => e.id === sealed.id)
@@ -122,10 +122,10 @@ export class LocalVault {
    */
   async patch (id, changes = {}) {
     this.#requireKey()
-    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'esta copia solo puede leer')
+    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'this copy is read-only')
     const all = await this.#all()
     const i = all.findIndex(e => e.id === id)
-    if (i < 0) throw new VaultError(CODES.NOT_FOUND, 'no hay ninguna entrada con ese id')
+    if (i < 0) throw new VaultError(CODES.NOT_FOUND, 'there is no entry with that id')
 
     const base = await openEntry(this.key, all[i])
     // La fusión vive en `model.js` y la comparten esta bóveda y la sellada: no es un
@@ -199,10 +199,10 @@ export class LocalVault {
 
   async remove (id) {
     this.#requireKey()
-    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'esta copia solo puede leer')
+    if (this.readOnly) throw new VaultError(CODES.READ_ONLY, 'this copy is read-only')
     const all = await this.#all()
     const rest = all.filter(e => e.id !== id)
-    if (rest.length === all.length) throw new VaultError(CODES.NOT_FOUND, 'no hay ninguna entrada con ese id')
+    if (rest.length === all.length) throw new VaultError(CODES.NOT_FOUND, 'there is no entry with that id')
     await this.store.set(KEY, rest)
   }
 

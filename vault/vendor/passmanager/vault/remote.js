@@ -70,7 +70,7 @@ export class RemoteVault {
   }
 
   async list () {
-    throw new VaultError(CODES.NO_KEY, 'una bóveda remota no lista: pide de a una')
+    throw new VaultError(CODES.NO_KEY, 'a remote vault does not list: ask one at a time')
   }
 
   async #request (op, payload) {
@@ -79,7 +79,7 @@ export class RemoteVault {
     } catch (e) {
       // El transporte puede fallar de muchas formas; hacia arriba solo hay códigos.
       if (e instanceof VaultError) throw e
-      throw new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'no hay bóveda al otro lado')
+      throw new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'no vault on the other side')
     }
   }
 }

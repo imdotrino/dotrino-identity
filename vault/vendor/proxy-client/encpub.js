@@ -67,8 +67,8 @@ export async function buildEncPubStatement ({ publickey, encPub, sign } = /** @t
   if (!isEncPub(encPub)) throw errorWithCode('buildEncPubStatement: encPub is not a P-256 public JWK', 'encpub-shape')
   if (typeof sign !== 'function') throw errorWithCode('buildEncPubStatement: missing sign(data)', 'encpub-shape')
   const data = encPubBody({ publickey, encPub })
-  const firmado = await sign(data)
-  const signature = typeof firmado === 'string' ? firmado : firmado?.signature
+  const signed = await sign(data)
+  const signature = typeof signed === 'string' ? signed : signed?.signature
   // «No pude firmar» no es «se cayó la red», y aquí es donde se separan: quien llama
   // decide una cosa u otra según el `code`, nunca según la frase.
   if (typeof signature !== 'string') throw errorWithCode('buildEncPubStatement: sign() returned no signature', 'no-signature')

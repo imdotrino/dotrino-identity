@@ -525,14 +525,14 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       const [kind, k] = splitOwner(owner)
       const bag = kind === 'ns' ? data.ns : data.dev
       const g = (bag[k]?.keyring || []).find((x) => x.gen === gen)
-      if (!g) throw new Error(`putWrap: no existe la generación ${gen} de ${owner}`)
+      if (!g) throw new Error(`putWrap: generation ${gen} of ${owner} does not exist`)
       if (!wrap?.epk || !wrap?.iv || !wrap?.ct) throw new Error('putWrap: envoltura mal formada')
       // SOLO AÑADE, NUNCA PISA. Quien re-envuelve es un servicio, y un servicio no
       // administra: si pudiera reemplazar una envoltura existente podría dejar sin leer
       // a otro miembro —o a quien administra— con una envoltura basura, y eso es
       // denegación de servicio disfrazada de reparto. Reemplazar es cosa de la bóveda,
       // por el camino de escribir (que estrena generación entera).
-      if (g.wraps?.[memberPub]) throw new Error(`putWrap: ${memberPub.slice(0, 12)}… ya tiene envoltura de la generación ${gen}`)
+      if (g.wraps?.[memberPub]) throw new Error(`putWrap: ${memberPub.slice(0, 12)}… already has a wrap for generation ${gen}`)
       g.wraps = { ...(g.wraps || {}), [memberPub]: wrap }
       save()
       return true

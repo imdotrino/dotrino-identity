@@ -111,7 +111,7 @@ export function fromBitwardenCsv (text) {
 export function fromBitwardenJson (json) {
   const data = typeof json === 'string' ? JSON.parse(json) : json
   if (data?.encrypted) {
-    const e = new Error('el export de Bitwarden está cifrado: expórtalo sin cifrar')
+    const e = new Error('the Bitwarden export is encrypted: export it unencrypted')
     e.code = 'encrypted-export'
     throw e
   }
@@ -136,7 +136,7 @@ export function fromBitwardenJson (json) {
  */
 export function importAuto (text) {
   const t = String(text || '').trim()
-  if (!t) return { format: 'vacío', entries: [] }
+  if (!t) return { format: 'empty', entries: [] }
 
   if (t.startsWith('{')) return { format: 'bitwarden-json', entries: fromBitwardenJson(t) }
 
@@ -150,7 +150,7 @@ export function importAuto (text) {
   if (head.includes('name') && head.includes('url') && head.includes('password')) {
     return { format: 'chrome-csv', entries: fromChromeCsv(t) }
   }
-  const e = new Error('no reconozco el formato del archivo')
+  const e = new Error('unrecognized file format')
   e.code = 'unknown-format'
   throw e
 }

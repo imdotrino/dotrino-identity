@@ -48,13 +48,13 @@ const RTC_TAG = '__cc_rtc__'
  * es el escalón 4, que siempre funciona.
  */
 let _PC = null
-let _PCBuscado = false
+let _PCLookedUp = false
 
-export function setPeerConnection (impl) { _PC = impl; _PCBuscado = true }
+export function setPeerConnection (impl) { _PC = impl; _PCLookedUp = true }
 
 export function resolvePeerConnection () {
-  if (_PCBuscado) return _PC
-  _PCBuscado = true
+  if (_PCLookedUp) return _PC
+  _PCLookedUp = true
   if (typeof globalThis.RTCPeerConnection === 'function') { _PC = globalThis.RTCPeerConnection; return _PC }
   return _PC
 }
@@ -64,15 +64,15 @@ export function resolvePeerConnection () {
  * llama una vez al arrancar, no en medio de una negociación.
  */
 export async function loadNodePeerConnection () {
-  if (_PCBuscado && _PC) return _PC
-  if (typeof globalThis.RTCPeerConnection === 'function') { _PC = globalThis.RTCPeerConnection; _PCBuscado = true; return _PC }
-  for (const nombre of ['@dotrino/webrtc', 'werift']) {
+  if (_PCLookedUp && _PC) return _PC
+  if (typeof globalThis.RTCPeerConnection === 'function') { _PC = globalThis.RTCPeerConnection; _PCLookedUp = true; return _PC }
+  for (const name of ['@dotrino/webrtc', 'werift']) {
     try {
-      const w = await import(nombre)
-      if (typeof w?.RTCPeerConnection === 'function') { _PC = w.RTCPeerConnection; _PCBuscado = true; return _PC }
+      const w = await import(name)
+      if (typeof w?.RTCPeerConnection === 'function') { _PC = w.RTCPeerConnection; _PCLookedUp = true; return _PC }
     } catch (_) { /* no está: se prueba el siguiente, y si no, el proxio (escalón 4) */ }
   }
-  _PCBuscado = true
+  _PCLookedUp = true
   return _PC
 }
 

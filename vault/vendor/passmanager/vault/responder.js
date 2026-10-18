@@ -124,7 +124,7 @@ export class VaultResponder {
     // 1. ¿Es un aparato que conozco? Si no, ni se le contesta qué falló.
     if (!fromPubkey || !this.isAllowed(fromPubkey)) {
       this.onRequest({ ...record, outcome: 'denied' })
-      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'aparato no autorizado'))
+      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'device not authorized'))
     }
 
     // 2. `list` no está en la lista, y esa ausencia es el diseño: si un aparato
@@ -132,11 +132,11 @@ export class VaultResponder {
     const esAdmin = ADMIN_OPS.includes(msg.op)
     if (!REMOTE_OPS.includes(msg.op) && !esAdmin) {
       this.onRequest({ ...record, outcome: 'denied' })
-      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'operación no permitida en remoto'))
+      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'operation not allowed remotely'))
     }
     if (esAdmin && !this.admin) {
       this.onRequest({ ...record, outcome: 'denied' })
-      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'esta bóveda no se administra en remoto'))
+      return this.#send(fromPubkey, replyError(msg.rid, CODES.DENIED, 'this vault is not managed remotely'))
     }
 
     try {
@@ -149,7 +149,7 @@ export class VaultResponder {
         const ok = await this.approve({ op: msg.op, payload, pubkey: fromPubkey, admin: true })
         if (!ok) {
           this.onRequest({ ...record, outcome: 'refused' })
-          return this.#send(fromPubkey, replyError(msg.rid, CODES.NOT_APPROVED, 'no aprobado'))
+          return this.#send(fromPubkey, replyError(msg.rid, CODES.NOT_APPROVED, 'not approved'))
         }
         const result = msg.op === 'devices'
           ? await this.admin.devices()
@@ -162,7 +162,7 @@ export class VaultResponder {
         const ok = await this.gate.allow({ op: msg.op, payload, pubkey: fromPubkey })
         if (!ok) {
           this.onRequest({ ...record, outcome: 'refused' })
-          return this.#send(fromPubkey, replyError(msg.rid, CODES.NOT_APPROVED, 'no aprobado'))
+          return this.#send(fromPubkey, replyError(msg.rid, CODES.NOT_APPROVED, 'not approved'))
         }
       }
 

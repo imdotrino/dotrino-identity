@@ -44,6 +44,8 @@ const err = (code, message, extra = {}) => Object.assign(new Error(message), { c
 
 /** Cuánto se espera a que una bóveda conteste antes de probar con la siguiente. */
 export const REPLY_TIMEOUT_MS = 15_000
+/** Lo que se espera a una bóveda que se está despertando: arrancar en frío y conectarse. */
+export const WAKE_WAIT_MS = 30_000
 
 /**
  * Escucha UNA respuesta de un token concreto. El `off` se suelta siempre —también al
@@ -98,7 +100,14 @@ export async function loginWithPassword ({ transport, address, password, label =
   if (typeof password !== 'string' || !password) throw err('no-password', 'loginWithPassword: password required')
   const { user, code, address: dir } = parseLoginAddress(address)
 
-  const tokens = await transport.list(vaultChannel(code))
+  let tokens = await transport.list(vaultChannel(code))
+  // UNA BÓVEDA QUE DUERME (la de una Lambda): el proxio la está despertando y lo dice. Se
+  // espera a que se anuncie en vez de contestar que esa cuenta no existe.
+  const hasta = Date.now() + WAKE_WAIT_MS
+  while (!tokens.length && tokens.waking && Date.now() < hasta) {
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    tokens = await transport.list(vaultChannel(code))
+  }
   if (!tokens.length) {
     throw err('no-vault', 'no vault is answering for that address right now: turn yours on, or check the address')
   }

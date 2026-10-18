@@ -64,7 +64,7 @@ export class GuardedVault {
 
     if (pedidasPrivadas.length) {
       const ok = await this.gate.allow({ op: 'get', payload: { id, keys: pedidasPrivadas } })
-      if (!ok) throw new VaultError(CODES.NOT_APPROVED, 'no aprobado')
+      if (!ok) throw new VaultError(CODES.NOT_APPROVED, 'not approved')
     }
     return projectEntry(open, keys)
   }

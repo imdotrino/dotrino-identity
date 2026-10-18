@@ -77,7 +77,7 @@ export class ProxyTransport {
         this.pending.delete(rid)
         // No es "no hay nadie": es que nadie contestó. Suele ser el teléfono sin
         // que nadie lo mire, y el código lo distingue para poder decirlo bien.
-        reject(new VaultError(CODES.APPROVAL_TIMEOUT, 'nadie respondió a tiempo'))
+        reject(new VaultError(CODES.APPROVAL_TIMEOUT, 'nobody replied in time'))
       }, this.timeoutMs)
 
       this.pending.set(rid, { resolve, reject, timer })
@@ -94,7 +94,7 @@ export class ProxyTransport {
           // «no tengo la llave del otro lado» y «se cayó la red» se vieran igual desde
           // arriba, y son cosas distintas: una se arregla enlazando, la otra esperando.
           if (e instanceof VaultError) return reject(e)
-          reject(new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'no se pudo enviar'))
+          reject(new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'could not send'))
         })
     })
   }
@@ -103,7 +103,7 @@ export class ProxyTransport {
   close (code = CODES.UNREACHABLE) {
     for (const [rid, p] of this.pending) {
       clearTimeout(p.timer)
-      p.reject(new VaultError(code, 'transporte cerrado'))
+      p.reject(new VaultError(code, 'transport closed'))
       this.pending.delete(rid)
     }
   }

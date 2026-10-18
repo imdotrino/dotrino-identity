@@ -64,12 +64,12 @@ export class SealedVault {
   forget () { this._keys = null; this._recipients = null }
 
   async #request (op, payload) {
-    if (!SEALED_OPS.includes(op)) throw new VaultError(CODES.NOT_ALLOWED, 'operación desconocida: ' + op)
+    if (!SEALED_OPS.includes(op)) throw new VaultError(CODES.NOT_ALLOWED, 'unknown operation: ' + op)
     try {
       return await this.transport.request(op, payload)
     } catch (e) {
       if (e instanceof VaultError) throw e
-      throw new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'no hay bóveda al otro lado')
+      throw new VaultError(e?.code || CODES.UNREACHABLE, e?.message || 'no vault on the other side')
     }
   }
 
@@ -194,7 +194,7 @@ export class SealedVault {
   async patch (id, changes = {}) {
     const [keys, recipients] = await Promise.all([this.keys(), this.recipients()])
     const actual = await this.#viewById(id)
-    if (!actual) throw new VaultError(CODES.NOT_FOUND, 'no hay ninguna entrada con ese id')
+    if (!actual) throw new VaultError(CODES.NOT_FOUND, 'there is no entry with that id')
 
     const values = {}
     const drop = []

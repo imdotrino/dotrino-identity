@@ -65,7 +65,7 @@ export function generatePassword ({
 /** Frase de varias palabras, más fácil de dictar o teclear a mano. */
 export function generatePassphrase (words, { count = 4, separator = '-' } = {}) {
   if (!Array.isArray(words) || words.length < 16) {
-    throw new Error('generatePassphrase: hace falta una lista de palabras')
+    throw new Error('generatePassphrase: a word list is required')
   }
   return Array.from({ length: Math.max(2, count) }, () => words[randomBelow(words.length)])
     .join(separator)

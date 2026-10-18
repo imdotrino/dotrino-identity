@@ -144,10 +144,10 @@ export class SealedLocalVault {
     let got
     try { got = await this.sealed.get(id, { pub: this.readerPub, keys }) }
     catch (e) {
-      if (e?.code === 'not-found') throw new VaultError(CODES.NOT_FOUND, 'no hay ninguna entrada con ese id')
+      if (e?.code === 'not-found') throw new VaultError(CODES.NOT_FOUND, 'there is no entry with that id')
       // «no me la envolvieron a mí» no es «no existe», y confundirlas manda a buscar el
       // problema al sitio equivocado.
-      if (e?.code === 'not-yours') throw new VaultError(CODES.NOT_ALLOWED, 'esta punta no tiene llave para esa entrada')
+      if (e?.code === 'not-yours') throw new VaultError(CODES.NOT_ALLOWED, 'this end has no key for that entry')
       throw e
     }
     return openSealedEntry({ got, openSealed: this.openSealed })

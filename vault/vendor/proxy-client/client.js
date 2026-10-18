@@ -270,9 +270,9 @@ export class WebSocketProxyClient {
 
   /** Corta en seco todo lo que esperaba respuesta, con su motivo. */
   _rejectAllPending (error) {
-    const pendientes = [...this._pending.values()]
+    const pending = [...this._pending.values()]
     this._pending.clear()
-    for (const entry of pendientes) {
+    for (const entry of pending) {
       clearTimeout(entry.timer)
       entry.reject(error)
     }
@@ -432,7 +432,11 @@ export class WebSocketProxyClient {
   async list (channelName) {
     const channel = await buildSignedChannel(channelName)
     const res = await this._request({ type: 'list', channel }, 'channel_list', 'channel')
-    return res.tokens || []
+    const tokens = res.tokens || []
+    // Vacío pero con una bóveda despertándose detrás (websocket-proxy ≥ 1.7.0): quien lista
+    // puede esperar unos segundos en vez de concluir que no hay nadie.
+    if (res.waking) tokens.waking = true
+    return tokens
   }
 
   /** Alias for list() to ease migration from older clients. */
@@ -533,8 +537,8 @@ export class WebSocketProxyClient {
     // Y SE RESUELVEN TODAS ANTES DE MANDAR NADA. Enviar a los que se pudo y fallar por el
     // resto deja a la app creyendo que el mensaje salió, con la mitad de la sala sin él y
     // sin forma de saber cuál mitad.
-    const llaves = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
-    for (const [pk, encPub] of llaves) {
+    const keys = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
+    for (const [pk, encPub] of keys) {
       const sealPiece = await this._sealerFor(m.bin, encPub, pk)
       for (const piece of pieces) this._sendByPubkeyRaw([pk], await sealPiece(piece), opts)
     }
@@ -582,10 +586,10 @@ export class WebSocketProxyClient {
     if (m.bin && !direct) this._needBinaryProxy()
     const sealPiece = await this._sealerFor(m.bin, peerEncPub, peerPubkey)
     if (m.len <= size) {
-      const sobre = await sealPiece(m.bin ? m.whole : payload)
-      if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], sobre, peerPubkey); return }
+      const envelope = await sealPiece(m.bin ? m.whole : payload)
+      if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], envelope, peerPubkey); return }
       // Por `send`, no por `_sendRaw`: así sigue prefiriendo el canal directo si lo hay.
-      this.send(tokens, sobre)
+      this.send(tokens, envelope)
       return
     }
     // Por el proxio en vivo hay tope (parts.js): lo que pasa de él solo sale por canal
@@ -601,9 +605,9 @@ export class WebSocketProxyClient {
     // mensaje entero cabe por ahí; si no, se para y se dice (`direct-lost`).
     const relayFallback = m.len <= relayMax
     for (const piece of (m.bin ? splitBinParts(m.whole, size) : splitParts(m.whole, size))) {
-      const sobre = await sealPiece(piece)
-      if (tokens.length === 1 && peerPubkey) await this._sendPiece(tokens[0], sobre, peerPubkey, queueFallback, relayFallback)
-      else this.send(tokens, sobre)
+      const envelope = await sealPiece(piece)
+      if (tokens.length === 1 && peerPubkey) await this._sendPiece(tokens[0], envelope, peerPubkey, queueFallback, relayFallback)
+      else this.send(tokens, envelope)
     }
   }
 
@@ -632,13 +636,13 @@ export class WebSocketProxyClient {
    * archivo grande lo desborda y el navegador cierra el canal), o por el proxio en vivo con
    * una pausa corta entre partes, para no chocar con su límite de mensajes por segundo.
    */
-  async _sendPiece (token, sobre, peerPubkey, queueFallback, relayFallback = true) {
-    if (this._rtc && await this._rtc.sendDirect(token, this._wire(sobre))) return
+  async _sendPiece (token, envelope, peerPubkey, queueFallback, relayFallback = true) {
+    if (this._rtc && await this._rtc.sendDirect(token, this._wire(envelope))) return
     if (!relayFallback) {
       throw errorWithCode('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
     }
-    if (sobre instanceof Uint8Array) this._needBinaryProxy()
-    this._sendToTokenOrQueue(token, sobre, peerPubkey, { queueFallback, skipDirect: true })
+    if (envelope instanceof Uint8Array) this._needBinaryProxy()
+    this._sendToTokenOrQueue(token, envelope, peerPubkey, { queueFallback, skipDirect: true })
     await new Promise((r) => setTimeout(r, 20))
   }
 
@@ -674,16 +678,16 @@ export class WebSocketProxyClient {
    * `token_gone` para que la app deje de usar ese token. No bloquea a nadie: se manda ya y
    * el arreglo, si hace falta, llega detrás.
    */
-  _sendToTokenOrQueue (token, sobre, peerPubkey, { queueFallback = true, skipDirect = false } = {}) {
-    if (this.requireSealed && !this._isSealed(sobre)) {
+  _sendToTokenOrQueue (token, envelope, peerPubkey, { queueFallback = true, skipDirect = false } = {}) {
+    if (this.requireSealed && !this._isSealed(envelope)) {
       throw errorWithCode('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
     }
-    const messageStr = this._wire(sobre)
+    const messageStr = this._wire(envelope)
     if (!skipDirect && this._rtc && this._rtc.trySend(token, messageStr)) return
     const id = `msg_${this._nextId++}`
     const timer = setTimeout(() => this._tokenWatch.delete(id), 15000)
     timer.unref?.()
-    this._tokenWatch.set(id, { token, sobre, peerPubkey, timer, queueFallback })
+    this._tokenWatch.set(id, { token, envelope, peerPubkey, timer, queueFallback })
     try {
       this._sendRaw({ to: [token], message: messageStr, id })
     } catch (e) {
@@ -707,7 +711,7 @@ export class WebSocketProxyClient {
       this._emit('error', { type: 'client', error: 'the peer left in the middle of a message too big to wait in the proxy', code: 'too-big-for-queue', peerPubkey: w.peerPubkey })
       return
     }
-    try { this._sendByPubkeyRaw([w.peerPubkey], w.sobre) } catch (e) { this._emit('error', { type: 'client', error: e.message, code: e.code || null }) }
+    try { this._sendByPubkeyRaw([w.peerPubkey], w.envelope) } catch (e) { this._emit('error', { type: 'client', error: e.message, code: e.code || null }) }
   }
 
   // ---------- el saludo: de quién es este token ----------
@@ -896,16 +900,16 @@ export class WebSocketProxyClient {
     if (typeof publickey !== 'string' || !publickey) {
       throw errorWithCode('encPubOf: missing publickey', 'encpub-shape')
     }
-    const cacheada = this._encPubs.get(publickey)
-    if (cacheada) return cacheada
+    const cached = this._encPubs.get(publickey)
+    if (cached) return cached
     // Una pregunta en vuelo por llave: una sala de ocho manda ocho mensajes a la vez y
     // preguntaría ocho veces por lo mismo.
-    const enVuelo = this._encPubInflight.get(publickey)
-    if (enVuelo) return enVuelo
-    const promesa = this._lookupEncPub(publickey)
+    const inflight = this._encPubInflight.get(publickey)
+    if (inflight) return inflight
+    const promise = this._lookupEncPub(publickey)
       .finally(() => this._encPubInflight.delete(publickey))
-    this._encPubInflight.set(publickey, promesa)
-    return promesa
+    this._encPubInflight.set(publickey, promise)
+    return promise
   }
 
   async _lookupEncPub (publickey) {
@@ -913,13 +917,13 @@ export class WebSocketProxyClient {
     // ya la tiene en la mano y firmada por el master: preguntársela a un servidor sería
     // dar la vuelta para llegar a lo que ya está aquí.
     if (this.encPubResolver) {
-      const propia = await this.encPubResolver(publickey)
-      if (propia) {
-        if (!isEncPub(propia)) {
+      const own = await this.encPubResolver(publickey)
+      if (own) {
+        if (!isEncPub(own)) {
           throw errorWithCode('encPubResolver returned something that is not a P-256 public JWK', 'encpub-unverified')
         }
-        this._encPubs.set(publickey, propia)
-        return propia
+        this._encPubs.set(publickey, own)
+        return own
       }
     }
     // SI EL PROXIO DICE QUE NO SABE DE ESTO, se dice con su propio código en vez de
@@ -927,7 +931,7 @@ export class WebSocketProxyClient {
     // que esto existiera y no se sabe: se pregunta igual, y contesta la pregunta.
     if (Array.isArray(this.caps) && !this.caps.includes('encpub')) {
       throw errorWithCode(
-        `este proxio (${this.url}) no sirve llaves de cifrado: hace falta websocket-proxy >= 1.1.0`,
+        `this proxy (${this.url}) does not serve encryption keys: it needs websocket-proxy >= 1.1.0`,
         'no-encpub-support')
     }
     const res = await this._request({ type: 'enc-lookup', publickeys: [publickey] }, 'enc-lookup')
@@ -1145,8 +1149,8 @@ export class WebSocketProxyClient {
     // conexión, y por eso este sobre no necesita otro. Lo que le faltaba era decir a quién
     // se lo estamos dando.
     const data = { op: 'identify', aud: this.audience, publickey, token: this.token, ts: Date.now() }
-    const firmado = await sign(data)
-    const signature = typeof firmado === 'string' ? firmado : firmado?.signature
+    const signed = await sign(data)
+    const signature = typeof signed === 'string' ? signed : signed?.signature
     // «No pude firmar» y «se cayó la red» son cosas distintas, y se distinguen por el
     // `code`: la bóveda usa esto para saber si su llave de comunicación firma todavía, y
     // tragarse un fallo de red como si fuera lo primero la mandaría al camino equivocado.
@@ -1229,7 +1233,7 @@ export class WebSocketProxyClient {
    * @returns {Promise<boolean>} true si TURN quedó activo.
    */
   async enableTurn ({ publicKey, sign } = {}) {
-    if (!this._rtc) throw new Error('WebRTC está deshabilitado en este cliente')
+    if (!this._rtc) throw new Error('WebRTC is disabled in this client')
     if (this._turnTimer) {
       clearTimeout(this._turnTimer)
       this._turnTimer = null
@@ -1316,17 +1320,17 @@ export class WebSocketProxyClient {
    */
   async enablePush ({ publicKey, sign, vapidPublicKey, registration, swPath, swScope } = {}) {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
-      throw new Error('Service Worker no soportado en este entorno')
+      throw new Error('Service Worker is not supported in this environment')
     }
     if (typeof PushManager === 'undefined') {
-      throw new Error('Push API no soportada en este navegador')
+      throw new Error('the Push API is not supported in this browser')
     }
     if (!publicKey || typeof sign !== 'function') {
       throw new Error('enablePush requires { publicKey, sign }')
     }
     if (!vapidPublicKey) {
       const cfg = await this.getPushConfig()
-      if (!cfg.enabled || !cfg.vapidPublicKey) throw new Error('El proxy no tiene Web Push habilitado')
+      if (!cfg.enabled || !cfg.vapidPublicKey) throw new Error('the proxy does not have Web Push enabled')
       vapidPublicKey = cfg.vapidPublicKey
     }
     let reg
@@ -1365,6 +1369,29 @@ export class WebSocketProxyClient {
     const signature = await normalizeSignature(sign, data)
     await this._request({ type: 'push-subscribe', data, signature }, 'push-subscribed')
     return { kind, token }
+  }
+
+  /**
+   * DESPIÉRTAME AQUÍ: el timbre de una bóveda que no vive conectada (la de una Lambda). Si
+   * llega algo para la PERSONA de este acta y no hay nadie suyo conectado, el proxio guarda el
+   * mensaje en la cola de siempre y hace un POST a `url`; la bóveda arranca, se identifica y
+   * recibe lo encolado.
+   *
+   * Lo firma la llave que habla por la bóveda (su llave de comunicación), no la maestra, y el
+   * `acta` es lo que prueba que esa llave es de la cuenta: el timbre se guarda para la cuenta
+   * (`profileId`), que es a quien le escriben los servicios.
+   *
+   * `channel` (opcional): el canal donde la buscan quienes no saben su llave —quien entra con
+   * usuario y contraseña—. Listarlo vacío también la despierta (`list()` devuelve `waking`).
+   *
+   * @param {{ publicKey:string, sign:Function, url:string, acta:object, channel?:string }} opts
+   */
+  async registerWake ({ publicKey, sign, url, acta, channel } = {}) {
+    if (!publicKey || typeof sign !== 'function' || !url || !acta) throw errorWithCode('registerWake requires { publicKey, sign, url, acta }', 'bad-args')
+    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind: 'wake', url, ...(channel ? { channel } : {}) }), ts: Date.now() }
+    const signature = await normalizeSignature(sign, data)
+    const r = await this._request({ type: 'push-subscribe', data, signature, acta }, 'push-subscribed')
+    return { kind: 'wake', url, profile: r?.publickey || null }
   }
 
   /**
@@ -1540,8 +1567,8 @@ export class WebSocketProxyClient {
       // `_reconnectAttempts` vuelve a 0 al abrir, así que esto NO convierte un `connect()`
       // inicial fallido en un bucle de fondo: ahí vale 0 y la promesa se rechaza como
       // siempre.
-      const reintentando = this._reconnectAttempts > 0
-      if ((wasConnected || reintentando) && this.autoReconnect) {
+      const retrying = this._reconnectAttempts > 0
+      if ((wasConnected || retrying) && this.autoReconnect) {
         this._scheduleReconnect()
       }
     })
@@ -1776,14 +1803,14 @@ export class WebSocketProxyClient {
       this._countOut(frame, bytes)
       return
     }
-    const texto = JSON.stringify(frame)
-    this.ws.send(texto)
-    this._countOut(frame, texto)
+    const text = JSON.stringify(frame)
+    this.ws.send(text)
+    this._countOut(frame, text)
   }
 
   /** Cuenta un frame que sale por el proxio, y a quién iba. */
-  _countOut (frame, texto) {
-    this._traffic.frame('out', utf8Length(texto))
+  _countOut (frame, text) {
+    this._traffic.frame('out', utf8Length(text))
     if (typeof frame.message !== 'string' && !(frame.message instanceof Uint8Array)) return
     const bytes = utf8Length(frame.message)
     for (const token of Array.isArray(frame.to) ? frame.to : []) {
@@ -1897,7 +1924,7 @@ export class WebSocketProxyClient {
 async function normalizeSignature (sign, data) {
   const out = await sign(data)
   const sig = typeof out === 'string' ? out : (out && out.signature)
-  if (!sig) throw new Error('sign() debe devolver una firma base64 (string o {signature})')
+  if (!sig) throw new Error('sign() must return a base64 signature (a string or {signature})')
   return sig
 }
 
