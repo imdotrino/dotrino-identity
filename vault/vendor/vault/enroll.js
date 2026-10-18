@@ -143,6 +143,23 @@ export function createEnrollDesk ({
 
   const fire = (fn, arg) => { try { fn(arg) } catch (_) {} }
   const reply = (to, obj) => { try { send(to, obj) } catch (e) { log('[vault] could not reply:', e.message) } }
+  /**
+   * LO QUE LA BÓVEDA LE DICE AL APARATO MIENTRAS SE EMPAREJA VA FIRMADO CON LA MAESTRA, y
+   * con el `sn` de la sesión dentro. Lo que va a la cuenta lo reciben todas sus bóvedas y
+   * cualquiera que lo vea pasar puede contestar; sin firma, un `vault.error` de cualquiera
+   * tumbaba el alta (el iPhone, haciendo de bóveda, lo hacía sin querer, 2026-10-18). El
+   * aparato solo obedece lo que verifica contra la `iss` de su invitación (`fromMyVault`).
+   */
+  // Lo firmado va en un bloque aparte (`signed`), como en el hello: quien envía estampa lo suyo
+  // en el sobre (versión, protocolo) y la firma tiene que cubrir exactamente lo que se verifica.
+  // Los campos de arriba (`error`, `deviceId`) son los de siempre, para quien los lee.
+  const tell = async (to, obj, sn) => {
+    const signed = { ...obj, sn: sn || null, iss, ts: Date.now() }
+    let signature
+    try { ({ signature } = await identity.signData(signed)) } catch (e) { log('[vault] could not sign the reply:', e.message); return }
+    reply(to, { ...obj, signed, vsig: signature })
+  }
+  const fail = (to, error, sn) => tell(to, { type: MSG_ERROR, error }, sn)
   const isFresh = (d) => typeof d?.ts === 'number' && Math.abs(Date.now() - d.ts) <= FRESH_WINDOW_MS
 
   /**
@@ -182,7 +199,9 @@ export function createEnrollDesk ({
       if (!caps.length && !cn) throw Object.assign(new Error('the pairing grants no permission'), { code: 'empty-scope' })
       caps = [...new Set(caps)]
     }
-    pending.clear() // uno a la vez: una sesión nueva supersede a la anterior
+    // Uno a la vez: una sesión nueva supersede a la anterior. Las que se quitan se recuerdan
+    // como MÍAS: a un aparato que llegue con una de esas sí se le contesta que ya no vale.
+    for (const k of pending.keys()) forget(k)
     const acct = String(account || '').slice(0, 40)
     // INVITACIÓN CORTA: si sabemos cómo alcanzarnos, el QR lleva solo eso y el
     // nonce de la sesión. La llave, el proxy y el nombre de la cuenta los pide el
@@ -206,7 +225,21 @@ export function createEnrollDesk ({
     return { token, qr: { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }, expiresInMs: PAIRING_TTL_MS }
   }
 
-  function stopPairing (token) { pending.delete(token) }
+  function stopPairing (token) { forget(token) }
+
+  /**
+   * Las sesiones que ESTA bóveda abrió y ya no valen (superadas, paradas o gastadas), por
+   * su token y su `sn`. Distingue «la abrí yo y ya no vale» (se contesta con el error) de
+   * «no sé nada de esa invitación» (se calla: la abrió otra bóveda de la cuenta).
+   */
+  const gone = new Set()
+  function forget (key) {
+    const pend = pending.get(key)
+    pending.delete(key)
+    if (!pend) return
+    gone.add(pend.token); if (pend.sn) gone.add(pend.sn)
+    while (gone.size > 200) gone.delete(gone.values().next().value)
+  }
 
   function listPending () {
     return [...pending.values()]
@@ -229,9 +262,18 @@ export function createEnrollDesk ({
    */
   async function handleHello (from, p) {
     const pend = pending.get(String(p?.sn || ''))
+    // UNA INVITACIÓN QUE NO ES MÍA NO SE CONTESTA. Una cuenta tiene varias bóvedas a la vez
+    // (la del VPS, la pestaña, el teléfono que hace de bóveda), y lo que va a la cuenta les
+    // llega a todas. Si la que no abrió el emparejamiento contesta «no hay sesión», ese
+    // error le gana a la respuesta buena y el aparato se queda fuera (2026-10-18: el iPhone
+    // tumbaba cada alta de un servicio). Se anota y se calla: la que la abrió, contesta.
+    if (!pend && !gone.has(String(p?.sn || ''))) {
+      audit('ignored', { what: 'hello', reason: 'not-mine' })
+      return { ignored: true }
+    }
     if (!pend || Date.now() > pend.exp) {
       audit('rejected', { what: 'hello', reason: 'sin-sesion' })
-      return reply(from, { type: MSG_ERROR, error: 'no pairing session open for that code' })
+      return fail(from, 'no pairing session open for that code', String(p?.sn || ''))
     }
     // La respuesta va FIRMADA por la maestra y el `sn` va dentro de lo firmado. Eso ata
     // la respuesta a ESTA sesión: no se puede reutilizar la de otro emparejamiento ni la
@@ -250,42 +292,48 @@ export function createEnrollDesk ({
   async function handleEnroll (from, p) {
     const d = p?.data
     if (!d || typeof d.dpub !== 'string' || typeof p.signature !== 'string') {
-      return reply(from, { type: MSG_ERROR, error: 'invalid enroll' })
+      return fail(from, 'invalid enroll', p?.data?.sn)
     }
     const pend = pending.get(d.token)
-    if (!pend || pend.state === 'DONE' || Date.now() > pend.exp) {
-      return reply(from, { type: MSG_ERROR, error: 'invalid or expired pairing token' })
+    // Lo mismo que en el hello: una sesión que esta bóveda no abrió no es suya para
+    // rechazarla. Solo contesta por las que conoce (gastada o vencida).
+    if (!pend && !gone.has(String(d.token || ''))) {
+      audit('ignored', { what: 'enroll', reason: 'not-mine' })
+      return { ignored: true }
     }
-    if (d.sn !== pend.sn) return reply(from, { type: MSG_ERROR, error: 'invalid session' })
+    if (!pend || pend.state === 'DONE' || Date.now() > pend.exp) {
+      return fail(from, 'invalid or expired pairing token', d.sn)
+    }
+    if (d.sn !== pend.sn) return fail(from, 'invalid session', d.sn)
     // V7 · la INTENCIÓN viaja firmada y tiene que coincidir con el modo con el que ESTA
     // bóveda abrió el emparejamiento. Es lo que garantiza que lo que pasa es lo que el
     // humano vio anunciado en las dos pantallas, y no algo que se decidió a mitad de camino.
     const intent = d.intent || 'join'
     if (intent !== 'join' && intent !== 'adopt') {
-      return reply(from, { type: MSG_ERROR, error: 'unknown intent: ' + intent })
+      return fail(from, 'unknown intent: ' + intent, d.sn)
     }
     if (intent !== (pend.mode || 'join')) {
       audit('rejected', { what: 'enroll', reason: 'intent-mismatch' })
-      return reply(from, { type: MSG_ERROR, error: `this pairing was opened for "${pend.mode || 'join'}" and the device asked for "${intent}"` })
+      return fail(from, `this pairing was opened for "${pend.mode || 'join'}" and the device asked for "${intent}"`, d.sn)
     }
     if (!isFresh(d)) {
       audit('rejected', { what: 'enroll', reason: 'stale' })
-      return reply(from, { type: MSG_ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
+      return fail(from, 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)', d.sn)
     }
     // PRUEBA DE POSESIÓN: la firma de `data` debe verificar contra `dpub`.
     if (!(await verifyDeviceSig({ publickey: d.dpub, data: d, signature: p.signature }))) {
       audit('rejected', { what: 'enroll', reason: 'bad-device-signature' })
-      return reply(from, { type: MSG_ERROR, error: 'invalid device signature' })
+      return fail(from, 'invalid device signature', d.sn)
     }
     // El COMPROMISO del código es obligatorio: sin él no se puede comprobar al aprobar
     // y volveríamos a emitir certs a ciegas. Un cliente viejo cae acá con un mensaje claro.
     if (typeof d.commit !== 'string' || !/^[0-9a-f]{64}$/.test(d.commit)) {
       audit('rejected', { what: 'enroll', reason: 'no-commit' })
-      return reply(from, { type: MSG_ERROR, error: 'this device speaks an old pairing version (no code commitment). Update it and try again.' })
+      return fail(from, 'this device speaks an old pairing version (no code commitment). Update it and try again.', d.sn)
     }
     // Un solo dispositivo a la vez esperando su código (así aprobar no es ambiguo).
     if (pend.state === 'PENDING_CONFIRM' && pend.dpub && pend.dpub !== d.dpub) {
-      return reply(from, { type: MSG_ERROR, error: 'another device is already using this pairing session' })
+      return fail(from, 'another device is already using this pairing session', d.sn)
     }
 
     const deviceId = await deviceIdOf(d.dpub)
@@ -300,7 +348,7 @@ export function createEnrollDesk ({
     // persona sí puede entrar sin ella: no lee variables de servicio.
     if (typeof d.encPub === 'string') pend.encPub = d.encPub
     if (!pend.encPub && scopeToCn(pend.scope)) {
-      return reply(from, { type: MSG_ERROR, error: 'a service must send its encryption key (update @dotrino/vault on the service)' })
+      return fail(from, 'a service must send its encryption key (update @dotrino/vault on the service)', d.sn)
     }
     // Certificado de continuidad (opcional): lo firma la identidad que se une, con su
     // propia llave. Se comprueba aquí y se guarda con el miembro al aprobar.
@@ -322,7 +370,7 @@ export function createEnrollDesk ({
     // llegue el acta sellada, que es la que este dispositivo dijo que iba a entregar.
     if (intent === 'adopt' && typeof d.profileId === 'string') pend.profileId = d.profileId
 
-    reply(from, { type: MSG_ENROLL_CHALLENGE, deviceId })
+    await tell(from, { type: MSG_ENROLL_CHALLENGE, deviceId }, pend.sn)
     fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', machine: pend.machine || null, mode: pend.mode || 'join' })
     fire(onPendingChange)
     return { deviceId }
@@ -410,8 +458,8 @@ export function createEnrollDesk ({
         log('[vault] could not revoke the undelivered certificate %s: %s', cert.nonce, re.message)
       }
       audit('rejected', { what: 'approve', device: pend.deviceId, reason: 'admit-failed' })
-      reply(pend.from, { type: MSG_ERROR, error: 'the vault could not add this device to the account: pairing failed, try again' })
-      pending.delete(pend.token)
+      await fail(pend.from, 'the vault could not add this device to the account: pairing failed, try again', pend.sn)
+      forget(pend.token)
       fire(onPendingChange)
       log('[vault] could not add %s to the record, no certificate was delivered: %s', pend.deviceId, e.message)
       throw Object.assign(
@@ -427,7 +475,7 @@ export function createEnrollDesk ({
     // El acta viaja con el cert: el dispositivo ya sabe de quién es el perfil al que entra.
     reply(pend.from, { type: MSG_ENROLLED, code, cert, iss, acta: record })
     pend.state = 'DONE'
-    pending.delete(pend.token)
+    forget(pend.token)
     fire(onPendingChange)
     log(`[vault] device approved: ${pend.deviceId}`)
     return { ok: true, deviceId: pend.deviceId, cert }
@@ -451,22 +499,22 @@ export function createEnrollDesk ({
   async function handleActaSealed (from, p) {
     const record = p?.acta
     const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && (x.from === from || x.dpub))
-    if (!pend) return reply(from, { type: MSG_ERROR, error: 'no adoption awaiting a record' })
-    if (!record || typeof record !== 'object') return reply(from, { type: MSG_ERROR, error: 'record missing or unreadable' })
+    if (!pend) return fail(from, 'no adoption awaiting a record', pend?.sn)
+    if (!record || typeof record !== 'object') return fail(from, 'record missing or unreadable', pend?.sn)
     // Ya no hay campo `sealer`: se le pregunta al PERMISO. Es la misma comprobación —«¿me
     // nombra a mí la que me mandan?»— dicha en el idioma nuevo, y con varios selladores la
     // respuesta puede ser que sí para más de uno, que es lo correcto.
     if (!canSeal(record, iss)) {
       audit('rejected', { what: 'adopt', reason: 'not-sealer' })
-      return reply(from, { type: MSG_ERROR, error: 'that record does not let this vault seal it' })
+      return fail(from, 'that record does not let this vault seal it', pend?.sn)
     }
     if (record.sealedBy !== pend.dpub) {
       audit('rejected', { what: 'adopt', reason: 'sealed-by-other' })
-      return reply(from, { type: MSG_ERROR, error: 'that record was not sealed by the device of this pairing' })
+      return fail(from, 'that record was not sealed by the device of this pairing', pend?.sn)
     }
     if (pend.profileId && record.profileId !== pend.profileId) {
       audit('rejected', { what: 'adopt', reason: 'other-profile' })
-      return reply(from, { type: MSG_ERROR, error: 'that record belongs to an account other than the one the device announced' })
+      return fail(from, 'that record belongs to an account other than the one the device announced', pend?.sn)
     }
 
     try {
@@ -478,26 +526,26 @@ export function createEnrollDesk ({
       const mine = (await identity.profileActa?.())?.acta || record
       reply(pend.from, { type: MSG_ACTA_ADOPTED, code: p.code, acta: mine })
       pend.state = 'DONE'
-      pending.delete(pend.token)
+      forget(pend.token)
       fire(onPendingChange)
       fire(onAdopted, { deviceId: pend.deviceId, profileId: record.profileId, seq: mine.seq })
       log('[vault] account adopted from device %s (profile %s)', pend.deviceId, record.profileId?.slice(0, 12))
       return { ok: true, adopted: true, profileId: record.profileId, seq: mine.seq }
     } catch (e) {
       log('[vault] could not adopt the account: %s', e.message)
-      reply(pend.from, { type: MSG_ERROR, error: 'the vault could not adopt the account: ' + e.message })
+      fail(pend.from, 'the vault could not adopt the account: ' + e.message, pend.sn)
       return { ok: false, error: e.message }
     }
   }
 
   /** Rechaza un enrolamiento pendiente. */
-  function reject (deviceId) {
+  async function reject (deviceId) {
     const pend = deviceId
       ? findPending(deviceId)
       : [...pending.values()].find((p) => p.state === 'PENDING_CONFIRM')
     if (!pend) return { ok: false }
-    reply(pend.from, { type: MSG_ERROR, error: 'pairing rejected' })
-    pending.delete(pend.token)
+    await fail(pend.from, 'pairing rejected', pend.sn)
+    forget(pend.token)
     audit('reject', { device: pend.deviceId })
     fire(onPendingChange)
     log('[vault] dispositivo rechazado: %s', pend.deviceId)

@@ -109,13 +109,27 @@ async function redeemCode (client, code) {
   return r.instance
 }
 
+/**
+ * ¿LO DICE MI BÓVEDA, DE ESTA SESIÓN? Lo que va a la cuenta lo reciben todas sus bóvedas y
+ * cualquiera que lo vea pasar puede contestar. Un reto o un error solo cuentan firmados con la
+ * maestra de la invitación (`iss`) y con el `sn` de esta sesión (2026-10-18: sin esto, un
+ * `vault.error` de cualquiera tumbaba el alta). Mismo contrato que `fromMyVault` en
+ * `@dotrino/vault/service`.
+ */
+async function fromMyVault (p, qr) {
+  const b = p?.signed
+  if (!p?.vsig || !b || typeof b !== 'object' || !qr?.iss) return false
+  if (b.iss !== qr.iss || b.sn !== qr.sn || b.type !== p.type) return false
+  try { return await verifyDeviceSig({ publickey: qr.iss, data: b, signature: p.vsig }) } catch (_) { return false }
+}
+
 /** «¿Quién eres?» del QR corto: devuelve `{ iss, proxy, acct, m }` de la bóveda. */
 async function askVault (client, qr) {
   const target = await redeemCode(client, qr.conn)
   return new Promise((resolve, reject) => {
     const off = client.on('message', (_from, p) => {
+      // Un error aquí no se puede verificar (aún no se sabe quién es la bóveda): no cuenta.
       if (p?.type === MSG.HELLO_OK) { done(); verifyHello(p, qr.sn).then((b) => resolve({ iss: b.iss, proxy: b.proxy || qr.proxy, acct: b.acct || '', m: b.m || qr.m }), reject) }
-      else if (p?.type === MSG.ERROR) { done(); reject(new Error(p.error)) }
     })
     const t = setTimeout(() => { done(); reject(new Error('the vault did not answer: that code may have expired')) }, 15000)
     const done = () => { off(); clearTimeout(t) }
@@ -179,8 +193,9 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
 
     const enrolled = new Promise((resolve, reject) => {
       let sellando = false
-      const off = client.on('message', (_from, p) => {
+      const off = client.on('message', async (_from, p) => {
         if (!p || typeof p !== 'object') return
+        if ((p.type === MSG.ENROLL_CHALLENGE || p.type === MSG.ERROR) && !await fromMyVault(p, qr)) return
         if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, code }) } catch (_) {} }
         // El vault ECHA el código que tipeaste; aceptamos SOLO si coincide con el que generamos.
         // (Un código distinto = un vault que no lo conoce → lo ignoramos y seguimos esperando.)
