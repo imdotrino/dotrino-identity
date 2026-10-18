@@ -105,14 +105,14 @@ export async function verifyAdvisory ({ advisory, publickey }) {
  * Devuelve el aviso vigente (el nuevo o el que ya tenía) y por qué.
  */
 export async function adoptAdvisory ({ current, incoming, publickey }) {
-  if (!isAdvisory(incoming)) return { advisory: current || null, adopted: false, reason: 'no-es-un-aviso' }
+  if (!isAdvisory(incoming)) return { advisory: current || null, adopted: false, reason: 'not-an-advisory' }
   if (current && incoming.seq <= current.seq) {
-    return { advisory: current, adopted: false, reason: 'no-es-mas-nuevo' }
+    return { advisory: current, adopted: false, reason: 'not-newer' }
   }
   if (!(await verifyAdvisory({ advisory: incoming, publickey }))) {
-    return { advisory: current || null, adopted: false, reason: 'firma-invalida' }
+    return { advisory: current || null, adopted: false, reason: 'invalid-signature' }
   }
-  return { advisory: incoming, adopted: true, reason: current ? 'mas-nuevo' : 'primero' }
+  return { advisory: incoming, adopted: true, reason: current ? 'newer' : 'first' }
 }
 
 /**
