@@ -14,6 +14,7 @@ import {
 } from './peerStore.js'
 import { createIdentityCore } from './core.js'
 import { keyLabel } from './capabilities.js'
+import { originPolicy } from './originPolicy.js'
 import { withExternalKeys, appBridge } from './externalKeys.js'
 import { nativeBackends } from './nativeStore.js'
 import { useBackend as usePeerBackend } from './peerStore.js'
@@ -151,6 +152,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   })
 
   const { handlers } = core
+  const policy = originPolicy({ selfOrigin: window.location.origin })
 
   // ---- Control de ORIGEN (crítico): la identidad solo habla con el ecosistema. ----
   // Sin esto, CUALQUIER web podía embeber este iframe y llamar `exportIdentity`
@@ -537,6 +539,9 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     const handler = selfHandlers[method] || handlers[method]
     if (!handler) return reply({ error: `Unknown method: ${method}` })
     try {
+      // LO QUE DECIDE QUIÉN ES DE LA CUENTA solo lo pide la consola (`originPolicy.js`): una app
+      // del ecosistema firma y cifra, pero no mete aparatos ni se lleva la llave.
+      policy.check(method, params, event.origin, { me: (await handlers.getMe().catch(() => null))?.publickey || null })
       // EL ORIGEN LO PONE EL IFRAME, no quien llama: va pisado a propósito. Es el único
       // dato que la aplicación no puede falsificar —el navegador lo garantiza— y de él
       // depende a quién se le concedió qué.
