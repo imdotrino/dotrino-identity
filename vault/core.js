@@ -1140,7 +1140,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // es suya: que la llave que se va a instalar SEA de esta cuenta. Sin ello, el navegador
     // se quedaría con una identidad que ningún acta reconoce — y sin forma de notarlo.
     const v = await Acta.verifyActa({ acta: entrada?.acta })
-    if (!v.ok) throw Object.assign(new Error('the account record does not verify: ' + v.reason), { code: 'bad-acta' })
+    if (!v.ok) throw Object.assign(new Error('the account record does not verify: ' + v.reason), { code: 'bad-record' })
     if (!(entrada.acta.members || []).some((m) => m?.pub === entrada.publickey)) {
       throw Object.assign(new Error('that key is not a member of the account record'), { code: 'not-a-member' })
     }
@@ -1416,7 +1416,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // Ya no hay ventana de caducidad: el papel no vence. Lo único que obliga a pedir uno
   // nuevo es que el ACTA diga algo distinto de lo que lleva escrito.
   /** Rechazos de la bóveda que se arreglan con un papel nuevo (el mismo juego que la app nativa). */
-  const PAPER_REASONS = new Set(['scope', 'stale-record', 'untrusted-issuer', 'expired', 'legacy-cert-retired', 'no-acta'])
+  const PAPER_REASONS = new Set(['scope', 'stale-record', 'untrusted-issuer', 'expired', 'legacy-cert-retired', 'no-record'])
   const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
   let renewLastTry = 0
   /**

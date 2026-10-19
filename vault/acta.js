@@ -467,7 +467,7 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', c
 
 /** Comprobaciones de FORMA (sin cripto): que el acta sea un acta. */
 export function checkShape (acta) {
-  if (!acta || typeof acta !== 'object') return 'no-acta'
+  if (!acta || typeof acta !== 'object') return 'no-record'
   if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
   if (!isPub(acta.profileId) || !isPub(acta.sealedBy)) return 'shape'
   if (acta.chainUrl != null && !isChainUrl(acta.chainUrl)) return 'chainurl'

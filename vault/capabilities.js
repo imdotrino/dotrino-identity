@@ -252,7 +252,7 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   // Sin esos datos no se puede juzgar, y se dice en vez de contestar «vale» a solas:
   // devolver `ok` sin haber comprobado nada es exactamente cómo un papel viejo seguía
   // entrando.
-  if (typeof actaSeq !== 'number' || !Array.isArray(sealers)) return { ok: false, reason: 'no-acta' }
+  if (typeof actaSeq !== 'number' || !Array.isArray(sealers)) return { ok: false, reason: 'no-record' }
   // SOLO SE RECHAZA EL PAPEL DEL FUTURO. Si el cert nombra un acta MÁS NUEVA que la que
   // tengo, no puedo juzgarlo: mi política está atrasada y decir que sí sería fiarme de algo
   // que no he visto. Al revés no: un papel viejo es normal —el aparato estuvo apagado— y lo
