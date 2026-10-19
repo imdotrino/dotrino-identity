@@ -342,6 +342,14 @@ export class WebRTCManager {
       if (self && self > peer.remote && !peer.dc) {
         const dc = peer.pc.createDataChannel('cc', { ordered: true })
         this._attachDC(peer, dc)
+      } else if (self && self < peer.remote && !peer.dc) {
+        // EL QUE NO CREA EL CANAL TIENE QUE PEDIRLO. Sin un canal nuevo no hay nada que
+        // negociar (`onnegotiationneeded` no salta), así que si el que quiere ir directo
+        // era el del token menor, el otro nunca se enteraba y el canal no se abría jamás:
+        // la mitad de las parejas se quedaban en el proxio según cómo cayera el sorteo de
+        // tokens. Se le pide al otro que arranque; el que crea el canal sigue siendo uno
+        // solo, así que no hay ofertas cruzadas.
+        this._signal(peer, { kind: 'start' })
       }
     } catch (e) {
       this.emit('error', { type: 'webrtc_start', error: e, peer: peer.remote })
@@ -397,6 +405,17 @@ export class WebRTCManager {
   async _handleSignal (peer, msg) {
     if (!peer.pc) this._createPC(peer)
     const pc = peer.pc
+
+    if (msg.kind === 'start') {
+      // El otro quiere ir directo y el canal lo creamos nosotros (ver `_startNegotiation`).
+      // Solo lo atiende el del token mayor: así un `start` nunca rebota.
+      const self = this.getSelfToken()
+      if (self && self > peer.remote && !peer.dc) {
+        peer.negotiating = false
+        await this._startNegotiation(peer)
+      }
+      return
+    }
 
     if (msg.kind === 'sdp' && msg.sdp) {
       const offerCollision = msg.sdp.type === 'offer' &&
