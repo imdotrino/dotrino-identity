@@ -37,7 +37,7 @@ test('sin la marca no se une: la cuenta abierta queda INTACTA', async () => {
   const r = await id.joinProfile(acta)
 
   assert.equal(r.joined, false)
-  assert.equal(r.reason, 'perfil-con-datos', 'dice por qué, para que la consola ofrezca crear una cuenta nueva')
+  assert.equal(r.reason, 'profile-has-data', 'dice por qué, para que la consola ofrezca crear una cuenta nueva')
   assert.equal(r.profileId, mia.profileId)
 
   const despues = (await id.profileActa()).acta
@@ -65,7 +65,7 @@ test('con la marca sí se une, y la marca se consume', async () => {
 
   // La marca es de un solo uso: ya adoptó, ya no es adoptable.
   const otra = await otraCuenta(id.me.publickey)
-  assert.equal((await id.joinProfile(otra)).reason, 'perfil-con-datos')
+  assert.equal((await id.joinProfile(otra)).reason, 'profile-has-data')
 
   // Y la PRIMERA cuenta sigue ahí, con lo suyo.
   const perfiles = await id.listProfiles()
@@ -89,7 +89,7 @@ test('no me uno a una cuenta en la que no soy miembro', async () => {
   const r = await id.joinProfile(ajena)
 
   assert.equal(r.joined, false)
-  assert.equal(r.reason, 'no-soy-miembro')
+  assert.equal(r.reason, 'not-a-member')
   id.destroy()
   fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -102,7 +102,7 @@ test('la misma cuenta no es «unirse» sino ponerse al día', async () => {
   // Mi propia acta, tal cual: no hay nada que adoptar y NO puede contar como conflicto.
   const r = await id.joinProfile(mia)
   assert.equal(r.joined, false)
-  assert.equal(r.reason, 'misma-acta', 'va por las reglas de adopción, no por las de unirse')
+  assert.equal(r.reason, 'same-record', 'va por las reglas de adopción, no por las de unirse')
   assert.equal((await id.myMembership()).profileId, mia.profileId)
   id.destroy()
   fs.rmSync(dir, { recursive: true, force: true })

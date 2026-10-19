@@ -30,7 +30,7 @@ const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
 /*
  * EL MODELO VIEJO YA NO ENTRA. Los papeles de antes de 0.73 llevaban `exp` y no `seq`; se
  * aceptaron hasta el 2026-10-01 por un repliegue de migración declarado y con fecha, y esa
- * fecha pasó: se quitó (2026-10-05). Un papel sin `seq` se rechaza con `legacy-cert-retirado`,
+ * fecha pasó: se quitó (2026-10-05). Un papel sin `seq` se rechaza con `legacy-cert-retired`,
  * el mismo código que daba el repliegue al caducar, así que quien lo comprueba no cambia.
  */
 
@@ -238,7 +238,7 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   if (v !== 1 || typeof iss !== 'string' || typeof sub !== 'string' || typeof sig !== 'string') return { ok: false, reason: 'shape' }
   if (typeof iat !== 'number' || (typeof scope !== 'string' && !Array.isArray(scope))) return { ok: false, reason: 'shape' }
   // UN PAPEL DEL MODELO VIEJO (con `exp`, sin `seq`) ya no vale: el repliegue se retiró.
-  if (typeof seq !== 'number') return { ok: false, reason: typeof cert.exp === 'number' ? 'legacy-cert-retirado' : 'shape' }
+  if (typeof seq !== 'number') return { ok: false, reason: typeof cert.exp === 'number' ? 'legacy-cert-retired' : 'shape' }
   if (!(await rawVerify(iss, enc(canonicalStringify(delegationBody(cert))), sig))) return { ok: false, reason: 'bad-signature' }
   // EL ACTA MANDA, Y NO HAY RELOJ (dueño, 2026-08-31). El papel no vence: dice «una
   // selladora de este perfil, mirando el acta nº `seq`, avaló esta llave». Lo que puede
@@ -264,7 +264,7 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
   // estaba apagado: vuelve, su papel ya no vale, y renovarlo exige una selladora ABIERTA.
   // O sea que un cambio de acta te obligaría a abrir la bóveda para que tus aparatos
   // volvieran — justo lo que se acaba de quitar de en medio.
-  if (seq > actaSeq) return { ok: false, reason: 'acta-vieja' }
+  if (seq > actaSeq) return { ok: false, reason: 'stale-record' }
   // Y QUIEN LO EMITIÓ TIENE QUE PODER SELLAR. No se compara contra «la maestra»: cualquiera
   // que el acta nombre sellador emite papeles válidos — si no, la segunda bóveda podría
   // invalidar todos los certificados al sellar y luego no poder dar los nuevos.

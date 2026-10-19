@@ -228,7 +228,7 @@ test('tarjeta: no retrocede, y avisa si cambió el master', async () => {
   await bob.admitMember({ pub: otro.publickey, encPub: JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y }), caps: ['read'] })
 
   const v2 = await bob.profileCard()
-  assert.equal((await alice.adoptPeerCard(v2)).reason, 'seq-mayor')
+  assert.equal((await alice.adoptPeerCard(v2)).reason, 'higher-seq')
   // La vieja ya no la acepta.
   assert.equal((await alice.adoptPeerCard(v1)).adopted, false)
 
@@ -330,7 +330,7 @@ test('a quien le quitaste `firma`, sus firmas dejan de contar', async () => {
   await pc.setCaps(tel.publickey, ['read'])
   const r = await verifySignedBy({ data: post, signature, publickey: tel.publickey, chain: await pc.sealerChain() })
   assert.equal(r.ok, false)
-  assert.equal(r.reason, 'firmante-no-autorizado', 'con la cadena nueva, ya no cuenta')
+  assert.equal(r.reason, 'unauthorized-signer', 'con la cadena nueva, ya no cuenta')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

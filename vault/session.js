@@ -117,39 +117,39 @@ export async function verifySession (paper, { chain, expectedProfileId = null, o
   if (!isStr(p.sid) || !isStr(p.s) || !isStr(p.by) || !isStr(p.origin) || !isStr(p.sig)) return { ok: false, reason: 'shape' }
   if (!Number.isFinite(p.iat) || !Number.isFinite(p.exp) || !Array.isArray(p.scopes)) return { ok: false, reason: 'shape' }
 
-  if (p.exp <= p.iat) return { ok: false, reason: 'vigencia-invalida' }
-  if (p.exp - p.iat > SESSION_MAX_TTL_MS) return { ok: false, reason: 'vigencia-excesiva' }
-  if (p.exp <= now) return { ok: false, reason: 'vencida' }
-  if (p.iat > now + maxSkewMs) return { ok: false, reason: 'del-futuro' }
+  if (p.exp <= p.iat) return { ok: false, reason: 'invalid-lifetime' }
+  if (p.exp - p.iat > SESSION_MAX_TTL_MS) return { ok: false, reason: 'lifetime-too-long' }
+  if (p.exp <= now) return { ok: false, reason: 'expired' }
+  if (p.iat > now + maxSkewMs) return { ok: false, reason: 'from-future' }
 
   // DÓNDE vale. Un papel para una aplicación no vale en otra: el origen va firmado dentro.
-  if (origin != null && p.origin !== String(origin).trim()) return { ok: false, reason: 'otro-origen' }
+  if (origin != null && p.origin !== String(origin).trim()) return { ok: false, reason: 'other-origin' }
 
-  if (p.scopes.some((s) => !SESSION_SCOPES.includes(s))) return { ok: false, reason: 'alcance-desconocido' }
-  if (p.scopes.some((s) => SESSION_FORBIDDEN.includes(s))) return { ok: false, reason: 'alcance-prohibido' }
+  if (p.scopes.some((s) => !SESSION_SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
+  if (p.scopes.some((s) => SESSION_FORBIDDEN.includes(s))) return { ok: false, reason: 'forbidden-scope' }
 
   // EL ACTA MANDA, y por eso hace falta: dice si el aparato que respalda sigue siendo del
   // perfil y qué puede. Sin ella no se juzga, en vez de dar por bueno lo que diga el papel.
   const c = await verifySealerChain(chain, { expectedProfileId })
-  if (!c.ok) return { ok: false, reason: 'cadena:' + c.reason }
+  if (!c.ok) return { ok: false, reason: 'chain:' + c.reason }
   const acta = chain[chain.length - 1]
 
   // PRIMERO, ¿ES DE LA CASA? Y en este orden a propósito: si al aparato lo quitaron, el
   // motivo tiene que decir eso y no «le falta un permiso», que manda a mirar al sitio
   // equivocado. Es además el invariante que hace barata la revocación — quitar un aparato
   // se lleva sus sesiones sin avisar a nadie ni perseguir papeles.
-  if (!(acta.members || []).some((m) => m?.pub === p.by)) return { ok: false, reason: 'aparato-no-es-del-perfil' }
+  if (!(acta.members || []).some((m) => m?.pub === p.by)) return { ok: false, reason: 'device-not-in-profile' }
 
   // Y DESPUÉS, NUNCA AMPLÍA: cada alcance exige que el aparato que firmó lo tenga HOY. Se
   // comprueba aquí y no solo al emitir, porque quien emite es precisamente quien podría
   // mentir — y porque el acta de hoy puede haberle quitado lo que tenía ayer.
   for (const s of p.scopes) {
     const cap = SCOPE_NEEDS[s]
-    if (cap && !memberCan(acta, p.by, cap)) return { ok: false, reason: 'aparato-sin-' + cap }
+    if (cap && !memberCan(acta, p.by, cap)) return { ok: false, reason: 'device-lacks-' + cap }
   }
 
   const { sig, ...body } = p
-  if (!(await verifyDeviceSig({ publickey: p.by, data: body, signature: sig }))) return { ok: false, reason: 'firma-invalida' }
+  if (!(await verifyDeviceSig({ publickey: p.by, data: body, signature: sig }))) return { ok: false, reason: 'invalid-signature' }
 
   return { ok: true, profileId: c.profileId, seq: c.seq, sid: p.sid, s: p.s, by: p.by, origin: p.origin, scopes: [...p.scopes], exp: p.exp }
 }
@@ -164,8 +164,8 @@ export async function verifySessionSigned ({ data, signature, session, chain, sc
   if (!data || !isStr(signature)) return { ok: false, reason: 'shape' }
   const v = await verifySession(session, { chain, expectedProfileId, origin, now })
   if (!v.ok) return v
-  if (scope && !v.scopes.includes(scope)) return { ok: false, reason: 'fuera-de-alcance' }
-  if (!(await verifyDeviceSig({ publickey: v.s, data, signature }))) return { ok: false, reason: 'firma-invalida' }
+  if (scope && !v.scopes.includes(scope)) return { ok: false, reason: 'out-of-scope' }
+  if (!(await verifyDeviceSig({ publickey: v.s, data, signature }))) return { ok: false, reason: 'invalid-signature' }
   return { ok: true, profileId: v.profileId, sid: v.sid, scopes: v.scopes, exp: v.exp }
 }
 

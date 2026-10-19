@@ -81,18 +81,18 @@ export async function openSession ({ transport, sessionPubkey, encPub, origin, s
   return await new Promise((resolve, reject) => {
     let listo = false
     const fin = (fn, arg) => { if (!listo) { listo = true; clearTimeout(reloj); off?.(); fn(arg) } }
-    const reloj = setTimeout(() => fin(reject, Object.assign(new Error('nadie abrió la sesión a tiempo'), { code: 'session-timeout' })), timeoutMs)
+    const reloj = setTimeout(() => fin(reject, Object.assign(new Error('openSession: nobody granted the session in time'), { code: 'session-timeout' })), timeoutMs)
     const off = transport.on('message', async (_from, payload, meta) => {
       const p = typeof payload === 'string' ? (() => { try { return JSON.parse(payload) } catch (_) { return null } })() : payload
       if (!p || p.sid !== sid) return
-      if (p.op === SESSION_OP.DENY) return fin(reject, Object.assign(new Error('la sesión no se concedió'), { code: 'session-denied' }))
+      if (p.op === SESSION_OP.DENY) return fin(reject, Object.assign(new Error('openSession: the session was denied'), { code: 'session-denied' }))
       if (p.op !== SESSION_OP.GRANT) return
       // NO SE ACEPTA LO QUE VENGA EN CLARO. El sellado es del pilar del transporte; aquí
       // solo se comprueba que llegó sellado, que es lo que la app puede saber.
       if (meta && meta.sealed === false) return
       const v = await verifySession(p.paper, { chain: p.chain, origin: origin.trim() })
-      if (!v.ok) return fin(reject, Object.assign(new Error('el papel de sesión no vale: ' + v.reason), { code: 'session-invalid' }))
-      if (p.paper.s !== sessionPubkey) return fin(reject, Object.assign(new Error('el papel es para otra llave'), { code: 'session-invalid' }))
+      if (!v.ok) return fin(reject, Object.assign(new Error('openSession: the session paper does not verify: ' + v.reason), { code: 'session-invalid' }))
+      if (p.paper.s !== sessionPubkey) return fin(reject, Object.assign(new Error('openSession: the session paper is for another key'), { code: 'session-invalid' }))
       fin(resolve, { paper: p.paper, chain: p.chain, profileId: v.profileId, sid, scopes: v.scopes, exp: v.exp })
     })
   })
@@ -109,7 +109,7 @@ export async function openSession ({ transport, sessionPubkey, encPub, origin, s
  */
 export async function grantSession ({ transport, invite, by, sign, chain, scopes, ttlMs = SESSION_DEFAULT_TTL_MS, now = Date.now() } = {}) {
   const inv = parseInvite(invite)
-  if (!inv) throw new Error('grantSession: invitación ilegible')
+  if (!inv) throw Object.assign(new Error('grantSession: unreadable invite'), { code: 'bad-invite' })
   if (typeof by !== 'string' || !by) throw new Error('grantSession: by (this device pubkey) required')
   if (typeof sign !== 'function') throw new Error('grantSession: sign(body) required')
   if (!Array.isArray(chain) || !chain.length) throw new Error('grantSession: chain required')
@@ -123,7 +123,7 @@ export async function grantSession ({ transport, invite, by, sign, chain, scopes
 /** Decir que no, en vez de dejar al otro mirando una pantalla que no avanza. */
 export async function denySession ({ transport, invite } = {}) {
   const inv = parseInvite(invite)
-  if (!inv) throw new Error('denySession: invitación ilegible')
+  if (!inv) throw Object.assign(new Error('denySession: unreadable invite'), { code: 'bad-invite' })
   await enviar(transport, inv, { op: SESSION_OP.DENY, sid: inv.sid })
 }
 
@@ -144,7 +144,7 @@ async function enviar (transport, inv, payload) {
   }
   // Sin llave de cifrado del otro lado no se puede sellar. Se dice en vez de mandarlo en
   // claro por su cuenta: quien llama decide si eso le vale.
-  if (!inv.encPub) throw Object.assign(new Error('sessionFlow: la invitación no trae encPub; no se puede sellar'), { code: 'unsealed' })
+  if (!inv.encPub) throw Object.assign(new Error('sessionFlow: the invite carries no encPub; cannot seal'), { code: 'unsealed' })
   return transport.sendByPubkey(inv.s, payload)
 }
 

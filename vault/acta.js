@@ -289,38 +289,38 @@ export const sealerLinkOf = (acta) => (acta?.sealerChanged && acta?.sealerLink) 
  */
 export function checkSealerLink (acta) {
   const l = acta?.sealerLink
-  if (!l) return acta?.sealerChanged && acta?.v >= 5 ? 'eslabon-ausente' : null
-  if (l.v !== SEALER_LINK_V) return 'eslabon-version'
-  if (typeof l.sig !== 'string') return 'eslabon-sin-firma'
-  if (l.profileId !== acta.profileId) return 'eslabon-otro-perfil'
+  if (!l) return acta?.sealerChanged && acta?.v >= 5 ? 'link-missing' : null
+  if (l.v !== SEALER_LINK_V) return 'link-version'
+  if (typeof l.sig !== 'string') return 'link-unsigned'
+  if (l.profileId !== acta.profileId) return 'link-other-profile'
   // EL ACTA VIGENTE ARRASTRA EL ÚLTIMO ESLABÓN, que casi nunca es de ella: los selladores
   // cambian poquísimo y las actas cambian con cada emparejamiento. Así que solo cuando
   // ESTA acta es el eslabón se le exige que coincida en `seq` y en quién lo firmó; si lo
   // hereda, basta con que venga de antes.
   if (acta.sealerChanged) {
-    if (l.seq !== acta.seq) return 'eslabon-otro-seq'
-    if (l.by !== acta.sealedBy) return 'eslabon-otro-sellador'
+    if (l.seq !== acta.seq) return 'link-other-seq'
+    if (l.by !== acta.sealedBy) return 'link-other-sealer'
   } else if (!(l.seq < acta.seq)) {
-    return 'eslabon-del-futuro'
+    return 'link-from-future'
   }
   // Y en los dos casos tiene que DECIR LO MISMO que el acta sobre quién sella: si no
   // cambiaron, el heredado los sigue describiendo. Esto es lo que impide que el acta y su
   // eslabón cuenten cosas distintas — que es todo el punto de meterlo dentro.
   const dice = [...(l.sealers || [])].slice().sort().join('|')
   const segunElActa = sealersOf(acta).slice().sort().join('|')
-  if (dice !== segunElActa) return 'eslabon-no-cuadra'
+  if (dice !== segunElActa) return 'link-mismatch'
   return null
 }
 
 /** Firma del eslabón por quien sella. Se hace ANTES de firmar el acta que lo lleva. */
 export async function verifySealerLink (link) {
-  if (!link || link.v !== SEALER_LINK_V) return { ok: false, reason: 'eslabon-version' }
-  if (!isPub(link.profileId) || !isPub(link.by)) return { ok: false, reason: 'eslabon-forma' }
-  if (!Array.isArray(link.sealers) || !link.sealers.length || !link.sealers.every(isPub)) return { ok: false, reason: 'eslabon-selladores' }
-  if (typeof link.seq !== 'number' || link.seq < 1) return { ok: false, reason: 'eslabon-seq' }
-  if (typeof link.sig !== 'string') return { ok: false, reason: 'eslabon-sin-firma' }
+  if (!link || link.v !== SEALER_LINK_V) return { ok: false, reason: 'link-version' }
+  if (!isPub(link.profileId) || !isPub(link.by)) return { ok: false, reason: 'link-shape' }
+  if (!Array.isArray(link.sealers) || !link.sealers.length || !link.sealers.every(isPub)) return { ok: false, reason: 'link-sealers' }
+  if (typeof link.seq !== 'number' || link.seq < 1) return { ok: false, reason: 'link-seq' }
+  if (typeof link.sig !== 'string') return { ok: false, reason: 'link-unsigned' }
   const ok = await verifyDeviceSig({ publickey: link.by, data: sealerLinkBody(link), signature: link.sig })
-  return ok ? { ok: true } : { ok: false, reason: 'eslabon-firma-invalida' }
+  return ok ? { ok: true } : { ok: false, reason: 'link-invalid-signature' }
 }
 
 /**
@@ -338,29 +338,29 @@ export async function verifySealerLink (link) {
  * aceptando a un sellador retirado; para eso está mirar el registro, no más firmas.
  */
 export async function verifySealerLinkChain (chain, { expectedProfileId = null } = {}) {
-  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
+  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'empty-chain' }
   const [raiz] = chain
   // La misma regla que en `verifySealerChain`: la raíz la ancla la llave del perfil, no el
   // número 1 (una cuenta puede haber perdido su génesis; ver allí).
-  if (!Number.isInteger(raiz?.seq) || raiz.seq < 1) return { ok: false, reason: 'no-empieza-en-genesis' }
-  if (raiz.by !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
-  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
+  if (!Number.isInteger(raiz?.seq) || raiz.seq < 1) return { ok: false, reason: 'no-genesis' }
+  if (raiz.by !== raiz.profileId) return { ok: false, reason: 'genesis-not-self-signed' }
+  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'other-profile' }
   const vr = await verifySealerLink(raiz)
   if (!vr.ok) return { ok: false, reason: 'genesis:' + vr.reason }
 
   for (let i = 1; i < chain.length; i++) {
     const previo = chain[i - 1]
     const actual = chain[i]
-    if (actual?.profileId !== raiz.profileId) return { ok: false, reason: `eslabon-${i}:otro-perfil` }
-    if (!(actual.seq > previo.seq)) return { ok: false, reason: `eslabon-${i}:seq-no-crece` }
+    if (actual?.profileId !== raiz.profileId) return { ok: false, reason: `link-${i}:other-profile` }
+    if (!(actual.seq > previo.seq)) return { ok: false, reason: `link-${i}:seq-not-increasing` }
     const v = await verifySealerLink(actual)
-    if (!v.ok) return { ok: false, reason: `eslabon-${i}:` + v.reason }
+    if (!v.ok) return { ok: false, reason: `link-${i}:` + v.reason }
     const a = actual.prev
     if (!a || a.seq !== previo.seq || a.hash !== await sealerLinkHash(previo)) {
-      return { ok: false, reason: `eslabon-${i}:no-encadena` }
+      return { ok: false, reason: `link-${i}:not-chained` }
     }
     // Y lo que da la autoridad: quien lo firmó podía sellar SEGÚN EL ESLABÓN ANTERIOR.
-    if (!previo.sealers.includes(actual.by)) return { ok: false, reason: `eslabon-${i}:sellador-no-autorizado` }
+    if (!previo.sealers.includes(actual.by)) return { ok: false, reason: `link-${i}:unauthorized-sealer` }
   }
   const ultimo = chain[chain.length - 1]
   return { ok: true, profileId: raiz.profileId, seq: ultimo.seq, sealers: [...ultimo.sealers] }
@@ -473,7 +473,7 @@ export function checkShape (acta) {
   if (acta.chainUrl != null && !isChainUrl(acta.chainUrl)) return 'chainurl'
   // El campo solo existe —y solo se exige— en las viejas.
   if (conCampoSellador(acta) && !isPub(acta.sealer)) return 'shape'
-  if (!conCampoSellador(acta) && acta.sealer != null) return 'sealer-no-va-en-v3'
+  if (!conCampoSellador(acta) && acta.sealer != null) return 'sealer-not-in-v3'
   if (!Number.isInteger(acta.seq) || acta.seq < 1) return 'seq'
   if (acta.seq > 1 && typeof acta.prev !== 'string') return 'prev'
   if (!Array.isArray(acta.members) || acta.members.length === 0) return 'members'
@@ -507,7 +507,7 @@ export function checkShape (acta) {
     // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
     // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
     // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
-    if (m.cn != null && !isValidCn(m.cn)) return 'cn-invalido'
+    if (m.cn != null && !isValidCn(m.cn)) return 'invalid-cn'
     // La llave de cifrado: por ahora se valida la FORMA y solo si viene. NO se exige
     // todavía, aunque el destino sea exigírsela a quien recibe secretos.
     //
@@ -516,27 +516,27 @@ export function checkShape (acta) {
     // entró sin ella —que son todas las anteriores a esto— y el vault dejaría de
     // arrancar en vez de avisar. Primero los servicios registran su llave (op
     // `encpub`), y cuando no quede ninguno sin ella se aprieta aquí.
-    if (m.encPub != null && !isEncPub(m.encPub)) return 'encpub-invalido'
+    if (m.encPub != null && !isEncPub(m.encPub)) return 'invalid-encpub'
   }
   // LA LLAVE DE SELLADO Y SU REGISTRO. `sealPub` puede no estar (un perfil que no sella
   // secretos), pero si está tiene que decir DESDE QUÉ acta manda: sin `sealSince` no se
   // puede decidir con qué llave verificar un sobre viejo.
   if (acta.v >= 2) {
   if (acta.sealPub != null) {
-    if (!isPub(acta.sealPub)) return 'sealpub-invalido'
+    if (!isPub(acta.sealPub)) return 'invalid-sealpub'
     if (!Number.isInteger(acta.sealSince) || acta.sealSince < 1 || acta.sealSince > acta.seq) return 'sealsince'
   } else if (acta.sealSince) return 'sealsince'
   if (!Array.isArray(acta.sealKeys)) return 'sealkeys'
   for (const k of acta.sealKeys) {
-    if (!isPub(k?.pub)) return 'sealkey-invalida'
-    if (!Number.isInteger(k.from) || !Number.isInteger(k.to) || k.from < 1 || k.to < k.from) return 'sealkey-rango'
+    if (!isPub(k?.pub)) return 'invalid-sealkey'
+    if (!Number.isInteger(k.from) || !Number.isInteger(k.to) || k.from < 1 || k.to < k.from) return 'sealkey-range'
   }
   }
-  if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'miembro-duplicado'
+  if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'duplicate-member'
   // SIN NADIE QUE SELLE, el acta está muerta: no habría forma de volver a cambiarla nunca.
   // Es el hermano del cierre de `sign`, y sustituye a «el sellador tiene que ser miembro»
   // ahora que sellar es solo un permiso y los permisos ya son de miembros por definición.
-  if (!sealersOf(acta).length) return 'sin-sellador'
+  if (!sealersOf(acta).length) return 'no-sealer'
   // La cadena de selladores: el génesis es el ancla (`null`); cualquier otra apunta a un
   // eslabón anterior. Sin `hash` no se puede encadenar nada, así que se exige la forma.
   if (acta.sealerAnchor != null) {
@@ -549,7 +549,7 @@ export function checkShape (acta) {
   // inválida. Lo que sostiene la cadena no es el ancla sino que **cada eslabón lo selle
   // alguien a quien el anterior autorizaba**; el ancla añade que no se pueda empalmar un
   // eslabón de otra rama, y se comprueba cuando viene (ver `verifySealerChain`).
-  if (!acta.members.some((m) => m.caps.includes('sign'))) return 'sin-firmante'
+  if (!acta.members.some((m) => m.caps.includes('sign'))) return 'no-signer'
   return null
 }
 
@@ -627,20 +627,20 @@ export async function verifySignedBy (args = {}) {
     return { ok: false, reason: 'shape' }
   }
   const c = await verifySealerChain(chain, { expectedProfileId })
-  if (!c.ok) return { ok: false, reason: 'cadena:' + c.reason }
+  if (!c.ok) return { ok: false, reason: 'chain:' + c.reason }
   const cabeza = chain[chain.length - 1]
   // Quien firmó tiene que ser miembro CON `sign` en el acta vigente de esa cadena. Si le
   // quitaste el permiso, sus firmas dejan de contar en cuanto se ve un acta más nueva.
   // Un SERVICIO (miembro con `cn`) solo firma dentro de su cajón: quien verifica dice cuál
   // con `ns` (el directorio de nombres acepta lo firmado por su aparato `names`, no por
   // cualquier servicio de la cuenta). Sin `ns`, un servicio nunca pasa, como siempre.
-  if (!memberCanSign(cabeza, publickey, ns)) return { ok: false, reason: 'firmante-no-autorizado' }
-  if (!(await verifyDeviceSig({ publickey, data, signature }))) return { ok: false, reason: 'firma-invalida' }
+  if (!memberCanSign(cabeza, publickey, ns)) return { ok: false, reason: 'unauthorized-signer' }
+  if (!(await verifyDeviceSig({ publickey, data, signature }))) return { ok: false, reason: 'invalid-signature' }
   return { ok: true, profileId: c.profileId, seq: c.seq, signer: publickey }
 }
 
 export async function verifySealerChain (chain, { expectedProfileId = null } = {}) {
-  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'cadena-vacia' }
+  if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'empty-chain' }
   const [raiz] = chain
 
   // EL ANCLA ES LA LLAVE DEL PERFIL, NO EL NÚMERO 1 (dueño, 2026-10-14). La raíz vale si
@@ -651,18 +651,18 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
   // perfil fabrica un génesis alterno igual que un acta posterior, y contra eso la capa es
   // el registro público. Lo que sí sostiene la cadena —que cada eslabón lo firmó alguien a
   // quien el anterior autorizaba— sigue intacto.
-  if (!Number.isInteger(raiz.seq) || raiz.seq < 1) return { ok: false, reason: 'no-empieza-en-genesis' }
-  if (raiz.sealedBy !== raiz.profileId) return { ok: false, reason: 'genesis-no-autofirmado' }
-  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
+  if (!Number.isInteger(raiz.seq) || raiz.seq < 1) return { ok: false, reason: 'no-genesis' }
+  if (raiz.sealedBy !== raiz.profileId) return { ok: false, reason: 'genesis-not-self-signed' }
+  if (expectedProfileId != null && raiz.profileId !== expectedProfileId) return { ok: false, reason: 'other-profile' }
   const vr = await verifyActa({ acta: raiz })
   if (!vr.ok) return { ok: false, reason: 'genesis:' + vr.reason }
 
   for (let i = 1; i < chain.length; i++) {
     const previo = chain[i - 1]
     const actual = chain[i]
-    if (actual.profileId !== raiz.profileId) return { ok: false, reason: 'otro-perfil' }
+    if (actual.profileId !== raiz.profileId) return { ok: false, reason: 'other-profile' }
     const v = await verifyActa({ acta: actual })
-    if (!v.ok) return { ok: false, reason: `eslabon-${i}:` + v.reason }
+    if (!v.ok) return { ok: false, reason: `link-${i}:` + v.reason }
     // Encadena con el anterior: mismo `seq` y mismo hash. Sin el hash bastaría con
     // acertar un número para colar un eslabón de otra rama.
     // El ancla, SI viene: fija que este eslabón sale del anterior y no de otra rama. Una
@@ -670,10 +670,10 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
     // abajo — que es lo que de verdad impide falsificarla.
     const a = actual.sealerAnchor
     if (a && (a.seq !== previo.seq || a.hash !== await actaHash(previo))) {
-      return { ok: false, reason: `eslabon-${i}:no-encadena` }
+      return { ok: false, reason: `link-${i}:not-chained` }
     }
     // Y lo que da la autoridad: quien la selló tenía permiso SEGÚN EL ESLABÓN ANTERIOR.
-    if (!canSeal(previo, actual.sealedBy)) return { ok: false, reason: `eslabon-${i}:sellador-no-autorizado` }
+    if (!canSeal(previo, actual.sealedBy)) return { ok: false, reason: `link-${i}:unauthorized-sealer` }
   }
   const ultima = chain[chain.length - 1]
   return { ok: true, profileId: raiz.profileId, seq: ultima.seq, sealers: sealersOf(ultima) }
@@ -682,10 +682,10 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
 export async function verifyActa ({ acta, expectedProfileId } = {}) {
   const shape = checkShape(acta)
   if (shape) return { ok: false, reason: shape }
-  if (typeof acta.sig !== 'string') return { ok: false, reason: 'sin-firma' }
-  if (expectedProfileId != null && acta.profileId !== expectedProfileId) return { ok: false, reason: 'otro-perfil' }
+  if (typeof acta.sig !== 'string') return { ok: false, reason: 'unsigned' }
+  if (expectedProfileId != null && acta.profileId !== expectedProfileId) return { ok: false, reason: 'other-profile' }
   const ok = await verifyDeviceSig({ publickey: acta.sealedBy, data: actaBody(acta), signature: acta.sig })
-  if (!ok) return { ok: false, reason: 'firma-invalida' }
+  if (!ok) return { ok: false, reason: 'invalid-signature' }
   // El eslabón va DENTRO y la firma de arriba lo cubre, pero eso solo prueba que está ahí.
   // Que diga lo mismo que el acta es lo que hace verdad «ya está validado dentro».
   const mal = checkSealerLink(acta)
@@ -720,21 +720,21 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  * @returns {Promise<{ok:true}|{ok:false, reason:string}>}
  */
 export async function checkVaultReply ({ acta, cert, vault, sub, scope = null, justSealed = false } = {}) {
-  if (!acta) return { ok: false, reason: 'sin-acta' }
-  if (!isPub(vault)) return { ok: false, reason: 'sin-boveda' }
+  if (!acta) return { ok: false, reason: 'no-record' }
+  if (!isPub(vault)) return { ok: false, reason: 'no-vault-key' }
   // Para QUÉ llave es el papel no es opcional: sin ella `verifyDelegation` no lo mira, y un
   // papel emitido para otra llave pasaría por bueno.
-  if (!isPub(sub)) return { ok: false, reason: 'sin-llave-del-aparato' }
+  if (!isPub(sub)) return { ok: false, reason: 'no-device-key' }
   const v = await verifyActa({ acta })
-  if (!v.ok) return { ok: false, reason: 'acta:' + v.reason }
-  if (!canSeal(acta, vault)) return { ok: false, reason: 'boveda-no-sella' }
-  if (justSealed && !samePubkey(acta.sealedBy, vault)) return { ok: false, reason: 'acta-de-otra-selladora' }
-  if (!cert || !samePubkey(cert.iss, vault)) return { ok: false, reason: 'papel-de-otra-llave' }
+  if (!v.ok) return { ok: false, reason: 'record:' + v.reason }
+  if (!canSeal(acta, vault)) return { ok: false, reason: 'vault-not-sealer' }
+  if (justSealed && !samePubkey(acta.sealedBy, vault)) return { ok: false, reason: 'record-from-other-sealer' }
+  if (!cert || !samePubkey(cert.iss, vault)) return { ok: false, reason: 'cert-from-other-key' }
   const d = await verifyDelegation({
     cert, expectedSub: sub, actaSeq: acta.seq, sealers: sealersOf(acta),
     ...(scope ? { expectedScope: scope } : {})
   })
-  if (!d.ok) return { ok: false, reason: 'papel:' + d.reason }
+  if (!d.ok) return { ok: false, reason: 'cert:' + d.reason }
   return { ok: true }
 }
 
@@ -1213,16 +1213,16 @@ export async function verifyProfileCard (card) {
  *     anterior — así nadie te cuela dispositivos ajenos en el perfil de tu contacto,
  *     y nunca se retrocede a una versión vieja.
  * Si el master cambió legítimamente (traspaso), la tarjeta nueva la firma el entrante y
- * hay que re-confirmarla: se devuelve `master-cambiado` para que la app lo diga en vez de
+ * hay que re-confirmarla: se devuelve `master-changed` para que la app lo diga en vez de
  * aceptarlo en silencio.
  */
 export async function canAdoptCard ({ card, current }) {
-  if (!(await verifyProfileCard(card))) return { adopt: false, reason: 'firma-invalida' }
-  if (current && current.profileId !== card.profileId) return { adopt: false, reason: 'otro-perfil' }
-  if (!current) return { adopt: true, reason: 'primera-vez' }
-  if (card.seq < current.seq) return { adopt: false, reason: 'seq-menor' }
-  if (card.sealedBy !== current.sealedBy) return { adopt: false, reason: 'master-cambiado' }
-  return { adopt: true, reason: card.seq > current.seq ? 'seq-mayor' : 'igual' }
+  if (!(await verifyProfileCard(card))) return { adopt: false, reason: 'invalid-signature' }
+  if (current && current.profileId !== card.profileId) return { adopt: false, reason: 'other-profile' }
+  if (!current) return { adopt: true, reason: 'first-time' }
+  if (card.seq < current.seq) return { adopt: false, reason: 'lower-seq' }
+  if (card.sealedBy !== current.sealedBy) return { adopt: false, reason: 'master-changed' }
+  return { adopt: true, reason: card.seq > current.seq ? 'higher-seq' : 'same' }
 }
 
 // ----- continuidad: unir una identidad que ya existía -----
@@ -1270,19 +1270,19 @@ export async function verifyContinuity (record) {
 export async function canAdopt ({ candidate, current }) {
   const v = await verifyActa({ acta: candidate, expectedProfileId: current?.profileId })
   if (!v.ok) return { adopt: false, reason: v.reason }
-  if (!current) return { adopt: true, reason: 'sin-acta-previa' }
+  if (!current) return { adopt: true, reason: 'no-previous-record' }
 
   if (candidate.seq > current.seq) {
-    if (!canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'sellador-no-autorizado' }
+    if (!canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'unauthorized-sealer' }
     if (candidate.seq === current.seq + 1 && candidate.prev !== await actaHash(current)) {
-      return { adopt: false, reason: 'no-encadena' }
+      return { adopt: false, reason: 'not-chained' }
     }
-    return { adopt: true, reason: 'seq-mayor' }
+    return { adopt: true, reason: 'higher-seq' }
   }
 
   if (candidate.seq === current.seq) {
     const [hCan, hCur] = [await actaHash(candidate), await actaHash(current)]
-    if (hCan === hCur) return { adopt: false, reason: 'misma-acta' }
+    if (hCan === hCur) return { adopt: false, reason: 'same-record' }
     // A igual `seq`, con multivault, las dos ramas pueden venir de selladores DISTINTOS y
     // ser las dos legítimas. Antes era imposible y se rechazaba de plano; ahora se
     // desempata con las reglas de abajo, que ya estaban escritas.
@@ -1294,16 +1294,16 @@ export async function canAdopt ({ candidate, current }) {
     // correcta es por el acta PADRE, que aquí no se tiene; tener el mismo `sealedBy` es
     // exactamente lo que dice que las dos salieron de ella.
     const mismoFirmante = candidate.sealedBy === current.sealedBy
-    if (!mismoFirmante && !canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'otro-sellador' }
+    if (!mismoFirmante && !canSeal(current, candidate.sealedBy)) return { adopt: false, reason: 'other-sealer' }
     // SOLO QUEDA EL HASH. Antes había una regla más —«gana la que traspasa»— que existía
     // para arbitrar el campo `sealer`: dos ramas que cedían el mando a destinos distintos.
     // Ese campo ya no existe (dueño, 2026-08-31: «SEAL es el nuevo master»), y con él se
     // va la regla y la ambigüedad que arrastraba: `sealer !== sealedBy` significaba
     // «traspaso» con un solo master y dejó de significarlo con varios selladores.
-    return hCan < hCur ? { adopt: true, reason: 'desempate-hash' } : { adopt: false, reason: 'desempate-hash' }
+    return hCan < hCur ? { adopt: true, reason: 'hash-tiebreak' } : { adopt: false, reason: 'hash-tiebreak' }
   }
 
-  return { adopt: false, reason: 'seq-menor' }
+  return { adopt: false, reason: 'lower-seq' }
 }
 
 export default {

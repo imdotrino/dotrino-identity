@@ -90,7 +90,7 @@ test('forma: una llave de sellado sin decir desde cuándo NO es un acta válida'
   const acta = genesisActa({ pub: a.pub, sealPub: s.pub })
   assert.equal(checkShape({ ...acta, sealSince: 0 }), 'sealsince')
   assert.equal(checkShape({ ...acta, sealSince: 9 }), 'sealsince', 'ni desde un acta que no ha pasado')
-  assert.equal(checkShape({ ...acta, sealKeys: [{ pub: s.pub, from: 3, to: 1 }] }), 'sealkey-rango')
+  assert.equal(checkShape({ ...acta, sealKeys: [{ pub: s.pub, from: 3, to: 1 }] }), 'sealkey-range')
 })
 
 test('estrenar la llave de sellado es, por si sola, un acta nueva', async () => {

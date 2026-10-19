@@ -193,9 +193,9 @@ test('un servicio solo firma lo de su cajón; un aparato tuyo, todo', async () =
   const post = { hola: 'mundo' }
   const { signature } = await signWithDevice({ privateJwk: bot.privateJwk, data: post })
   const sin = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta] })
-  assert.equal(sin.ok, false); assert.equal(sin.reason, 'firmante-no-autorizado')
+  assert.equal(sin.ok, false); assert.equal(sin.reason, 'unauthorized-signer')
   const otro = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta], ns: 'trueque' })
-  assert.equal(otro.ok, false); assert.equal(otro.reason, 'firmante-no-autorizado')
+  assert.equal(otro.ok, false); assert.equal(otro.reason, 'unauthorized-signer')
   const suyo = await verifySignedBy({ data: post, signature, publickey: bot.publickey, chain: [acta], ns: 'eco' })
   assert.equal(suyo.ok, true, suyo.reason)
   assert.equal(suyo.profileId, A.publickey)
@@ -266,7 +266,7 @@ test('un acta suelta fabricada para tu profileId NO pasa la cadena', async () =>
   // Con la cadena no: el génesis de la víctima NO le da permiso de sellar.
   const r = await verifySealerChain([suya, falsa], { expectedProfileId: suya.profileId })
   assert.equal(r.ok, false)
-  assert.match(r.reason, /sellador-no-autorizado/)
+  assert.match(r.reason, /unauthorized-sealer/)
 
   // Y no puede empezar la cadena por la suya: no está autofirmada por ese profileId.
   const solo = await verifySealerChain([falsa], { expectedProfileId: suya.profileId })
@@ -415,7 +415,7 @@ test('la cadena publicada se verifica sola, sin actas', async () => {
   const falso = { ...inventado, sig: (await signWithDevice({ privateJwk: malo.privateJwk, data: inventado })).signature }
   const mala = await verifySealerLinkChain([falso], { expectedProfileId: g.profileId })
   assert.equal(mala.ok, false)
-  assert.match(mala.reason, /genesis-no-autofirmado/)
+  assert.match(mala.reason, /genesis-not-self-signed/)
 })
 
 test('el eslabón NO puede decir algo distinto que el acta que lo lleva', async () => {
@@ -433,7 +433,7 @@ test('el eslabón NO puede decir algo distinto que el acta que lo lleva', async 
 
   const v = await verifyActa({ acta: trucada })
   assert.equal(v.ok, false)
-  assert.match(v.reason, /eslabon-(no-cuadra|otro-sellador)/)
+  assert.match(v.reason, /link-(mismatch|other-sealer)/)
 })
 
 /**
@@ -472,5 +472,5 @@ test('una cadena sin génesis ancla en un acta posterior autofirmada por la llav
   const falsa = await sellar({ ...acta, sealedBy: malo.publickey }, malo)
   const mala = await verifySealerChain([falsa], { expectedProfileId: acta.profileId })
   assert.equal(mala.ok, false)
-  assert.match(mala.reason, /genesis-no-autofirmado/)
+  assert.match(mala.reason, /genesis-not-self-signed/)
 })

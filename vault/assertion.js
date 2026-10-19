@@ -145,31 +145,31 @@ export async function verifyAssertion (assertion, opts = {}) {
   if (!Array.isArray(a.scopes) || (a.claims != null && typeof a.claims !== 'object')) return { ok: false, reason: 'shape' }
   if (typeof a.signature !== 'string' || typeof a.publickey !== 'string') return { ok: false, reason: 'shape' }
 
-  if (a.aud !== audience.trim()) return { ok: false, reason: 'otro-destinatario' }
-  if (a.nonce !== nonce) return { ok: false, reason: 'otro-reto' }
+  if (a.aud !== audience.trim()) return { ok: false, reason: 'other-audience' }
+  if (a.nonce !== nonce) return { ok: false, reason: 'other-nonce' }
 
-  if (a.exp <= a.iat) return { ok: false, reason: 'vigencia-invalida' }
+  if (a.exp <= a.iat) return { ok: false, reason: 'invalid-lifetime' }
   // El TOPE lo comprueba quien recibe. Si no, el emisor decide solo cuánto dura su
   // credencial y el tope no es un tope.
-  if (a.exp - a.iat > ASSERTION_MAX_TTL_MS) return { ok: false, reason: 'vigencia-excesiva' }
+  if (a.exp - a.iat > ASSERTION_MAX_TTL_MS) return { ok: false, reason: 'lifetime-too-long' }
   // Y el vencimiento se juzga SIN margen: el margen es para el arranque (relojes que
   // difieren), no para seguir aceptando lo que ya venció.
-  if (a.exp <= now) return { ok: false, reason: 'vencida' }
-  if (a.iat > now + maxSkewMs) return { ok: false, reason: 'del-futuro' }
+  if (a.exp <= now) return { ok: false, reason: 'expired' }
+  if (a.iat > now + maxSkewMs) return { ok: false, reason: 'from-future' }
 
-  if (a.scopes.some((s) => !SCOPES.includes(s))) return { ok: false, reason: 'alcance-desconocido' }
+  if (a.scopes.some((s) => !SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
   const permitido = claimsAllowed(a.scopes)
-  if (Object.keys(a.claims || {}).some((k) => !permitido.has(k))) return { ok: false, reason: 'claim-sin-alcance' }
+  if (Object.keys(a.claims || {}).some((k) => !permitido.has(k))) return { ok: false, reason: 'claim-without-scope' }
 
   // Y lo de siempre: que la firma sea de alguien a quien el acta de esa cadena autoriza a
   // firmar por esta identidad. Es la misma comprobación que para cualquier contenido
   // firmado; aquí no se inventa una cripto aparte.
   const v = await verifySignedBy({ data: bodyOf(a), signature: a.signature, publickey: a.publickey, chain: a.chain, expectedProfileId })
-  if (!v.ok) return { ok: false, reason: 'firma:' + v.reason }
+  if (!v.ok) return { ok: false, reason: 'signature:' + v.reason }
   // A NOMBRE DE QUIÉN dice ir, contra a nombre de quién va de verdad. Sin esto una prueba
   // podría afirmar ser de otro perfil y la firma seguiría cuadrando: diría la verdad sobre
   // quién la firmó y una mentira sobre de quién es.
-  if (a.sub !== v.profileId) return { ok: false, reason: 'otro-sujeto' }
+  if (a.sub !== v.profileId) return { ok: false, reason: 'other-subject' }
 
   return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, scopes: [...a.scopes], claims: { ...(a.claims || {}) }, aud: a.aud, exp: a.exp }
 }
@@ -200,18 +200,18 @@ export async function verifySignedFor (args = {}) {
   const { data, signature, publickey, chain, audience, expectedProfileId = null, ns = null, now = Date.now(), maxSkewMs = ASSERTION_MAX_SKEW_MS } = args
   if (typeof audience !== 'string' || !audience.trim()) return { ok: false, reason: 'no-audience' }
   if (!data || typeof data !== 'object') return { ok: false, reason: 'shape' }
-  if (typeof data.aud !== 'string' || !data.aud) return { ok: false, reason: 'sin-destinatario' }
-  if (data.aud !== audience.trim()) return { ok: false, reason: 'otro-destinatario' }
+  if (typeof data.aud !== 'string' || !data.aud) return { ok: false, reason: 'no-aud' }
+  if (data.aud !== audience.trim()) return { ok: false, reason: 'other-audience' }
   if (data.exp != null) {
     if (!Number.isFinite(data.exp)) return { ok: false, reason: 'shape' }
-    if (data.exp <= now) return { ok: false, reason: 'vencida' }
+    if (data.exp <= now) return { ok: false, reason: 'expired' }
   }
   if (data.iat != null) {
     if (!Number.isFinite(data.iat)) return { ok: false, reason: 'shape' }
-    if (data.iat > now + maxSkewMs) return { ok: false, reason: 'del-futuro' }
+    if (data.iat > now + maxSkewMs) return { ok: false, reason: 'from-future' }
   }
   const v = await verifySignedBy({ data, signature, publickey, chain, expectedProfileId, ns })
-  if (!v.ok) return { ok: false, reason: 'firma:' + v.reason }
+  if (!v.ok) return { ok: false, reason: 'signature:' + v.reason }
   return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, aud: data.aud }
 }
 

@@ -8,8 +8,8 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 31,
-    "issued": "2026-10-16",
+    "seq": 32,
+    "issued": "2026-10-18",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
       "compat": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.121.2",
+        "current": "0.121.3",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -101,7 +101,7 @@ export const MANIFESTS = Object.freeze({
       "profile": {
         "repo": "imdotrino/dotrino-profile",
         "npm": "@dotrino/profile",
-        "current": "0.20.2",
+        "current": "0.20.3",
         "protocol": 1,
         "requires": {
           "identity": ">=0.33.0"
@@ -131,7 +131,7 @@ export const MANIFESTS = Object.freeze({
       "remote-agent": {
         "repo": "imdotrino/dotrino-remote-agent",
         "npm": "@dotrino/remote-agent",
-        "current": "0.22.1",
+        "current": "0.22.2",
         "protocol": 1,
         "requires": {
           "identity": ">=0.120.0",
@@ -193,10 +193,10 @@ export const MANIFESTS = Object.freeze({
       "content": {
         "repo": "imdotrino/dotrino-content",
         "npm": "@dotrino/content",
-        "current": "0.6.6",
+        "current": "0.6.7",
         "protocol": 1,
         "requires": {
-          "remote-agent": ">=0.22.0",
+          "remote-agent": ">=0.22.2",
           "identity": ">=0.120.0",
           "vault": ">=0.87.0",
           "proxy-client": ">=0.36.1"

@@ -58,7 +58,7 @@ test('sin el acta no se puede juzgar, y se dice', async () => {
   const e = await escenario()
   const papel = await e.papel()
   assert.equal((await verifySession(papel, {})).ok, false)
-  assert.match((await verifySession(papel, {})).reason, /^cadena:/)
+  assert.match((await verifySession(papel, {})).reason, /^chain:/)
   e.limpia()
 })
 
@@ -72,7 +72,7 @@ test('si al aparato lo quitan del acta, su sesión deja de valer', async () => {
   const despues = await e.id.sealerChain()
   const v = await verifySession(papel, { chain: despues })
   assert.equal(v.ok, false)
-  assert.equal(v.reason, 'aparato-no-es-del-perfil', 'y no hace falta avisar a nadie ni revocar el papel')
+  assert.equal(v.reason, 'device-not-in-profile', 'y no hace falta avisar a nadie ni revocar el papel')
   e.limpia()
 })
 
@@ -81,7 +81,7 @@ test('NUNCA amplía: si el aparato no puede guardar, su sesión tampoco', async 
   const papel = await e.papel({ scopes: ['id:whoami', 'vault:store'] })
   const v = await verifySession(papel, { chain: e.chain })
   assert.equal(v.ok, false)
-  assert.equal(v.reason, 'aparato-sin-store')
+  assert.equal(v.reason, 'device-lacks-store')
 
   // Lo que sí tiene, pasa.
   const minimo = await e.papel({ scopes: ['id:whoami'] })
@@ -97,7 +97,7 @@ test('y se comprueba contra el acta de HOY, no contra la de cuando se firmó', a
   await e.id.setCaps(e.aparato.publickey, ['sign', 'read'])   // le quitan `store`
   const v = await verifySession(papel, { chain: await e.id.sealerChain() })
   assert.equal(v.ok, false)
-  assert.equal(v.reason, 'aparato-sin-store')
+  assert.equal(v.reason, 'device-lacks-store')
   e.limpia()
 })
 
@@ -106,11 +106,11 @@ test('vence por reloj, que es la mitad del producto', async () => {
   const papel = await e.papel({ ttlMs: 60 * 60 * 1000 })
   assert.equal((await verifySession(papel, { chain: e.chain, now: papel.exp - 1 })).ok, true)
   const tarde = await verifySession(papel, { chain: e.chain, now: papel.exp })
-  assert.equal(tarde.reason, 'vencida')
+  assert.equal(tarde.reason, 'expired')
 
   // Y el tope lo comprueba quien recibe: un papel estirado a mano no vale.
   const estirado = { ...papel, exp: papel.iat + 30 * 24 * 3600 * 1000 }
-  assert.equal((await verifySession(estirado, { chain: e.chain })).reason, 'vigencia-excesiva')
+  assert.equal((await verifySession(estirado, { chain: e.chain })).reason, 'lifetime-too-long')
   e.limpia()
 })
 
@@ -119,7 +119,7 @@ test('un papel para una aplicación no vale en otra', async () => {
   const papel = await e.papel()
   assert.equal((await verifySession(papel, { chain: e.chain, origin: APP })).ok, true)
   const otra = await verifySession(papel, { chain: e.chain, origin: 'https://otra.dotrino.com' })
-  assert.equal(otra.reason, 'otro-origen')
+  assert.equal(otra.reason, 'other-origin')
   e.limpia()
 })
 
@@ -129,7 +129,7 @@ test('tocar el papel lo invalida', async () => {
   const falso = { ...papel, scopes: ['id:whoami', 'vault:store'] }
   const v = await verifySession(falso, { chain: e.chain })
   assert.equal(v.ok, false)
-  assert.equal(v.reason, 'firma-invalida')
+  assert.equal(v.reason, 'invalid-signature')
   e.limpia()
 })
 
@@ -144,12 +144,12 @@ test('la sesión firma con SU llave, y el papel dice hasta dónde', async () => 
   assert.equal(ok.profileId, (await e.id.profileActa())?.acta?.profileId)
 
   const fuera = await verifySessionSigned({ data: dato, signature, session: papel, chain: e.chain, scope: 'vault:store' })
-  assert.equal(fuera.reason, 'fuera-de-alcance', 'el papel no concedía guardar')
+  assert.equal(fuera.reason, 'out-of-scope', 'el papel no concedía guardar')
 
   // Y la firma de otro no cuela, aunque el papel sea bueno.
   const ajena = await signWithDevice({ privateJwk: e.aparato.privateJwk, data: dato })
   const mal = await verifySessionSigned({ data: dato, signature: ajena.signature, session: papel, chain: e.chain })
-  assert.equal(mal.reason, 'firma-invalida')
+  assert.equal(mal.reason, 'invalid-signature')
   e.limpia()
 })
 

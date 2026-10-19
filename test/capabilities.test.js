@@ -171,7 +171,7 @@ test('un papel de un acta MÁS NUEVA no se juzga; uno viejo sí vale', async () 
   // Mi acta va por detrás de la que nombra el papel.
   const atras = await verifyDelegation({ cert, ...ctx, actaSeq: cert.seq - 1, expectedScope: 'geo:publish' })
   assert.equal(atras.ok, false)
-  assert.equal(atras.reason, 'acta-vieja')
+  assert.equal(atras.reason, 'stale-record')
   // Mi acta va por delante: normal, y el papel sigue sirviendo.
   assert.equal((await verifyDelegation({ cert, ...ctx, actaSeq: cert.seq + 5, expectedScope: 'geo:publish' })).ok, true)
 })
@@ -247,7 +247,7 @@ test('un papel del modelo viejo ya no vale, ni vigente ni firmado por una sellad
   const { signature } = await signWithDevice({ privateJwk: boveda.privateJwk, publickey: boveda.publickey, data: c })
   const r = await verifyDelegation({ cert: { ...c, sig: signature }, ...acta, expectedSub: D.publickey })
   assert.equal(r.ok, false)
-  assert.equal(r.reason, 'legacy-cert-retirado')
+  assert.equal(r.reason, 'legacy-cert-retired')
 })
 
 /**

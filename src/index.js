@@ -387,7 +387,7 @@ export class Identity {
    * Une ESTE perfil a la cuenta de otro (la de una bóveda). No es adoptar una versión nueva
    * de la tuya: esta llave pasa a ser de OTRA cuenta y deja de tener la suya, así que solo
    * procede sobre un perfil creado con `{ forVault: true }`. Si no, devuelve
-   * `{ joined: false, reason: 'perfil-con-datos' }` y no escribe nada.
+   * `{ joined: false, reason: 'profile-has-data' }` y no escribe nada.
    */
   async joinProfile (acta) { return this._call('joinProfile', { acta }) }
   /** Marca este perfil como nacido para ADOPTAR la cuenta de otro (camino A). */

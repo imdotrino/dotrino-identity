@@ -53,7 +53,7 @@ test('la MISMA prueba NO vale ante otro servicio', async () => {
 
     const v = await verifyAssertion(a, { audience: GEO, nonce })
     assert.equal(v.ok, false)
-    assert.equal(v.reason, 'otro-destinatario')
+    assert.equal(v.reason, 'other-audience')
   })
 })
 
@@ -62,7 +62,7 @@ test('el reto ata la prueba a UNA petición', async () => {
     const a = await id.requestAssertion({ audience: PROXIO, nonce: newAssertionNonce() })
     const v = await verifyAssertion(a, { audience: PROXIO, nonce: newAssertionNonce() })
     assert.equal(v.ok, false)
-    assert.equal(v.reason, 'otro-reto')
+    assert.equal(v.reason, 'other-nonce')
   })
 })
 
@@ -88,10 +88,10 @@ test('vencida es vencida: el margen de reloj es para el arranque, no para el fin
 
     const tarde = await verifyAssertion(a, { audience: PROXIO, nonce, now: a.exp })
     assert.equal(tarde.ok, false)
-    assert.equal(tarde.reason, 'vencida')
+    assert.equal(tarde.reason, 'expired')
 
     const muyTarde = await verifyAssertion(a, { audience: PROXIO, nonce, now: a.exp + 10 * 60 * 1000 })
-    assert.equal(muyTarde.reason, 'vencida')
+    assert.equal(muyTarde.reason, 'expired')
   })
 })
 
@@ -105,7 +105,7 @@ test('una prueba del futuro se rechaza pasado el margen de reloj', async () => {
 
     const lejos = await verifyAssertion(a, { audience: PROXIO, nonce, now: a.iat - 5 * 60 * 1000 })
     assert.equal(lejos.ok, false)
-    assert.equal(lejos.reason, 'del-futuro')
+    assert.equal(lejos.reason, 'from-future')
   })
 })
 
@@ -121,7 +121,7 @@ test('la vigencia tiene tope, y lo comprueba TAMBIÉN quien recibe', async () =>
     const estirada = { ...a, exp: a.iat + 400 * 24 * 3600 * 1000 }
     const v = await verifyAssertion(estirada, { audience: PROXIO, nonce })
     assert.equal(v.ok, false)
-    assert.equal(v.reason, 'vigencia-excesiva')
+    assert.equal(v.reason, 'lifetime-too-long')
   })
 })
 
@@ -134,7 +134,7 @@ test('tocar el cuerpo invalida la firma', async () => {
     const falsa = { ...a, aud: GEO }
     const v = await verifyAssertion(falsa, { audience: GEO, nonce })
     assert.equal(v.ok, false)
-    assert.match(v.reason, /^firma:/)
+    assert.match(v.reason, /^signature:/)
   })
 })
 
@@ -147,7 +147,7 @@ test('una prueba no puede atribuirse a otro perfil', async () => {
     assert.equal(v.ok, false)
     // El cuerpo cambió, así que salta ya en la firma; y si alguien resellara el cuerpo con
     // SU llave, el `sub` seguiría sin coincidir con el perfil de la cadena.
-    assert.match(v.reason, /^firma:|^otro-sujeto$/)
+    assert.match(v.reason, /^signature:|^other-subject$/)
   })
 })
 
@@ -161,7 +161,7 @@ test('la cadena tiene que ser del perfil que se espera', async () => {
 
     const ajeno = await verifyAssertion(a, { audience: PROXIO, nonce, expectedProfileId: 'otro' })
     assert.equal(ajeno.ok, false)
-    assert.match(ajeno.reason, /^firma:cadena:/)
+    assert.match(ajeno.reason, /^signature:chain:/)
   })
 })
 
@@ -187,7 +187,7 @@ test('un dato colado sin su alcance se rechaza al verificar', async () => {
     const colada = { ...a, claims: { email: 'yo@ejemplo.com' } }
     const v = await verifyAssertion(colada, { audience: PROXIO, nonce })
     assert.equal(v.ok, false)
-    assert.equal(v.reason, 'claim-sin-alcance')
+    assert.equal(v.reason, 'claim-without-scope')
   })
 })
 
@@ -242,7 +242,7 @@ test('un pin firmado para geo no lo acepta reputación', async () => {
 
     const enOtro = await verifySignedFor({ data: pin, signature, publickey, chain, audience: 'https://rep.dotrino.com' })
     assert.equal(enOtro.ok, false)
-    assert.equal(enOtro.reason, 'otro-destinatario')
+    assert.equal(enOtro.reason, 'other-audience')
   })
 })
 
@@ -252,7 +252,7 @@ test('un sobre SIN destinatario no pasa por dirigido', async () => {
     const { signature, publickey, chain } = await id.signData(viejo)
     const v = await verifySignedFor({ data: viejo, signature, publickey, chain, audience: GEO })
     assert.equal(v.ok, false)
-    assert.equal(v.reason, 'sin-destinatario')
+    assert.equal(v.reason, 'no-aud')
   })
 })
 
@@ -264,7 +264,7 @@ test('el contenido dirigido NO necesita reto, pero sí respeta su propia caducid
 
     assert.equal((await verifySignedFor({ data: conFin, ...f, audience: GEO })).ok, true)
     const tarde = await verifySignedFor({ data: conFin, ...f, audience: GEO, now: iat + 61000 })
-    assert.equal(tarde.reason, 'vencida')
+    assert.equal(tarde.reason, 'expired')
 
     // Sin `exp` vale igual: la caducidad de lo publicado la lleva el servicio (el TTL del
     // pin), no este cuerpo.

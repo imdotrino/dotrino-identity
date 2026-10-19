@@ -111,16 +111,16 @@ test('adopción: nunca hacia atrás, ni sin encadenar, ni de un sellador no auto
 
   assert.equal((await canAdopt({ candidate: dos, current: g })).adopt, true)
   assert.equal((await canAdopt({ candidate: g, current: dos })).adopt, false, 'seq menor: jamás')
-  assert.equal((await canAdopt({ candidate: dos, current: dos })).reason, 'misma-acta')
+  assert.equal((await canAdopt({ candidate: dos, current: dos })).reason, 'same-record')
 
   // Un acta bien formada y bien firmada… pero por alguien que no es el master vigente.
   const falsa = await sealActa({ acta: { ...dos, seq: 3, prev: await actaHash(dos), sealedBy: intruso.pub }, privateJwk: intruso.privateJwk })
   assert.equal((await verifyActa({ acta: falsa })).ok, true, 'la firma cuadra con quien dice haberla sellado…')
-  assert.equal((await canAdopt({ candidate: falsa, current: dos })).reason, 'sellador-no-autorizado', '…pero ese no era el master')
+  assert.equal((await canAdopt({ candidate: falsa, current: dos })).reason, 'unauthorized-sealer', '…pero ese no era el master')
 
   // Contigua pero con `prev` que no corresponde.
   const rota = await sealActa({ acta: { ...dos, seq: 3, prev: 'a'.repeat(64) }, privateJwk: a.privateJwk })
-  assert.equal((await canAdopt({ candidate: rota, current: dos })).reason, 'no-encadena')
+  assert.equal((await canAdopt({ candidate: rota, current: dos })).reason, 'not-chained')
 })
 
 test('firma manipulada: el acta deja de verificar', async () => {
@@ -174,7 +174,7 @@ test('revocaciones: se apuntan y se podan solas al vencer', async () => {
   const dos = await step(g, [
     { op: 'admit', member: { pub: b.pub, caps: ['read'] } },
     { op: 'revoke', nonce: 'viva', until: Date.now() + 60000 },
-    { op: 'revoke', nonce: 'vencida', until: Date.now() - 60000 }
+    { op: 'revoke', nonce: 'expired', until: Date.now() - 60000 }
   ], a)
   assert.deepEqual(dos.revoked.map((r) => r.nonce), ['viva'])
 })
@@ -460,7 +460,7 @@ test('encPub: se valida la FORMA, y se acepta que falte', async () => {
   // sellarle nada, y el fallo saldría mucho después, al intentarlo.
   for (const malo of ['no-es-json', JSON.stringify({ kty: 'RSA' }), JSON.stringify({ kty: 'EC', crv: 'P-384', x: 'a', y: 'b' })]) {
     const roto = { ...conLlave, members: conLlave.members.map((m) => (m.pub === b.pub ? { ...m, encPub: malo } : m)) }
-    assert.equal(checkShape(roto), 'encpub-invalido', `deberia rechazar: ${malo}`)
+    assert.equal(checkShape(roto), 'invalid-encpub', `deberia rechazar: ${malo}`)
   }
 })
 

@@ -71,7 +71,7 @@ test('al RENOVAR con B vale un acta que selló A después: las dos sellan la mis
   assert.deepEqual(await checkVaultReply({ acta: actual, cert: renovado, vault: B.publickey, sub: tel.publickey }), { ok: true })
   // Al enrolar, en cambio, el acta tiene que ser la que esa bóveda acaba de sellar.
   const r = await checkVaultReply({ acta: actual, cert: renovado, vault: B.publickey, sub: tel.publickey, justSealed: true })
-  assert.equal(r.reason, 'acta-de-otra-selladora')
+  assert.equal(r.reason, 'record-from-other-sealer')
 })
 
 test('una bóveda que NO puede sellar esa cuenta no sirve para entrar', async () => {
@@ -79,7 +79,7 @@ test('una bóveda que NO puede sellar esa cuenta no sirve para entrar', async ()
   const tel = await makeDeviceKey()
   const cert = await papel(B, tel.publickey, acta.seq)
   const r = await checkVaultReply({ acta, cert, vault: B.publickey, sub: tel.publickey })
-  assert.equal(r.reason, 'boveda-no-sella')
+  assert.equal(r.reason, 'vault-not-sealer')
 })
 
 test('UN ACTA AJENA que nombra selladora a tu bóveda no sirve: no la selló ella ni firmó el papel', async () => {
@@ -97,9 +97,9 @@ test('UN ACTA AJENA que nombra selladora a tu bóveda no sirve: no la selló ell
   const cert = await papel(X, tel.publickey, falsa.seq)
 
   const alEnrolar = await checkVaultReply({ acta: falsa, cert, vault: A.publickey, sub: tel.publickey, justSealed: true })
-  assert.equal(alEnrolar.reason, 'acta-de-otra-selladora')
+  assert.equal(alEnrolar.reason, 'record-from-other-sealer')
   const alRenovar = await checkVaultReply({ acta: falsa, cert, vault: A.publickey, sub: tel.publickey })
-  assert.equal(alRenovar.reason, 'papel-de-otra-llave', 'y el papel no lo puede firmar nadie más que A')
+  assert.equal(alRenovar.reason, 'cert-from-other-key', 'y el papel no lo puede firmar nadie más que A')
 })
 
 test('un papel que no firmó la bóveda con la que hablas no pasa, aunque lo firme otra selladora', async () => {
@@ -108,7 +108,7 @@ test('un papel que no firmó la bóveda con la que hablas no pasa, aunque lo fir
   const r = await admitir(acta, B, tel)
   const deA = await papel(A, tel.publickey, r.acta.seq)
   const chk = await checkVaultReply({ acta: r.acta, cert: deA, vault: B.publickey, sub: tel.publickey, justSealed: true })
-  assert.equal(chk.reason, 'papel-de-otra-llave')
+  assert.equal(chk.reason, 'cert-from-other-key')
 })
 
 test('un papel para OTRA llave no pasa', async () => {
@@ -117,14 +117,14 @@ test('un papel para OTRA llave no pasa', async () => {
   const otro = await makeDeviceKey()
   const r = await admitir(acta, A, tel)
   const chk = await checkVaultReply({ acta: r.acta, cert: await papel(A, otro.publickey, r.acta.seq), vault: A.publickey, sub: tel.publickey, justSealed: true })
-  assert.equal(chk.reason, 'papel:sub')
+  assert.equal(chk.reason, 'cert:sub')
 })
 
 test('sin acta, sin bóveda o sin llave del aparato se PARA, no se da por bueno', async () => {
   const { A, acta } = await cuenta()
   const tel = await makeDeviceKey()
   const r = await admitir(acta, A, tel)
-  assert.equal((await checkVaultReply({ cert: r.cert, vault: A.publickey, sub: tel.publickey })).reason, 'sin-acta')
-  assert.equal((await checkVaultReply({ ...r, sub: tel.publickey })).reason, 'sin-boveda')
-  assert.equal((await checkVaultReply({ ...r, vault: A.publickey })).reason, 'sin-llave-del-aparato')
+  assert.equal((await checkVaultReply({ cert: r.cert, vault: A.publickey, sub: tel.publickey })).reason, 'no-record')
+  assert.equal((await checkVaultReply({ ...r, sub: tel.publickey })).reason, 'no-vault-key')
+  assert.equal((await checkVaultReply({ ...r, vault: A.publickey })).reason, 'no-device-key')
 })

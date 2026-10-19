@@ -408,7 +408,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    */
   async function sealMasterKey () {
     const raw = kv.getItem(KEY_STORAGE)
-    if (!raw || !keyLock?.seal) return { ok: false, reason: 'sin-candado' }
+    if (!raw || !keyLock?.seal) return { ok: false, reason: 'no-lock' }
     const guardado = JSON.parse(raw)
     if (guardado.sealed) return { ok: true, already: true }
     await guardarPar(KEY_STORAGE, guardado.privateJwk, guardado.publicJwk)
@@ -1253,7 +1253,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * La plaza que quede abierta allí se cierra desde la consola, y así está dicho en el diseño.
    */
   async function closeLoginOn (meta) {
-    if (!meta?.user || !meta?.sid) return { ok: false, reason: 'sin-inicio-de-sesion' }
+    if (!meta?.user || !meta?.sid) return { ok: false, reason: 'no-login' }
     let client = null
     try {
       const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
@@ -1292,9 +1292,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    */
   async function joinProfile (candidate) {
     const v = await Acta.verifyActa({ acta: candidate })
-    if (!v.ok) return { joined: false, reason: 'acta-invalida:' + v.reason }
+    if (!v.ok) return { joined: false, reason: 'invalid-record:' + v.reason }
     if (!candidate.members.some((m) => m.pub === publickeyJwkStr)) {
-      return { joined: false, reason: 'no-soy-miembro' }
+      return { joined: false, reason: 'not-a-member' }
     }
     const current = loadActa()
 
@@ -1307,7 +1307,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     if (current && !isPendingJoin()) {
       return {
         joined: false,
-        reason: 'perfil-con-datos',
+        reason: 'profile-has-data',
         profileId: current.profileId,
         seq: current.seq,
         members: current.members.length
@@ -1347,7 +1347,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
     kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
     // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
-    const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'sin-acta' }
+    const unido = res.acta ? await joinProfile(res.acta) : { joined: false, reason: 'no-record' }
     emitVault({ phase: 'paired', deviceId: res.deviceId, master: res.master, join: unido })
     // LA LLAVE ES DEL CHIP DEL TELÉFONO (app de Android): la app guarda la cuenta para su
     // pantalla nativa de Pedidos, con el MISMO papel. Así el teléfono es un solo aparato en
@@ -1380,7 +1380,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const r = await adoptActa(a)
       if (r.adopted) last = r
     }
-    return last || { adopted: false, reason: 'nada-que-adoptar', seq: loadActa()?.seq ?? null }
+    return last || { adopted: false, reason: 'nothing-to-adopt', seq: loadActa()?.seq ?? null }
   }
 
   /**
@@ -1416,7 +1416,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // Ya no hay ventana de caducidad: el papel no vence. Lo único que obliga a pedir uno
   // nuevo es que el ACTA diga algo distinto de lo que lleva escrito.
   /** Rechazos de la bóveda que se arreglan con un papel nuevo (el mismo juego que la app nativa). */
-  const PAPER_REASONS = new Set(['scope', 'acta-vieja', 'untrusted-issuer', 'expired', 'legacy-cert-retirado', 'no-acta'])
+  const PAPER_REASONS = new Set(['scope', 'stale-record', 'untrusted-issuer', 'expired', 'legacy-cert-retired', 'no-acta'])
   const RENEW_RETRY_MS = 60 * 60 * 1000 // si falla (vault apagado), no insistir >1 vez/hora
   let renewLastTry = 0
   /**
@@ -2328,7 +2328,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // selladora de ESTE perfil, mirando ESTA acta, avaló esta llave», y sin acta no se
       // puede decir ninguna de las dos cosas.
       const acta = loadActa()
-      if (!acta) throw Object.assign(new Error('this profile has no record to issue against'), { code: 'sin-acta' })
+      if (!acta) throw Object.assign(new Error('this profile has no record to issue against'), { code: 'no-record' })
       // `iss` se FUERZA a la propia maestra: el usuario no puede emitir cert para otro emisor.
       const cert = await signDelegationWith(masterKey(), publickeyJwkStr, { sub, scope, iat, seq: acta.seq, nonce: nonce || crypto.randomUUID() })
       const store = loadDelegations()
@@ -3024,11 +3024,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // La bóveda devuelve el acta ya sellada por ella (y con los certs re-emitidos): se
       // adopta por las reglas de siempre (§2.4.1) — encaja porque el sellador es el que
       // este mismo aparato nombró hace un momento.
-      // `misma-acta` = la bóveda guardó exactamente la que este aparato acababa de sellar
+      // `same-record` = la bóveda guardó exactamente la que este aparato acababa de sellar
       // y no la cambió. No hay nada que adoptar, y es justo lo que se esperaba: el
       // traspaso ya iba dentro de esa acta.
       const r = await adoptActa(res.acta)
-      const ok = r.adopted || r.reason === 'misma-acta'
+      const ok = r.adopted || r.reason === 'same-record'
       emitVault({ phase: 'adopted', master: res.master, seq: res.acta?.seq, ok })
       if (!ok) throw new Error('the vault returned a record that does not fit: ' + r.reason)
       return { ok: true, adopted: true, profileId: mine.profileId, seq: r.seq ?? res.acta?.seq, master: res.master, deviceId: res.deviceId }
