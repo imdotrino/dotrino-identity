@@ -192,7 +192,15 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   // aprobaciones, consola remota, inicios de sesión. Solo UN iframe por origin es el activo
   // (navigator.locks): la pestaña VISIBLE sostiene el lock; al pasar a background lo
   // libera y otra pestaña visible lo toma. Así varias apps abiertas no compiten.
+  // EL INTERRUPTOR ES DE UN PERFIL: guarda el `pid` cuya bóveda corre este navegador. Era un
+  // «1» global y la pestaña arrancaba la bóveda de la cuenta que tuviera abierta, aunque fuera
+  // una entrada con contraseña que no sella nada (2026-10-19). El «1» viejo se lee como apagado:
+  // se vuelve a encender una vez desde la consola.
   const SELF_FLAG = 'dotrino.self-vault.enabled' // persistido en localStorage (kv)
+  const selfEnabled = async () => {
+    const { id } = await handlers.currentProfile()
+    return !!id && kv.getItem(SELF_FLAG) === id
+  }
   const SELF_LOCK = 'dotrino-self-vault'
   /**
    * Proxio del mostrador, SOLO en localhost (`?proxy=ws://…` en la URL de este iframe).
@@ -211,6 +219,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     } catch (_) { return null }
   })()
   let daemon = null           // la bóveda (`startBrowserVault`) cuando ESTE iframe es el activo
+  let daemonError = null      // por qué no arrancó (`{ code, message }`), para enseñarlo
   let _lockResolver = null    // resolver del callback del lock (libera al resolverlo)
 
   // La dirección `nombre@AB12-CD34-EF56` sale del acta de la cuenta.
@@ -238,15 +247,21 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       // disco en IndexedDB. Import dinámico: el iframe lo cargan las ~30 apps y solo esta
       // pestaña es bóveda; además aísla un fallo del vendor del arranque de la identidad.
       const { startBrowserVault } = await import('@dotrino/vault/browser')
+      daemonError = null
       daemon = await startBrowserVault({
         core,
         ...(selfProxyUrl ? { proxyUrl: selfProxyUrl } : {}),
         legacyLogins,
         onPendingChange: () => broadcast('selfVault', { pending: daemon ? daemon.listPending() : [] }),
+        onStopped: (e) => { daemon = null; daemonError = { code: e?.code || null, message: e?.message || String(e) }; broadcast('selfVault', { running: false, error: daemonError.message }) },
         log: (...a) => console.log(...a)
       })
       broadcast('selfVault', { running: true })
-    } catch (e) { daemon = null; broadcast('selfVault', { error: e?.message || String(e) }) }
+    } catch (e) {
+      daemon = null
+      daemonError = { code: e?.code || null, message: e?.message || String(e) }
+      broadcast('selfVault', { error: daemonError.message })
+    }
   }
   function stopSelfDaemon () {
     if (!daemon) return
@@ -256,9 +271,9 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   }
 
   // Adquiere el lock solo si el modo self está activado Y la pestaña es visible.
-  function holdSelfLock () {
+  async function holdSelfLock () {
     if (!navigator.locks) return
-    if (kv.getItem(SELF_FLAG) !== '1' || document.visibilityState !== 'visible') return
+    if (!(await selfEnabled()) || document.visibilityState !== 'visible') return
     navigator.locks.request(SELF_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
       if (!lock) return // otra pestaña visible lo tiene
       await startSelfDaemon()
@@ -309,7 +324,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     // hacer RPC al daemon del PC: somos nuestra propia maestra. Así ia/terminal listan
     // agentes siempre, sin depender de qué pestaña sostenga el lock del daemon.
     listVaultDevices: async () => {
-      if (kv.getItem(SELF_FLAG) !== '1') return handlers.listVaultDevices({})
+      if (!(await selfEnabled())) return handlers.listVaultDevices({})
       // Con la bóveda encendida en ESTA pestaña, la lista sale de ella (por el camino
       // local): trae lo mismo que la del binario. Sin ella encendida, se lee lo guardado.
       if (daemon) return handlers.listVaultDevices({})
@@ -327,9 +342,11 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       })))
       return { devices, revoked: (revoked || []).map((r) => r.nonce || r) }
     },
-    selfVaultStatus: async () => ({ enabled: kv.getItem(SELF_FLAG) === '1', running: !!daemon }),
+    selfVaultStatus: async () => ({ enabled: await selfEnabled(), running: !!daemon, error: daemon ? null : daemonError }),
     setSelfVault: async ({ enabled }) => {
-      kv.setItem(SELF_FLAG, enabled ? '1' : '0')
+      const { id } = await handlers.currentProfile()
+      if (enabled && !id) throw Object.assign(new Error('no profile: the vault belongs to an account'), { code: 'no-profile' })
+      if (enabled) kv.setItem(SELF_FLAG, id); else kv.removeItem(SELF_FLAG)
       if (enabled) holdSelfLock(); else releaseSelfLock()
       return { ok: true, enabled: !!enabled }
     },

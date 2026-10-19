@@ -1384,11 +1384,18 @@ export class WebSocketProxyClient {
    * `channel` (opcional): el canal donde la buscan quienes no saben su llave —quien entra con
    * usuario y contraseña—. Listarlo vacío también la despierta (`list()` devuelve `waking`).
    *
-   * @param {{ publicKey:string, sign:Function, url:string, acta:object, channel?:string }} opts
+   * `self` (websocket-proxy ≥ 1.8.0): el timbre es de ESTA llave y no de la cuenta. Lo usa una
+   * réplica que vive en una función: se identifica con su llave, y es a ella a la que le
+   * escribe un servicio cuando la bóveda no contesta. Un proxio que no anuncia `wake-self` lo
+   * guardaría para la cuenta y le quitaría el timbre a la bóveda, así que ahí no se manda.
+   *
+   * @param {{ publicKey:string, sign:Function, url:string, acta:object, channel?:string, self?:boolean }} opts
    */
-  async registerWake ({ publicKey, sign, url, acta, channel } = {}) {
+  async registerWake ({ publicKey, sign, url, acta, channel, self = false } = {}) {
     if (!publicKey || typeof sign !== 'function' || !url || !acta) throw errorWithCode('registerWake requires { publicKey, sign, url, acta }', 'bad-args')
-    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind: 'wake', url, ...(channel ? { channel } : {}) }), ts: Date.now() }
+    if (self && channel) throw errorWithCode('registerWake: a self wake has no channel', 'bad-args')
+    if (self && !(Array.isArray(this.caps) && this.caps.includes('wake-self'))) throw errorWithCode('registerWake: this proxy does not support a wake for the device key (needs websocket-proxy >= 1.8.0)', 'no-wake-self-support')
+    const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind: 'wake', url, ...(channel ? { channel } : {}), ...(self ? { self: true } : {}) }), ts: Date.now() }
     const signature = await normalizeSignature(sign, data)
     const r = await this._request({ type: 'push-subscribe', data, signature, acta }, 'push-subscribed')
     return { kind: 'wake', url, profile: r?.publickey || null }

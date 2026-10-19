@@ -38,6 +38,7 @@ const SELF_CERT_EVERY_MS = 60_000
  *   antes de correr el núcleo (`{ state, drop }` o `null`). Se traen UNA vez.
  * @param {Function} [opts.onPendingChange]  un aparato espera aprobación, o dejó de esperar
  * @param {Function} [opts.onAdopted]
+ * @param {Function} [opts.onStopped]  `(error)`: la bóveda se paró sola (la cuenta de la pestaña cambió)
  * @param {Function} [opts.log]
  * @param {object} [opts.opaque]  el servidor de OPAQUE, si el del paquete no se puede cargar aquí
  *   (la extensión: su CSP no deja WASM en la página de la bóveda).
@@ -46,12 +47,18 @@ const SELF_CERT_EVERY_MS = 60_000
  * @param {Function} [opts.openDisk]  `(name) => disk`. Solo para las pruebas (Node no tiene
  *   IndexedDB); por defecto, `openBrowserDisk`.
  */
-export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeClient = null, legacyLogins = null, onPendingChange = () => {}, onAdopted = () => {}, log = console.log, openDisk = openBrowserDisk, opaque = null, servePasswords = true } = {}) {
+export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeClient = null, legacyLogins = null, onPendingChange = () => {}, onAdopted = () => {}, onStopped = () => {}, log = console.log, openDisk = openBrowserDisk, opaque = null, servePasswords = true } = {}) {
   if (!core?.handlers) throw Object.assign(new Error('startBrowserVault: the identity core is required'), { code: 'no-identity' })
   const identity = new IdentityFacade(core)
   if (!identity.me?.publickey) throw Object.assign(new Error('no identity: create or unlock your profile before using this browser as a vault'), { code: 'no-identity' })
   const { id: pid } = await identity.currentProfile()
   if (!pid) throw Object.assign(new Error('no profile: the vault belongs to an account'), { code: 'no-profile' })
+  // UNA BÓVEDA QUE NO PUEDE SELLAR SU ACTA NO ES UNA BÓVEDA. Arrancaba igual —un aparato
+  // entrado con usuario y contraseña es miembro, no selladora— y el fallo salía después, al
+  // aprobar a alguien («not the master, nor a co-sealer»), con el código ya en pantalla.
+  const info = await identity.profileActa()
+  if (!info?.acta) throw Object.assign(new Error('this account has no record yet: open the profile first'), { code: 'no-record' })
+  if (!info.isMaster) throw Object.assign(new Error('this browser cannot be the vault of the account open here: its key does not seal the account record'), { code: 'not-sealer' })
 
   const disk = await openDisk(`dotrino-vault.${pid}`)
 
@@ -95,6 +102,15 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
   // perfil firmándose a sí misma con lo que el acta le deja hoy. Se rehace cada minuto
   // porque el acta cambia (un permiso que te quitas, un sellado nuevo).
   const master = identity.me.publickey
+  // LA BÓVEDA ES DE UNA CUENTA. Si en esta pestaña se abre otra (crear perfil, entrar con
+  // contraseña), la identidad cambia por debajo y la bóveda firmaría como la nueva con el
+  // disco de la vieja: se para antes de firmar nada.
+  const sameAccount = async () => {
+    const { id } = await identity.currentProfile()
+    if (id !== pid || identity.me?.publickey !== master) {
+      throw Object.assign(new Error('the account open in this tab changed: this vault was started for another one; reload the tab'), { code: 'profile-changed' })
+    }
+  }
   const selfCert = async () => {
     const acta = (await identity.profileActa().catch(() => null))?.acta || null
     if (!acta) return null
@@ -119,15 +135,36 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     log('[vault] this browser administers the account: admin added to its own key')
   }
   const open = (onReply) => vault.localChannel(onReply)
+  let stopped = false
+  let refresh = null
+  const shutdown = async () => {
+    if (stopped) return
+    stopped = true
+    clearInterval(refresh)
+    try { core.setSelfVault?.(null) } catch (_) {}
+    vault.close()
+    try { await disk.flush() } catch (e) { log('[vault] some changes could not be saved: ' + (e?.message || e)) }
+    disk.close()
+  }
   const present = async () => {
+    if (stopped) return
     try {
+      await sameAccount()
       await ensureAdmin()
       const cert = await selfCert()
       core.setSelfVault?.(cert ? { cert, proxy: proxyUrl, open } : null)
-    } catch (e) { log('[vault] the console in this browser cannot administer this vault yet: ' + (e?.message || e)) }
+    } catch (e) {
+      if (e?.code === 'profile-changed') {
+        log('[vault] ' + e.message)
+        await shutdown()
+        try { onStopped(e) } catch (_) {}
+        return
+      }
+      log('[vault] the console in this browser cannot administer this vault yet: ' + (e?.message || e))
+    }
   }
   await present()
-  const refresh = setInterval(present, SELF_CERT_EVERY_MS)
+  if (!stopped) refresh = setInterval(present, SELF_CERT_EVERY_MS)
 
   return {
     ...vault,
@@ -135,7 +172,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     proxy: proxyUrl,
     disk,
     /** Aprueba TIPEANDO el código que muestra el aparato (el núcleo comprueba el compromiso). */
-    approve: async (_deviceId, code) => { try { return await vault.approveDevice(code) } finally { notify() } },
+    approve: async (_deviceId, code) => { try { await sameAccount(); return await vault.approveDevice(code) } finally { notify() } },
     reject: (deviceId) => { try { return vault.rejectDevice(deviceId) } finally { notify() } },
     /**
      * Las máquinas con papel de firma de esta cuenta (excluye los navegadores enrolados con
@@ -154,13 +191,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     },
     revokeDevice: (sub) => vault.revokeDevice({ sub }),
     revoke: (nonce) => vault.revokeDevice(nonce),
-    async close () {
-      clearInterval(refresh)
-      try { core.setSelfVault?.(null) } catch (_) {}
-      vault.close()
-      try { await disk.flush() } catch (e) { log('[vault] some changes could not be saved: ' + (e?.message || e)) }
-      disk.close()
-    }
+    close: shutdown
   }
 }
 

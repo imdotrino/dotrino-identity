@@ -370,7 +370,13 @@ export function createEnrollDesk ({
     // llegue el acta sellada, que es la que este dispositivo dijo que iba a entregar.
     if (intent === 'adopt' && typeof d.profileId === 'string') pend.profileId = d.profileId
 
-    await tell(from, { type: MSG_ENROLL_CHALLENGE, deviceId }, pend.sn)
+    // DE QUÉ CUENTA ES ESTA BÓVEDA, demostrable: la cadena de selladoras (su raíz la firma la
+    // llave del perfil). Va DENTRO del reto firmado para que el aparato pueda negarse a entrar
+    // en otra cuenta ANTES de enseñar su código —la réplica que se pagó para una cuenta, por
+    // ejemplo— en vez de descubrirlo cuando ya lo aprobaron. Quien no la mira, no la necesita.
+    let chain = null
+    try { chain = (await identity.sealerChain?.()) || null } catch (e) { log('[vault] could not build the sealer chain for the challenge:', e.message) }
+    await tell(from, { type: MSG_ENROLL_CHALLENGE, deviceId, chain }, pend.sn)
     fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', machine: pend.machine || null, mode: pend.mode || 'join' })
     fire(onPendingChange)
     return { deviceId }

@@ -254,3 +254,27 @@ test('el OPAQUE servido instancia su WASM y hace un intercambio entero', async (
   server.loginFinish({ state: b.state, finalization: f.finalization })
   assert.equal(f.exportKey, fin.exportKey, 'la misma contraseña da la misma llave')
 })
+
+/**
+ * UNA BÓVEDA QUE NO SELLA SU ACTA NO ARRANCA (2026-10-19). Una pestaña con una cuenta entrada
+ * con usuario y contraseña —miembro, no selladora— arrancaba la bóveda igual, y el fallo salía
+ * al aprobar a alguien, con el código ya en pantalla.
+ */
+test('la bóveda de la pestaña no arranca si su llave no sella el acta', async () => {
+  const core = await nucleo()
+  const real = core.handlers.profileActa
+  core.handlers.profileActa = async (a) => ({ ...(await real(a)), isMaster: false })
+  await assert.rejects(bovedaPestana(core, { makeClient: clienteMudo }), (e) => e.code === 'not-sealer')
+})
+
+/**
+ * LA BÓVEDA ES DE UNA CUENTA. Si en la pestaña se abre otra con la bóveda en marcha, no firma
+ * nada como la nueva con el disco de la vieja: se para y lo dice.
+ */
+test('la bóveda de la pestaña se niega a aprobar si cambió la cuenta abierta', async (t) => {
+  const core = await nucleo()
+  const handle = await bovedaPestana(core, { makeClient: clienteMudo })
+  t.after(() => handle.close())
+  await core.handlers.createProfile({ name: 'otra' })
+  await assert.rejects(handle.approve('AB12-CD34', '123456'), (e) => e.code === 'profile-changed')
+})

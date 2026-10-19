@@ -8,7 +8,7 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 36,
+    "seq": 37,
     "issued": "2026-10-18",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
@@ -109,7 +109,7 @@ export const MANIFESTS = Object.freeze({
       },
       "proxy": {
         "repo": "imdotrino/dotrino-proxy",
-        "current": "1.7.0",
+        "current": "1.8.0",
         "protocol": 2,
         "requires": {
           "vault": ">=0.87.0",
@@ -121,7 +121,7 @@ export const MANIFESTS = Object.freeze({
       "proxy-client": {
         "repo": "imdotrino/dotrino-proxy-client",
         "npm": "@dotrino/proxy-client",
-        "current": "0.38.4",
+        "current": "0.39.0",
         "protocol": 2,
         "requires": {
           "identity": ">=0.53.0",
@@ -155,7 +155,7 @@ export const MANIFESTS = Object.freeze({
       },
       "terminal-ios": {
         "repo": "imdotrino/dotrino-terminal",
-        "current": "0.13.2",
+        "current": "0.13.7",
         "protocol": 1,
         "requires": {
           "terminal-agent": ">=0.37.0"
@@ -163,7 +163,7 @@ export const MANIFESTS = Object.freeze({
       },
       "terminal-android": {
         "repo": "imdotrino/dotrino-terminal",
-        "current": "0.13.4",
+        "current": "0.13.7",
         "protocol": 1,
         "requires": {
           "terminal-agent": ">=0.37.0"
@@ -171,7 +171,7 @@ export const MANIFESTS = Object.freeze({
       },
       "terminal-desktop": {
         "repo": "imdotrino/dotrino-terminal",
-        "current": "0.2.77",
+        "current": "0.2.80",
         "protocol": 1,
         "requires": {
           "terminal-agent": ">=0.37.0"
@@ -253,11 +253,11 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.93.1",
+        "current": "0.94.0",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
-          "proxy-client": ">=0.38.0",
+          "proxy-client": ">=0.39.0",
           "identity": ">=0.118.0",
           "opaque": ">=0.1.0",
           "compat": ">=0.4.0",
@@ -269,11 +269,11 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.165.1",
+        "current": "0.166.2",
         "protocol": 1,
         "requires": {
           "identity": ">=0.118.0",
-          "proxy-client": ">=0.38.0",
+          "proxy-client": ">=0.39.0",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.4",
           "compat": ">=0.4.0",
@@ -332,7 +332,7 @@ export const MANIFESTS = Object.freeze({
       },
       "app": {
         "repo": "imdotrino/dotrino-app",
-        "current": "0.4.22",
+        "current": "0.4.24",
         "protocol": 1,
         "requires": {
           "proxy": "1.4.7+",
@@ -342,7 +342,7 @@ export const MANIFESTS = Object.freeze({
       },
       "app-ios": {
         "repo": "imdotrino/dotrino-app",
-        "current": "0.4.13",
+        "current": "0.4.14",
         "protocol": 1,
         "requires": {
           "proxy": "1.4.7+",
@@ -364,13 +364,14 @@ export const MANIFESTS = Object.freeze({
       "accounts": {
         "repo": "imdotrino/dotrino-accounts",
         "npm": null,
-        "current": "0.1.0",
+        "current": "0.3.2",
         "protocol": 1,
         "requires": {
           "identity": ">=0.116.0",
           "remote-agent": ">=0.19.0",
-          "vault": ">=0.93.1",
-          "pay": ">=0.1.0"
+          "vault": ">=0.94.0",
+          "pay": ">=0.2.0",
+          "vaultd": ">=0.166.2"
         }
       },
       "ai": {
@@ -383,7 +384,7 @@ export const MANIFESTS = Object.freeze({
       "pay": {
         "repo": "imdotrino/dotrino-pay",
         "npm": "@dotrino/pay",
-        "current": "0.1.0",
+        "current": "0.2.0",
         "protocol": 1,
         "requires": {}
       }
