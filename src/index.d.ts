@@ -312,6 +312,7 @@ export function assertionBody (args: { sub: string; aud: string; nonce: string; 
 export function verifyAssertion (assertion: Assertion, opts: { audience: string; nonce: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<VerifiedAssertion>
 /** ¿Este contenido firmado (un pin, una atestación) va dirigido a mí? `aud` obligatorio; `exp` opcional. */
 export function verifySignedFor (args: { data: any; signature: string; publickey: string; chain: any[]; audience: string; expectedProfileId?: string | null; now?: number; maxSkewMs?: number }): Promise<{ ok: boolean; reason?: string; profileId?: string; signer?: string; seq?: number; aud?: string }>
+export function signedFor (identity: { signData: (d: object) => Promise<{ signature: string; publickey: string; chain?: any[] }> }, opts: { aud: string; fields?: object; ttlMs?: number; now?: number }): Promise<{ body: Record<string, any>; signature: string; publickey: string; chain: any[] }>
 
 // ----- Sesiones: entrar sin enrolar (`@dotrino/identity/session`) -----
 

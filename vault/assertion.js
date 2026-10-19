@@ -215,4 +215,28 @@ export async function verifySignedFor (args = {}) {
   return { ok: true, profileId: v.profileId, signer: v.signer, seq: v.seq, aud: data.aud }
 }
 
-export default { ASSERTION_V, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS, SCOPES, SCOPE_CLAIMS, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, verifyAssertion, verifySignedFor }
+/**
+ * LA OTRA MITAD DE `verifySignedFor`: firma una petición dirigida a un servicio (`aud`) con el
+ * perfil activo, lista para mandarla. Es lo que usan las páginas que hablan con un servicio de
+ * la cuenta sin sesiones ni cookies (el directorio de nombres, las cuentas de la bóveda
+ * alojada): cada petición lleva su firma, la llave del aparato y la cadena de selladores que
+ * prueba que ese aparato habla por la cuenta. Una vez aquí, y no copiado en cada página.
+ *
+ *   const req = await signedFor(identity, { aud: 'https://accounts.dotrino.com', fields: { v: 1, op: 'mine' } })
+ *   → { body: { aud, iat, exp, nonce, v, op }, signature, publickey, chain }
+ *
+ * Sin cadena no hay petición: el servicio no podría saber de qué cuenta es, y mandarla igual
+ * sería mandar algo que va a rechazar. Se para con `no-chain`.
+ *
+ * @param {{ signData: (d: object) => Promise<{ signature: string, publickey: string, chain?: any[] }> }} identity
+ * @param {{ aud: string, fields?: object, ttlMs?: number, now?: number }} opts
+ */
+export async function signedFor (identity, { aud, fields = {}, ttlMs = 24 * 60 * 60 * 1000, now = Date.now() } = {}) {
+  if (typeof aud !== 'string' || !aud.trim()) throw Object.assign(new Error('signedFor: aud is required'), { code: 'no-audience' })
+  const body = { aud: aud.trim(), iat: now, exp: now + ttlMs, nonce: crypto.randomUUID(), ...fields }
+  const s = await identity.signData(body)
+  if (!Array.isArray(s?.chain) || !s.chain.length) throw Object.assign(new Error('this device cannot prove it belongs to the account'), { code: 'no-chain' })
+  return { body, signature: s.signature, publickey: s.publickey, chain: s.chain }
+}
+
+export default { ASSERTION_V, ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS, ASSERTION_MAX_SKEW_MS, SCOPES, SCOPE_CLAIMS, newAssertionNonce, cleanScopes, claimsAllowed, assertionBody, verifyAssertion, verifySignedFor, signedFor }

@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Identity } from '../src/node.js'
 import {
-  verifyAssertion, verifySignedFor, newAssertionNonce, assertionBody, cleanScopes, claimsAllowed,
+  verifyAssertion, verifySignedFor, signedFor, newAssertionNonce, assertionBody, cleanScopes, claimsAllowed,
   ASSERTION_MAX_TTL_MS, ASSERTION_DEFAULT_TTL_MS
 } from '../vault/assertion.js'
 
@@ -281,4 +281,25 @@ test('dirigido: sin decir quién eres no se puede juzgar', async () => {
     assert.equal((await verifySignedFor({ data: pin, ...f })).reason, 'no-audience')
     assert.equal((await verifySignedFor({})).reason, 'no-audience')
   })
+})
+
+// ----- signedFor: la otra mitad, la petición firmada lista para mandar -----
+
+test('signedFor firma una petición que verifySignedFor acepta ante su destinatario, y solo ante él', async () => {
+  await conIdentidad(async (id) => {
+    const req = await signedFor(id, { aud: GEO, fields: { v: 1, op: 'mine' } })
+    assert.equal(req.body.aud, GEO)
+    assert.equal(req.body.op, 'mine')
+    assert.ok(req.body.exp > req.body.iat)
+    assert.equal(typeof req.body.nonce, 'string')
+    const ok = await verifySignedFor({ data: req.body, signature: req.signature, publickey: req.publickey, chain: req.chain, audience: GEO })
+    assert.equal(ok.ok, true, ok.reason)
+    const otro = await verifySignedFor({ data: req.body, signature: req.signature, publickey: req.publickey, chain: req.chain, audience: PROXIO })
+    assert.equal(otro.reason, 'other-audience')
+  })
+})
+
+test('signedFor sin destinatario o sin cadena no firma nada', async () => {
+  await assert.rejects(signedFor({ signData: async () => ({}) }, { aud: '' }), { code: 'no-audience' })
+  await assert.rejects(signedFor({ signData: async () => ({ signature: 's', publickey: 'p', chain: [] }) }, { aud: GEO }), { code: 'no-chain' })
 })
