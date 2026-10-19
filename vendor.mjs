@@ -161,7 +161,7 @@ async function main () {
     if (!siblingPath(v.from)) {
       // Sin el repo hermano no hay de dónde copiar. Se para y se dice: dejar la copia
       // vieja «porque no estaba la fuente» es exactamente el fallo que esto evita.
-      console.error(`falta el repo hermano ${v.repo}/ — clónalo al lado y vuelve a correr`)
+      console.error(`missing sibling repo ${v.repo}/ — clone it next to this one and run again`)
       process.exitCode = 1
       continue
     }
