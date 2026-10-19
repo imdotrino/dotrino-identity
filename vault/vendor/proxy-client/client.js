@@ -50,7 +50,7 @@ const APP_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 function checkApp (app) {
   if (app == null) return null
   if (typeof app !== 'string' || !APP_RE.test(app)) {
-    throw Object.assign(new Error(`app: "${app}" is not a valid app name (a-z, 0-9, -; up to 32)`), { code: 'bad-app' })
+    throw errorWithCode(`app: "${app}" is not a valid app name (a-z, 0-9, -; up to 32)`, 'bad-app')
   }
   return app
 }
@@ -309,7 +309,7 @@ export class WebSocketProxyClient {
     if (options.app != null) {
       const app = checkApp(options.app)
       if (this.app && this.app !== app) {
-        throw Object.assign(new Error(`app: this client is already "${this.app}", not "${app}"`), { code: 'app-conflict' })
+        throw errorWithCode(`app: this client is already "${this.app}", not "${app}"`, 'app-conflict')
       }
       this.app = app
     }
@@ -1155,7 +1155,7 @@ export class WebSocketProxyClient {
     // `code`: la bóveda usa esto para saber si su llave de comunicación firma todavía, y
     // tragarse un fallo de red como si fuera lo primero la mandaría al camino equivocado.
     if (typeof signature !== 'string') {
-      throw Object.assign(new Error('identifyAs: sign() returned no signature'), { code: 'no-signature' })
+      throw errorWithCode('identifyAs: sign() returned no signature', 'no-signature')
     }
     return this.identify({ data, signature, cert, acta, sign })
   }

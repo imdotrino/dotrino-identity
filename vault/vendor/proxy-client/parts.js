@@ -23,6 +23,7 @@
  */
 
 import { pack, unpack, concatBytes } from './binpack.js'
+import { errorWithCode } from './errors.js'
 
 export const PART_TAG = '__dotrino_part'
 
@@ -107,7 +108,7 @@ export class Reassembler {
     if (!p || typeof p.id !== 'string' || p.id.length > 64 ||
         !Number.isInteger(p.n) || !Number.isInteger(p.i) || p.n < 2 || p.n > MAX_PARTS ||
         p.i < 0 || p.i >= p.n || (typeof d !== 'string' && !(d instanceof Uint8Array))) {
-      throw Object.assign(new Error('malformed message part'), { code: 'bad-part' })
+      throw errorWithCode('malformed message part', 'bad-part')
     }
     const key = `${sender}|${p.id}`
     let a = this._open.get(key)
@@ -117,12 +118,12 @@ export class Reassembler {
     }
     if (a.n !== p.n || a.bin !== (d instanceof Uint8Array)) {
       this._drop(key)
-      throw Object.assign(new Error('message parts disagree on their count or kind'), { code: 'bad-part' })
+      throw errorWithCode('message parts disagree on their count or kind', 'bad-part')
     }
     if (a.got[p.i] === undefined) {
       if (this._chars + d.length > RECV_MAX_CHARS) {
         this._drop(key)
-        throw Object.assign(new Error('too much of a message in parts is pending'), { code: 'parts-too-big' })
+        throw errorWithCode('too much of a message in parts is pending', 'parts-too-big')
       }
       // Una copia: `d` es una vista sobre la trama entera, y guardarla retendría la trama.
       a.got[p.i] = a.bin ? d.slice() : d
@@ -134,7 +135,7 @@ export class Reassembler {
     if (a.count === a.n) {
       this._drop(key)
       try { return a.bin ? unpack(concatBytes(a.got)) : JSON.parse(a.got.join('')) }
-      catch (_) { throw Object.assign(new Error('a message in parts did not join into a message'), { code: 'bad-part' }) }
+      catch (_) { throw errorWithCode('a message in parts did not join into a message', 'bad-part') }
     }
     a.timer = setTimeout(() => {
       const missing = a.n - a.count

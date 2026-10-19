@@ -261,7 +261,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (expectedScope) {
       const record = (await identity.profileActa?.().catch(() => null))?.acta || null
       if (record && !memberCanScope(record, chk.device, expectedScope)) {
-        send(from, { type: MSG.ERROR, error: 'unauthorized: acta — this member no longer has that permission' })
+        send(from, { type: MSG.ERROR, error: 'unauthorized: record — this member no longer has that permission' })
         return null
       }
     }
@@ -356,7 +356,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (p.type === MSG.HELLO) handle('hello', desk.handleHello(_from, p), _from)
     else if (p.type === MSG.ENROLL) handle('enroll', desk.handleEnroll(_from, p), _from)
     // Camino A: el aparato devuelve su acta sellada admitiendo a esta bóveda.
-    else if (p.type === MSG.ACTA_SEALED) handle('acta', desk.handleActaSealed(_from, p), _from)
+    else if (p.type === MSG.ACTA_SEALED) handle('record-sealed', desk.handleActaSealed(_from, p), _from)
     else if (p.type === MSG.RENEW) handle('renew', handleRenew(_from, p), _from)
     else if (p.type === MSG.DEVICES) handle('devices', handleDevices(_from, p), _from)
     // Lo que faltaba para que un aparato enrolado aquí pueda hacer lo mismo que contra

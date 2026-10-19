@@ -23,16 +23,14 @@
  *     El proxio lee la cabecera para enrutar y no mira el cuerpo, que va sellado.
  */
 
+import { errorWithCode } from './errors.js'
+
 export const BIN_TAG = '__dotrino_bin'
 const PACK_MAGIC = 0xB1
 const FRAME_VERSION = 0x01
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
-
-function withCode (message, code) {
-  return Object.assign(new Error(message), { code })
-}
 
 /** Bytes, sin importar de qué vista vengan (`Buffer`, `ArrayBuffer`, `Uint8Array`). */
 export function asBytes (v) {
@@ -84,12 +82,12 @@ export const isPacked = (b) => b instanceof Uint8Array && b.length >= 5 && b[0] 
  */
 export function unpack (bytes) {
   const b = asBytes(bytes)
-  if (!isPacked(b)) throw withCode('not a packed message', 'bad-pack')
+  if (!isPacked(b)) throw errorWithCode('not a packed message', 'bad-pack')
   const len = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(1)
-  if (5 + len > b.length) throw withCode('packed message is shorter than its header says', 'bad-pack')
+  if (5 + len > b.length) throw errorWithCode('packed message is shorter than its header says', 'bad-pack')
   const area = b.subarray(5 + len)
   let obj
-  try { obj = JSON.parse(dec.decode(b.subarray(5, 5 + len))) } catch (_) { throw withCode('packed message header is not JSON', 'bad-pack') }
+  try { obj = JSON.parse(dec.decode(b.subarray(5, 5 + len))) } catch (_) { throw errorWithCode('packed message header is not JSON', 'bad-pack') }
   const revive = (v) => {
     if (Array.isArray(v)) return v.map(revive)
     if (!v || typeof v !== 'object') return v
@@ -97,7 +95,7 @@ export function unpack (bytes) {
     if (ref !== undefined) {
       if (!Array.isArray(ref) || ref.length !== 2 || !Number.isInteger(ref[0]) || !Number.isInteger(ref[1]) ||
           ref[0] < 0 || ref[1] < 0 || ref[0] + ref[1] > area.length) {
-        throw withCode('packed message points outside itself', 'bad-pack')
+        throw errorWithCode('packed message points outside itself', 'bad-pack')
       }
       return area.subarray(ref[0], ref[0] + ref[1])
     }
@@ -130,11 +128,11 @@ export function encodeFrame (header, body) {
 /** El inverso: `{ header, body }`. Lanza con `code: 'bad-frame'` si no es una trama válida. */
 export function decodeFrame (data) {
   const b = asBytes(data)
-  if (!b || b.length < 5 || b[0] !== FRAME_VERSION) throw withCode('not a binary frame of a known version', 'bad-frame')
+  if (!b || b.length < 5 || b[0] !== FRAME_VERSION) throw errorWithCode('not a binary frame of a known version', 'bad-frame')
   const len = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(1)
-  if (5 + len > b.length) throw withCode('binary frame is shorter than its header says', 'bad-frame')
+  if (5 + len > b.length) throw errorWithCode('binary frame is shorter than its header says', 'bad-frame')
   let header
-  try { header = JSON.parse(dec.decode(b.subarray(5, 5 + len))) } catch (_) { throw withCode('binary frame header is not JSON', 'bad-frame') }
-  if (!header || typeof header !== 'object' || Array.isArray(header)) throw withCode('binary frame header is not an object', 'bad-frame')
+  try { header = JSON.parse(dec.decode(b.subarray(5, 5 + len))) } catch (_) { throw errorWithCode('binary frame header is not JSON', 'bad-frame') }
+  if (!header || typeof header !== 'object' || Array.isArray(header)) throw errorWithCode('binary frame header is not an object', 'bad-frame')
   return { header, body: b.subarray(5 + len) }
 }

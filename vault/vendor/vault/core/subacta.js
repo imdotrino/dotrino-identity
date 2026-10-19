@@ -75,12 +75,12 @@ export function openSubacta (disk) {
      * aparatos se cuentan lo mismo.
      */
     async add (e) {
-      if (!(await isAcceptable(e))) return { ok: false, reason: 'no-aceptable' }
+      if (!(await isAcceptable(e))) return { ok: false, reason: 'not-acceptable' }
       const id = idOf(e)
-      if (data.entries.some((x) => idOf(x) === id)) return { ok: false, reason: 'ya-estaba' }
+      if (data.entries.some((x) => idOf(x) === id)) return { ok: false, reason: 'already-present' }
       data.entries = [...data.entries, e]
       guardar()
-      return { ok: true, reason: 'nueva' }
+      return { ok: true, reason: 'new' }
     },
 
     /**

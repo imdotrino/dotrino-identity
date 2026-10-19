@@ -67,7 +67,7 @@ export const loginAddress = (user, fingerprint) => `${user}@${accountCode(finger
  */
 export async function accountFingerprint (identity) {
   const pid = (await identity?.profileActa?.().catch(() => null))?.acta?.profileId
-  if (!pid) throw err('no-acta', 'this vault has no account record yet: there is no address to build')
+  if (!pid) throw err('no-record', 'this vault has no account record yet: there is no address to build')
   return (await pubkeyId(pid)).slice(0, 16)
 }
 

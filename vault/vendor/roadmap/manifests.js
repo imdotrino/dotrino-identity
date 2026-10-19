@@ -371,6 +371,13 @@ export const MANIFESTS = Object.freeze({
           "remote-agent": ">=0.19.0",
           "vault": ">=0.92.0"
         }
+      },
+      "ai": {
+        "repo": "imdotrino/dotrino-ai",
+        "npm": "@dotrino/ai",
+        "current": "0.1.0",
+        "protocol": 1,
+        "requires": {}
       }
     },
     "broken": [

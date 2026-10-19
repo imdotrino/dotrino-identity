@@ -872,13 +872,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // acta falta justo cuando algo se rompió (un archivo a medias, un `catch` que devolvió
     // null), que es cuando menos hay que fiarse. Toda cuenta tiene acta desde hace versiones.
     if (!record) {
-      audit('rejected', { what, reason: 'sin-acta' })
+      audit('rejected', { what, reason: 'no-record' })
       reply(from, { type: MSG.ERROR, error: 'unauthorized: this vault has no record to decide with' })
       return false
     }
     if (Acta.memberCanScope(record, chk.device, scope)) return true
-    audit('rejected', { what, reason: 'acta' })
-    reply(from, { type: MSG.ERROR, error: 'unauthorized: acta — this member no longer has that permission' })
+    audit('rejected', { what, reason: 'record' })
+    reply(from, { type: MSG.ERROR, error: 'unauthorized: record — this member no longer has that permission' })
     return false
   }
 
@@ -976,14 +976,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           const t = Date.now()
           for (const [n, v] of aperturas) if (v.exp <= t) aperturas.delete(n)
           const eph = await makeEphemeralKey()
-          aperturas.set('pendiente', { privateKey: eph.privateKey, exp: t + EPHEMERAL_TTL_MS })
+          aperturas.set('pending', { privateKey: eph.privateKey, exp: t + EPHEMERAL_TTL_MS })
           audit('unlock.begin', { by })
           return { ...params, ek: eph.ek }
         },
 
         async open ({ nonce, enc, by }) {
-          const guardada = aperturas.get('pendiente')
-          aperturas.delete('pendiente')
+          const guardada = aperturas.get('pending')
+          aperturas.delete('pending')
           if (!guardada || guardada.exp <= Date.now()) {
             return { ok: false, error: 'unlock: ask for a key first, and use it within a minute' }
           }
@@ -992,7 +992,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           // EL NONCE VA DENTRO DEL SOBRE. Si fuera solo por fuera, un sobre capturado se
           // reenvía con un nonce nuevo y el candado del nonce no sirve de nada.
           if (!payload || payload.nonce !== nonce || typeof payload.key !== 'string') {
-            audit('rejected', { what: 'unlock', by, reason: 'sobre' })
+            audit('rejected', { what: 'unlock', by, reason: 'envelope' })
             return { ok: false, error: 'unlock: the envelope does not check out' }
           }
           const derivada = b64ToBytes(payload.key)
@@ -1314,10 +1314,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const { issued, revoked } = await identity.listDelegations()
     if (!puedeVerTodo) {
       if (!record) {
-        audit('rejected', { what: 'devices', reason: 'sin-acta' })
+        audit('rejected', { what: 'devices', reason: 'no-record' })
         return reply(from, { type: MSG.ERROR, error: 'unauthorized: this vault has no record to decide with' })
       }
-      audit('devices', { device: await deviceIdOf(chk.device).catch(() => null), solo: 'revocaciones' })
+      audit('devices', { device: await deviceIdOf(chk.device).catch(() => null), only: 'revocations' })
       return reply(from, { type: MSG.DEVICES_RESULT, devices: [], revoked, blocked: blocked.pubs(), acta: record, sealerChain: await sealerChainOf() })
     }
     // El acta viaja con la lista: así cada dispositivo se entera de los cambios de
@@ -1401,7 +1401,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // Sin acta no se renueva: caer al scope del papel viejo es reconceder a ciegas lo que
     // el acta ya no dice. Un repliegue así no protege de nada, tapa.
     if (!record) {
-      audit('rejected', { what: 'renew', device: await deviceIdOf(p.cert.sub), reason: 'sin-acta' })
+      audit('rejected', { what: 'renew', device: await deviceIdOf(p.cert.sub), reason: 'no-record' })
       return reply(from, { type: MSG.ERROR, error: 'unauthorized: this vault has no record to decide with' })
     }
     const scope = Acta.memberScopes(record, p.cert.sub)
@@ -1460,7 +1460,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // que se cerró en `handleSign`, en otro mostrador.
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !Acta.memberCanReadSecrets(record, chk.device, ns)) {
-      audit('rejected', { what: 'enckey', ns, reason: record ? 'cn' : 'sin-acta' })
+      audit('rejected', { what: 'enckey', ns, reason: record ? 'cn' : 'no-record' })
       return reply(from, { type: MSG.ERROR, error: `unauthorized: cn — the record does not recognise this member as the "${ns}" service` })
     }
     try {
@@ -1545,7 +1545,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!chk.ok) return denyChain(from, chk, p, 'digest')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !Acta.memberCanReadSecrets(record, chk.device, ns)) {
-      audit('rejected', { what: 'digest', ns, reason: record ? 'cn' : 'sin-acta' })
+      audit('rejected', { what: 'digest', ns, reason: record ? 'cn' : 'no-record' })
       return reply(from, { type: MSG.ERROR, error: `unauthorized: cn — the record does not recognise this member as the "${ns}" service` })
     }
     const body = { op: 'secrets.digest', ns, digest: drawerDigest(ns, chk.device), ts: Date.now() }
@@ -1578,8 +1578,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!chk.ok) return denyChain(from, chk, p, 'update-ask')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !(record.members || []).some((m) => m.pub === chk.device)) {
-      audit('rejected', { what: 'update-ask', reason: record ? 'acta' : 'sin-acta' })
-      return reply(from, { type: MSG.ERROR, error: 'unauthorized: acta — this device is not in the record' })
+      audit('rejected', { what: 'update-ask', reason: record ? 'record' : 'no-record' })
+      return reply(from, { type: MSG.ERROR, error: 'unauthorized: record — this device is not in the record' })
     }
     const product = cut(p.data?.product, 128)
     const version = cut(p.data?.version, 64)
@@ -1656,8 +1656,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     const member = (record?.members || []).find((m) => m.pub === chk.device)
     if (!member) {
-      audit('rejected', { what: op, reason: record ? 'acta' : 'sin-acta' })
-      return reply(from, { type: MSG.ERROR, error: 'unauthorized: acta — this device is not in the record' })
+      audit('rejected', { what: op, reason: record ? 'record' : 'no-record' })
+      return reply(from, { type: MSG.ERROR, error: 'unauthorized: record — this device is not in the record' })
     }
     const product = cut(p.data?.product, 128)
     const version = cut(p.data?.version, 64)
@@ -1685,7 +1685,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!chk.ok) return denyChain(from, chk, p, op)
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !Acta.memberCanReadSecrets(record, chk.device, ns)) {
-      audit('rejected', { what: op, ns, reason: record ? 'cn' : 'sin-acta' })
+      audit('rejected', { what: op, ns, reason: record ? 'cn' : 'no-record' })
       return reply(from, { type: MSG.ERROR, error: `unauthorized: cn — the record does not recognise this member as the "${ns}" service` })
     }
     const deviceId = await deviceIdOf(chk.device).catch(() => null)
@@ -1756,7 +1756,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // llave del proxy no ve nada que no sea del proxy, y está escrito donde se puede comprobar.
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !Acta.memberCanReadSecrets(record, chk.device, ns)) {
-      audit('rejected', { what: 'secrets', ns, reason: record ? 'cn' : 'sin-acta' })
+      audit('rejected', { what: 'secrets', ns, reason: record ? 'cn' : 'no-record' })
       return reply(from, { type: MSG.ERROR, error: `unauthorized: cn — the record does not recognise this member as the "${ns}" service` })
     }
     // APROBACIÓN: si este APARATO está marcado (`dotrino-vault approval <ID> on`), liberarle
@@ -1908,8 +1908,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!chk.ok) return denyChain(from, chk, p, 'approval')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
     if (!record || !Acta.memberCan(record, chk.device, 'approve')) {
-      audit('rejected', { what: 'approval', reason: record ? 'acta' : 'sin-acta' })
-      return reply(from, { type: MSG.ERROR, error: 'unauthorized: acta — this member does not approve' })
+      audit('rejected', { what: 'approval', reason: record ? 'record' : 'no-record' })
+      return reply(from, { type: MSG.ERROR, error: 'unauthorized: record — this member does not approve' })
     }
     const by = await deviceIdOf(chk.device).catch(() => null)
     const answer = async (body) => {
@@ -2157,8 +2157,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!chk.ok) return denyChain(from, chk, p, 'incident')
     const record = await refreshActa()
     if (!record || !Acta.memberCan(record, chk.device, 'sign')) {
-      audit('rejected', { what: 'incident', reason: record ? 'acta' : 'sin-acta' })
-      return reply(from, { type: MSG.ERROR, error: 'unauthorized: acta — this member cannot report incidents' })
+      audit('rejected', { what: 'incident', reason: record ? 'record' : 'no-record' })
+      return reply(from, { type: MSG.ERROR, error: 'unauthorized: record — this member cannot report incidents' })
     }
     const d = p.data || {}
     const kind = typeof d.kind === 'string' ? d.kind.slice(0, 32) : ''
@@ -2913,7 +2913,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         return chk
       }
       const record = (await identity.profileActa?.().catch(() => null))?.acta
-      if (!record || !Acta.memberCan(record, chk.device, 'admin')) return { ok: false, reason: record ? 'acta' : 'sin-acta' }
+      if (!record || !Acta.memberCan(record, chk.device, 'admin')) return { ok: false, reason: record ? 'record' : 'no-record' }
       return chk
     }
   })
@@ -2949,12 +2949,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // la fecha de la última renuncia por miembro y rechace las que no sean posteriores.
     const actual = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!actual) {
-      audit('rejected', { what: 'renounce', reason: 'sin-acta' })
+      audit('rejected', { what: 'renounce', reason: 'no-record' })
       return reply(from, { type: MSG.ERROR, error: 'renounce: this vault has no record to apply it to' })
     }
     const tiene = new Set(Acta.effectiveCaps(actual, record.member) || [])
     if (!(record.caps || []).some((c) => tiene.has(c))) {
-      audit('rejected', { what: 'renounce', reason: 'nada-que-quitar' })
+      audit('rejected', { what: 'renounce', reason: 'nothing-to-remove' })
       return reply(from, { type: MSG.ERROR, error: 'renounce: that member no longer holds any of those capabilities' })
     }
     try {
@@ -2963,8 +2963,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // de la maestra, y con el perfil cerrado la renuncia se perdía con un error — en el
       // único momento en que de verdad hace falta.
       const guardada = await subacta.add(record)
-      if (!guardada.ok && guardada.reason === 'no-aceptable') {
-        audit('rejected', { what: 'renounce', reason: 'no-aceptable' })
+      if (!guardada.ok && guardada.reason === 'not-acceptable') {
+        audit('rejected', { what: 'renounce', reason: 'not-acceptable' })
         return reply(from, { type: MSG.ERROR, error: 'renounce: the entry is not one this vault accepts' })
       }
       const device = await deviceIdOf(record.member).catch(() => null)

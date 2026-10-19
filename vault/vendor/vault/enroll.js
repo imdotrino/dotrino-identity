@@ -272,7 +272,7 @@ export function createEnrollDesk ({
       return { ignored: true }
     }
     if (!pend || Date.now() > pend.exp) {
-      audit('rejected', { what: 'hello', reason: 'sin-sesion' })
+      audit('rejected', { what: 'hello', reason: 'no-session' })
       return fail(from, 'no pairing session open for that code', String(p?.sn || ''))
     }
     // La respuesta va FIRMADA por la maestra y el `sn` va dentro de lo firmado. Eso ata
