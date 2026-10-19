@@ -431,10 +431,10 @@ export class Identity {
    *                   está emparejada con esa misma bóveda. Si no, falla antes de tocar la red.
    * @returns {Promise<{ ok:boolean, deviceId:string, master:string, exp:number, scope:string[] }>}
    */
-  async enrollDevice (qr, { label = '', join = 'current' } = {}) {
+  async enrollDevice (qr, { label = '', join = 'current', account = null } = {}) {
     // DÓNDE CORRE se mira AQUÍ, en la página, y no dentro del iframe: el iframe no ve si la
     // página es una extensión o la app nativa (`vault/machine.js`).
-    return this._call('vaultPair', { qr, label, join, machine: browserMachine() }, 200000)
+    return this._call('vaultPair', { qr, label, join, account, machine: browserMachine() }, 200000)
   }
 
   /** Estado de emparejamiento: { paired, deviceId?, master?, scope?, exp?, pairedAt? }. */

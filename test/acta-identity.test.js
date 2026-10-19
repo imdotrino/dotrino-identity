@@ -358,3 +358,18 @@ test('setCapsMany: cambia los permisos de varios aparatos en una sola acta', asy
   await assert.rejects(() => id.setCapsMany([]), /no changes/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('accountMismatch: la invitación es de la cuenta que se espera, o se dice de cuál es', async () => {
+  const { accountMismatch } = await import('../vault/acta.js')
+  const { pubkeyId } = await import('../vault/capabilities.js')
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const cadena = await id.sealerChain()
+  const mia = await pubkeyId(id.me.publickey)
+  assert.equal(await accountMismatch(cadena, id.me.publickey, mia), null)
+  assert.match(await accountMismatch(cadena, id.me.publickey, 'f'.repeat(64)), /is from account/)
+  const otro = await makeDeviceKey({ label: 'ajeno' })
+  assert.match(await accountMismatch(cadena, otro.publickey, mia), /does not seal/, 'quien contesta tiene que sellar la cuenta')
+  assert.match(await accountMismatch(null, id.me.publickey, mia), /did not say/)
+  fs.rmSync(dir, { recursive: true, force: true })
+})

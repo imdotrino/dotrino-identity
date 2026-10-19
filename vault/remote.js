@@ -14,7 +14,7 @@
  * `@dotrino/proxy-client` (importado perezosamente; solo se carga al emparejar).
  */
 import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, keyLabel } from './capabilities.js'
-import { checkVaultReply } from './acta.js'
+import { checkVaultReply, accountMismatch } from './acta.js'
 import { cleanMachine, browserMachine } from './machine.js'
 
 const MSG = {
@@ -143,9 +143,11 @@ async function askVault (client, qr) {
  * @param {(c:{deviceId:string, code:string})=>void} [opts.onChallenge]  Para mostrar el código a tipear en el PC.
  * @param {string} [opts.label]
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
+ * @param {string} [opts.account]  si viene (`pubkeyId` del perfil, 64 hex), SOLO entra en esa cuenta:
+ *   se comprueba al llegar el reto, antes de enseñar el código (`wrong-account`).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string, account:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null, machine = undefined } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null, machine = undefined, account = null } = {}) {
   if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('invalid qr: missing vault or nonce')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
@@ -196,7 +198,13 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
       const off = client.on('message', async (_from, p) => {
         if (!p || typeof p !== 'object') return
         if ((p.type === MSG.ENROLL_CHALLENGE || p.type === MSG.ERROR) && !await fromMyVault(p, qr)) return
-        if (p.type === MSG.ENROLL_CHALLENGE) { try { onChallenge?.({ deviceId, code }) } catch (_) {} }
+        if (p.type === MSG.ENROLL_CHALLENGE) {
+          if (account) {
+            const why = await accountMismatch(p.signed?.chain, qr.iss, account)
+            if (why) { cleanup(); reject(Object.assign(new Error(why), { code: 'wrong-account' })); return }
+          }
+          try { onChallenge?.({ deviceId, code }) } catch (_) {}
+        }
         // El vault ECHA el código que tipeaste; aceptamos SOLO si coincide con el que generamos.
         // (Un código distinto = un vault que no lo conoce → lo ignoramos y seguimos esperando.)
         else if (p.type === MSG.ENROLLED) { if (p.code === code) { cleanup(); resolve(p) } }

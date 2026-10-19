@@ -35,7 +35,7 @@
  * Módulo PURO: sin kv, sin red, sin disco. Cripto de `./capabilities.js`.
  */
 import { canonicalStringify } from './core.js'
-import { signWithDevice, verifyDeviceSig, verifyDelegation, keyLabel } from './capabilities.js'
+import { signWithDevice, verifyDeviceSig, verifyDelegation, keyLabel, pubkeyId } from './capabilities.js'
 import { cleanMachine } from './machine.js'
 export { cleanMachine }
 
@@ -637,6 +637,22 @@ export async function verifySignedBy (args = {}) {
   if (!memberCanSign(cabeza, publickey, ns)) return { ok: false, reason: 'unauthorized-signer' }
   if (!(await verifyDeviceSig({ publickey, data, signature }))) return { ok: false, reason: 'invalid-signature' }
   return { ok: true, profileId: c.profileId, seq: c.seq, signer: publickey }
+}
+
+/**
+ * ¿ESTA INVITACIÓN ES DE LA CUENTA QUE ESPERO? Para un aparato que solo puede entrar en una
+ * cuenta (la réplica o la bóveda alojadas, que van atadas a la cuenta que las pagó). El reto del
+ * alta trae la cadena de selladoras de la bóveda que invita: se verifica, se comprueba que quien
+ * contestó sella esa cuenta y se compara el id del perfil con el esperado (`pubkeyId`, 64 hex).
+ * Devuelve `null` si es la cuenta, o el porqué si no.
+ */
+export async function accountMismatch (chain, iss, account) {
+  if (!Array.isArray(chain) || !chain.length) return 'the vault did not say which account it belongs to (it may need an update)'
+  const c = await verifySealerChain(chain)
+  if (!c.ok) return 'the vault account could not be verified: ' + c.reason
+  if (!canSeal(chain[chain.length - 1], iss)) return 'the vault that answered does not seal that account'
+  const got = await pubkeyId(c.profileId)
+  return got === account ? null : `the invitation is from account ${got}, not from ${account}`
 }
 
 export async function verifySealerChain (chain, { expectedProfileId = null } = {}) {
@@ -1307,7 +1323,7 @@ export async function canAdopt ({ candidate, current }) {
 }
 
 export default {
-  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain, verifySignedBy,
+  ACTA_V, CAPS, CAP_SCOPE, genesisActa, actaBody, actaHash, memberId, checkShape, verifySealerChain, accountMismatch, verifySignedBy,
   sealActa, verifyActa, checkVaultReply, applyChanges, makeRenounce, verifyRenounce,
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,

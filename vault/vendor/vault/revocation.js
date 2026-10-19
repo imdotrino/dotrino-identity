@@ -24,7 +24,11 @@
  * `bad-action-signature`, `cert-device-mismatch`, `untrusted-issuer`…) son ruido o gente
  * ajena: ahí no hay a quién avisar de nada.
  */
-export const STALE_PAPER = Object.freeze(['revoked', 'expired', 'scope'])
+// `legacy-cert-retired` (un papel del modelo viejo, sin `seq`) también: se rechaza ANTES de
+// mirar la firma del certificado, pero DESPUÉS de la del aparato, así que el aviso solo
+// puede ir a la llave de quien pregunta. Sin él, un navegador quitado del acta que guardaba
+// un papel viejo se quedaba con la cuenta abierta para siempre (93D9-1B36, 2026-10-19).
+export const STALE_PAPER = Object.freeze(['revoked', 'expired', 'scope', 'legacy-cert-retired'])
 const STALE = new Set(STALE_PAPER)
 
 /** ¿El motivo del rechazo es «tu papel ya no sirve»? */
