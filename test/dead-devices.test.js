@@ -13,7 +13,7 @@ import { Identity, makeDeviceKey } from '../src/node.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'muertos-'))
 
-/** Candado de mentira, como el de `maestra-bajo-llave.test.js`: `abierto` decide si abre. */
+/** Candado de mentira, como el de `master-under-lock.test.js`: `abierto` decide si abre. */
 function candado (llave = 'la-frase') {
   const st = { abierto: true }
   const kdf = (s) => crypto.createHash('sha256').update(llave + s).digest()

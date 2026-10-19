@@ -15,7 +15,7 @@
  * producción por su cuenta. Las demás no tocan la red.
  *
  *   PORT=4099 node server.js                     # en dotrino-proxy
- *   DOTRINO_PROXY=ws://localhost:4099 node --test test/vendor-empareja.e2e.test.mjs
+ *   DOTRINO_PROXY=ws://localhost:4099 node --test test/vendor-pairing.e2e.test.mjs
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
