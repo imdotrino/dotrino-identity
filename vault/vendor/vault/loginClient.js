@@ -54,18 +54,18 @@ export const WAKE_WAIT_MS = 30_000
  */
 function waitFor (transport, from, match, timeoutMs) {
   return new Promise((resolve, reject) => {
-    let listo = false
-    const fin = (fn, arg) => { if (!listo) { listo = true; clearTimeout(reloj); quitar(); fn(arg) } }
-    const reloj = setTimeout(() => fin(reject, err('no-answer', 'the vault did not answer in time')), timeoutMs)
-    const oyente = (quien, payload) => {
-      if (from && quien !== from) return
+    let ready = false
+    const fin = (fn, arg) => { if (!ready) { ready = true; clearTimeout(clock); remove(); fn(arg) } }
+    const clock = setTimeout(() => fin(reject, err('no-answer', 'the vault did not answer in time')), timeoutMs)
+    const listener = (who, payload) => {
+      if (from && who !== from) return
       const p = typeof payload === 'string' ? parseJson(payload) : payload
       if (p && match(p)) fin(resolve, p)
     }
-    const off = transport.on('message', oyente)
-    const quitar = () => {
+    const off = transport.on('message', listener)
+    const remove = () => {
       if (typeof off === 'function') return off()
-      transport.off?.('message', oyente)
+      transport.off?.('message', listener)
     }
   })
 }
@@ -103,8 +103,8 @@ export async function loginWithPassword ({ transport, address, password, label =
   let tokens = await transport.list(vaultChannel(code))
   // UNA BÓVEDA QUE DUERME (la de una Lambda): el proxio la está despertando y lo dice. Se
   // espera a que se anuncie en vez de contestar que esa cuenta no existe.
-  const hasta = Date.now() + WAKE_WAIT_MS
-  while (!tokens.length && tokens.waking && Date.now() < hasta) {
+  const until = Date.now() + WAKE_WAIT_MS
+  while (!tokens.length && tokens.waking && Date.now() < until) {
     await new Promise((resolve) => setTimeout(resolve, 2000))
     tokens = await transport.list(vaultChannel(code))
   }
@@ -115,25 +115,25 @@ export async function loginWithPassword ({ transport, address, password, label =
   // De una en una, y parando en cuanto la contraseña resulte estar mal: cada intento GASTA
   // uno del freno en la bóveda que lo atiende (`passwordLogins.js`), así que repartir el
   // mismo error entre las réplicas solo sirve para bloquearse en todas a la vez.
-  let ultimo = null
+  let last = null
   for (const token of tokens) {
     try {
-      return await unIntento({ transport, token, user, code, dir, password, label, timeoutMs, opaque })
+      return await oneAttempt({ transport, token, user, code, dir, password, label, timeoutMs, opaque })
     } catch (e) {
       // Se para: son cosas del que entra, y probar con otra bóveda no las arregla.
       if (e?.code === 'login-failed' || e?.code === 'too-many-tries' || e?.code === 'wrong-account' ||
           e?.code === 'bad-blob' || e?.code === 'bad-keys' || e?.code === 'bad-reply') throw e
-      ultimo = e   // «esa no atiende inicios de sesión», «no contestó»: quizá la siguiente sí
+      last = e   // «esa no atiende inicios de sesión», «no contestó»: quizá la siguiente sí
     }
   }
-  throw ultimo || err('no-vault', 'none of the vaults on that address could let you in')
+  throw last || err('no-vault', 'none of the vaults on that address could let you in')
 }
 
-async function unIntento ({ transport, token, user, code, dir, password, label, timeoutMs, opaque }) {
+async function oneAttempt ({ transport, token, user, code, dir, password, label, timeoutMs, opaque }) {
   const start = await opaque.loginStart({ password })
   transport.send(token, { type: MSG.LOGIN_START, user, request: start.request })
   const r1 = await waitFor(transport, token, (p) => p.type === MSG.LOGIN_RESPONSE || p.type === MSG.ERROR, timeoutMs)
-  if (r1.type === MSG.ERROR) throw deVuelta(r1)
+  if (r1.type === MSG.ERROR) throw back(r1)
 
   let fin
   try {
@@ -148,7 +148,7 @@ async function unIntento ({ transport, token, user, code, dir, password, label, 
 
   transport.send(token, { type: MSG.LOGIN_FINISH, lid: r1.lid, finalization: fin.finalization, label })
   const ok = await waitFor(transport, token, (p) => p.type === MSG.LOGIN_OK || p.type === MSG.ERROR, timeoutMs)
-  if (ok.type === MSG.ERROR) throw deVuelta(ok)
+  if (ok.type === MSG.ERROR) throw back(ok)
 
   const acta = ok.acta
   const cert = ok.cert
@@ -168,9 +168,9 @@ async function unIntento ({ transport, token, user, code, dir, password, label, 
   if (!keys?.sign) throw err('bad-blob', 'the key package does not carry a signing key')
 
   // 4. La llave que salió del paquete tiene que SER la del papel. Se prueba firmando.
-  const reto = { op: 'login.proof', sub: cert.sub, sid: ok.sid, ts: Date.now() }
-  const { signature } = await signWithDevice({ privateJwk: keys.sign, data: reto })
-  if (!(await verifyDeviceSig({ publickey: cert.sub, data: reto, signature }))) {
+  const challenge = { op: 'login.proof', sub: cert.sub, sid: ok.sid, ts: Date.now() }
+  const { signature } = await signWithDevice({ privateJwk: keys.sign, data: challenge })
+  if (!(await verifyDeviceSig({ publickey: cert.sub, data: challenge, signature }))) {
     throw err('bad-keys', 'the keys in the package are not the ones this certificate is for')
   }
 
@@ -196,7 +196,7 @@ async function unIntento ({ transport, token, user, code, dir, password, label, 
 }
 
 /** Un error de la bóveda con su `code` intacto: `too-many-tries` se arregla esperando. */
-function deVuelta (p) {
+function back (p) {
   const code = p.code || 'login-error'
   const e = err(code, p.error || 'the vault refused the login')
   if (typeof p.waitMs === 'number') e.waitMs = p.waitMs
@@ -227,10 +227,10 @@ export async function closeLogin ({ transport, token, user, sid, publickey, priv
   if (typeof sign !== 'function' && !privateJwk && !privateKey) {
     throw err('no-signature', 'closeLogin: give it the device key (privateJwk/privateKey) or a sign(data)')
   }
-  const firmado = typeof sign === 'function'
+  const signed = typeof sign === 'function'
     ? await sign(data)
     : await signWithDevice({ privateJwk, privateKey, publickey, data })
-  const signature = typeof firmado === 'string' ? firmado : firmado?.signature
+  const signature = typeof signed === 'string' ? signed : signed?.signature
   if (typeof signature !== 'string') throw err('no-signature', 'closeLogin: sign(data) returned no signature')
   transport.send(token, { type: MSG.LOGIN_CLOSE, data, signature })
   try {

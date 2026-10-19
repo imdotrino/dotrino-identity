@@ -235,7 +235,7 @@ export function openThreadStore (disk) {
     // Solo sale lo que ya cumplió su año de respaldo.
     const antes = data.resealed.length
     data.resealed = data.resealed.filter((x) => now - (x.at || 0) < RESEALED_KEEP_MS)
-    const podados = antes - data.resealed.length
+    const pruned = antes - data.resealed.length
     for (const [key, arr] of Object.entries(data.threads)) {
       for (let i = 0; i < arr.length; i++) {
         const r = await resealStale(arr[i], { gen, reseal })
@@ -246,7 +246,7 @@ export function openThreadStore (disk) {
         changed += r.changed; entries++
       }
     }
-    if (entries || podados) save()
+    if (entries || pruned) save()
     return { changed, entries, skipped }
   }
 

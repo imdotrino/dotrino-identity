@@ -59,7 +59,7 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
   if (!registryId) return () => {}
 
   /** Una respuesta a `sealers.whois`, o null si no contesta a tiempo. */
-  function preguntarQuienEs (token, timeoutMs = 8000) {
+  function askWhoItIs (token, timeoutMs = 8000) {
     return new Promise((resolve) => {
       const fin = (v) => { try { off() } catch (_) {} ; clearTimeout(t); resolve(v) }
       const off = client.on('message', (_f, p) => { if (p?.op === WHOIS + '.result') fin(p) })
@@ -82,11 +82,11 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
    * filtraría nada —el eslabón es público— pero se los tragaría EN SILENCIO, que es peor
    * que un error.
    */
-  async function testigo () {
+  async function witness () {
     let tokens
     try { tokens = await client.list(canal) } catch (_) { return null }
     for (const token of tokens || []) {
-      const r = await preguntarQuienEs(token)
+      const r = await askWhoItIs(token)
       const cert = r?.cert
       if (!cert?.sub || cert.iss !== registryId) continue
       // AQUÍ SOMOS EXTRAÑOS: no tenemos el acta del registro, así que no podemos preguntarle
@@ -107,11 +107,11 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
     return null
   }
 
-  let ultima = null
+  let latest = null
 
-  let avisadoDeOtroTestigo = false
+  let warnedOtherWitness = false
 
-  async function publicar (motivo) {
+  async function publish (reason) {
     let actas
     try { actas = await identity.sealerChain?.() } catch (_) { return }
     if (!Array.isArray(actas)) return
@@ -122,8 +122,8 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
     // exactamente lo que ese campo existe para impedir. Se dice una vez y se calla.
     const genesis = actas[0]
     if (genesis?.chainUrl && registryId === DOTRINO_REGISTRY_ID) {
-      if (!avisadoDeOtroTestigo) {
-        avisadoDeOtroTestigo = true
+      if (!warnedOtherWitness) {
+        warnedOtherWitness = true
         log(`[sealers] this account names its own registry (${genesis.chainUrl}): not depositing into Dotrino's`)
       }
       return
@@ -136,14 +136,14 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
     // aparece en el registro hasta que selle un acta nueva.
     if (chain.length < 2) return
 
-    const cabeza = chain[chain.length - 1]?.seq
-    if (cabeza === ultima) return
+    const head = chain[chain.length - 1]?.seq
+    if (head === latest) return
     try {
-      const a = await testigo()
+      const a = await witness()
       if (!a) { log('[sealers] no witness announced in ' + canal + ': the chain stays for the next time'); return }
       await client.sendByPubkey(a, { op: OP, chain })
-      ultima = cabeza
-      log(`[sealers] chain up to #${cabeza} deposited (${motivo})`)
+      latest = head
+      log(`[sealers] chain up to #${head} deposited (${reason})`)
     } catch (e) {
       // Que no se pueda depositar no rompe nada de lo que la bóveda hace: el registro es
       // una comodidad para terceros, no una dependencia. Se reintenta en la próxima acta.
@@ -151,8 +151,8 @@ export function startSealersPublisher ({ identity, client, log = console.log, re
     }
   }
 
-  publicar('startup').catch(() => {})
-  const off = identity.onVault?.((e) => { if (e?.phase === 'acta') publicar(`record #${e.seq}`).catch(() => {}) })
+  publish('startup').catch(() => {})
+  const off = identity.onVault?.((e) => { if (e?.phase === 'acta') publish(`record #${e.seq}`).catch(() => {}) })
   return () => { try { off?.() } catch (_) {} }
 }
 

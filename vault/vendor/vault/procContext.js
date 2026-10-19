@@ -90,8 +90,8 @@ export const sameCommand = (a, b) => {
 /** El comando en una línea, para un log o una pantalla estrecha. */
 export function commandLine (ctx, max = 160) {
   const argv = Array.isArray(ctx?.argv) ? ctx.argv : []
-  const linea = argv.length ? argv.join(' ') : (ctx?.exe || '')
-  return linea.length > max ? linea.slice(0, max - 1) + '…' : linea
+  const line = argv.length ? argv.join(' ') : (ctx?.exe || '')
+  return line.length > max ? line.slice(0, max - 1) + '…' : line
 }
 
 export default { sanitizeContext, commandFingerprint, sameCommand, commandLine, trimArgv }

@@ -59,7 +59,7 @@ export async function isAcceptable (e) {
 export function openSubacta (disk) {
   const file = 'subacta.json'
   let data = readJson(disk, file, null) || { v: 1, entries: [] }
-  const guardar = () => writeJson(disk, file, data)
+  const save = () => writeJson(disk, file, data)
 
   return {
     /** Las entradas vigentes, tal cual se le pasan a `memberCan` y compañía. */
@@ -79,7 +79,7 @@ export function openSubacta (disk) {
       const id = idOf(e)
       if (data.entries.some((x) => idOf(x) === id)) return { ok: false, reason: 'already-present' }
       data.entries = [...data.entries, e]
-      guardar()
+      save()
       return { ok: true, reason: 'new' }
     },
 
@@ -92,10 +92,10 @@ export function openSubacta (disk) {
 
     /** Vacía lo ya absorbido. Se le pasa lo que se absorbió, no «todo»: mientras se sella
      *  puede haber entrado una nueva, y tirarla sería perder una renuncia sin aplicar. */
-    clear (absorbidas) {
-      const ids = new Set(absorbidas.map(idOf))
+    clear (absorbed) {
+      const ids = new Set(absorbed.map(idOf))
       data.entries = data.entries.filter((e) => !ids.has(idOf(e)))
-      guardar()
+      save()
     }
   }
 }

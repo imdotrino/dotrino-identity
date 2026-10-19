@@ -157,7 +157,7 @@ export function createAdminDesk ({
   now = () => Date.now()
 }) {
   const ops = new Set(ADMIN_OPS)
-  const mientrasCerrada = new Set(ADMIN_OPS_WHILE_LOCKED)
+  const whileLocked = new Set(ADMIN_OPS_WHILE_LOCKED)
 
   // NONCE de un solo uso. `sign`/`get` son idempotentes y les basta la ventana de ±5
   // min; `revoke` y `var.set` CAMBIAN ESTADO, así que reproducir uno dentro de esa
@@ -196,7 +196,7 @@ export function createAdminDesk ({
     //
     // El código va aparte del texto porque el texto se traduce y el código no: quien
     // llama distingue «está cerrada, ábrela» de «no tienes permiso» sin leer la frase.
-    if (isLocked() && !mientrasCerrada.has(data.op)) {
+    if (isLocked() && !whileLocked.has(data.op)) {
       audit('rejected', { what: 'admin', op: data.op, by, reason: 'locked' })
       return {
         ok: false,

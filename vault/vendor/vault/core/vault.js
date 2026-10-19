@@ -226,7 +226,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    *
    * SE MIRA EL PEDIDO, NUNCA EL CANAL. Sería más cómodo comprobar «vino por el socket local»,
    * y está prohibido: el día que un handler decide algo por dónde entró el mensaje, el atajo
-   * local deja de ser un atajo y pasa a ser una puerta de atrás (`test/mostrador-local.test.mjs`).
+   * local deja de ser un atajo y pasa a ser una puerta de atrás (`test/local-desk.test.mjs`).
    * El `host` es un dato del pedido como cualquier otro, y mentirlo no consigue nada: lo que
    * se gana es quedar marcado como no comprobado, que es exactamente lo que se quería evitar.
    *
@@ -241,19 +241,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * llamarse como quiera. La frontera es el usuario, no el proceso: esto existe para que
    * quien aprueba decida mirando lo que pasa, y para que quede rastro.
    */
-  function contextoDelPedido (declarado) {
-    const dicho = sanitizeContext(declarado)
-    if (!dicho) return null
+  function requestContext (declared) {
+    const said = sanitizeContext(declared)
+    if (!said) return null
     // Otra máquina: aquí no hay ningún `/proc` que hable de ese proceso.
-    if (!dicho.host || dicho.host !== platform.hostname?.()) return { ...dicho, verified: 'declared' }
-    const medido = sanitizeContext(platform.readProcContext?.(dicho.pid) ?? null)
+    if (!said.host || said.host !== platform.hostname?.()) return { ...said, verified: 'declared' }
+    const measured = sanitizeContext(platform.readProcContext?.(said.pid) ?? null)
     // El proceso ya no está, o no se puede mirar: no se sabe, y no saber se dice como no
     // saber. Inventar un «comprobado» aquí sería el repliegue de siempre.
-    if (!medido) return { ...dicho, verified: 'declared' }
-    if (commandFingerprint(medido) !== commandFingerprint(dicho)) {
-      throw new Error(`ctx — it says it is running "${commandLine(dicho, 60)}" but pid ${dicho.pid} is "${commandLine(medido, 60)}"`)
+    if (!measured) return { ...said, verified: 'declared' }
+    if (commandFingerprint(measured) !== commandFingerprint(said)) {
+      throw new Error(`ctx — it says it is running "${commandLine(said, 60)}" but pid ${said.pid} is "${commandLine(measured, 60)}"`)
     }
-    return { ...medido, user: dicho.user, host: dicho.host, verified: 'proc' }
+    return { ...measured, user: said.user, host: said.host, verified: 'proc' }
   }
   // LA BÓVEDA DE CONTRASEÑAS: entradas y su llave, en el dir del perfil y cifradas en
   // reposo como todo lo demás. QUIÉN PUEDE PEDIR LO DICE EL ACTA (capacidad
@@ -319,7 +319,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * (dueño, 2026-10-16: «realmente deberían ser uno solo»); `kind` se queda por el formato. Un miembro sin llave de cifrado no puede recibir nada: se
    * queda fuera y se ve en `incompleteMembers`.
    */
-  const noEsLaBoveda = (pub) => pub !== master && pub !== commKey.pub()
+  const notTheVault = (pub) => pub !== master && pub !== commKey.pub()
   /**
    * ¿PUEDE ESCRIBIR UNA CONTRASEÑA? Un aparato del acta con `passwords`… y la MAESTRA de esta
    * bóveda, que es quien reescribe al convertir (`sealPasswords`) y al importar un respaldo.
@@ -329,7 +329,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    */
   const canWritePasswords = (pub) => !!pub && (pub === master || (!!actaCache && Acta.memberCan(actaCache, pub, 'passwords')))
   const passwordRecipients = (_kind = 'main') => (actaCache?.members || [])
-    .filter((m) => m.encPub && noEsLaBoveda(m.pub) && Acta.memberCan(actaCache, m.pub, 'passwords'))
+    .filter((m) => m.encPub && notTheVault(m.pub) && Acta.memberCan(actaCache, m.pub, 'passwords'))
     .map((m) => ({ pub: m.pub, encPub: m.encPub }))
 
   /**
@@ -355,13 +355,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * y solo para convertir lo que quedó escrito con ella; en cuanto la conversión termina,
    * `soltarLlaveVieja` la borra del archivo.
    */
-  async function llaveViejaDeContrasenas () {
+  async function oldPasswordsKey () {
     const d = readPasswordsFile()
     if (!d?.cek) return null
     const raw = b64ToBytes(d.cek)
     return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt'])
   }
-  const soltarLlaveVieja = () => {
+  const dropOldKey = () => {
     const d = readPasswordsFile()
     if (!d?.cek) return
     delete d.cek
@@ -493,7 +493,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // `announce`: el canal de ESTA cuenta, para que una máquina prestada —que no tiene
   // ninguna llave y solo sabe la dirección `nombre@AB12-CD34-EF56`— pueda encontrar a quien
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
-  const { client, identify: reidentificar, isIdentified } = await createTransport({
+  const { client, identify: reidentify, isIdentified } = await createTransport({
     identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null
   })
 
@@ -525,7 +525,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * del certificado y del acta, igual por los dos caminos. Alcanzar el socket no autoriza
    * nada — es la misma puerta, con el camino más corto.
    */
-  const canales = new Map()
+  const channels = new Map()
 
   /**
    * QUÉ SOMOS, Y QUÉ CORRE CADA APARATO (CONVENCIONES §14, `@dotrino/compat`).
@@ -544,8 +544,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   const MI_VERSION = compatDeclare({
     product: platform.product || 'vaultd', version: VERSION, protocol: VAULT_PROTOCOL, speaks: VAULT_SPEAKS
   })
-  let ROTAS = []
-  try { ROTAS = brokenOf(loadManifest()) } catch (e) { log('[vault] no compatibility registry: ' + e.message) }
+  let BROKEN = []
+  try { BROKEN = brokenOf(loadManifest()) } catch (e) { log('[vault] no compatibility registry: ' + e.message) }
 
   /**
    * Lo que dice correr cada aparato, por llave. Se apunta de lo que viene FIRMADO
@@ -553,12 +553,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * escribir no vale para enseñarla como si fuera un dato.
    */
   const versiones = new Map()
-  const apuntarVersion = (pub, v) => {
+  const recordVersion = (pub, v) => {
     if (!pub || !v) return
-    const dictamen = compatCheck({ mine: MI_VERSION, theirs: v, broken: ROTAS })
-    versiones.set(pub, { ...v, at: Date.now(), compatible: dictamen.compatible, reason: dictamen.reason })
-    if (!dictamen.compatible) log(`[vault] ${v.product} ${v.version}: ${dictamen.reason}`)
-    return dictamen
+    const verdict = compatCheck({ mine: MI_VERSION, theirs: v, broken: BROKEN })
+    versiones.set(pub, { ...v, at: Date.now(), compatible: verdict.compatible, reason: verdict.reason })
+    if (!verdict.compatible) log(`[vault] ${v.product} ${v.version}: ${verdict.reason}`)
+    return verdict
   }
   /** El dictamen de un aparato, para enseñarlo o para pegárselo a un error. */
   const versionDe = (pub) => versiones.get(pub) || null
@@ -599,19 +599,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * sella. Se vacía DESPUÉS y solo lo absorbido: mientras se sella puede entrar una nueva,
    * y tirarla sería perder una renuncia sin aplicar.
    */
-  async function absorberSubacta (motivo = 'unlock') {
-    const pendientes = subacta.drain()
-    if (!pendientes.length) return 0
-    const hechas = []
-    for (const e of pendientes) {
-      try { await identity.absorbRenounce(e); hechas.push(e) }
-      catch (err) { log(`[vault] ${motivo}: could not absorb a pending renounce: ${err.message}`) }
+  async function absorbSubacta (reason = 'unlock') {
+    const pendingOnes = subacta.drain()
+    if (!pendingOnes.length) return 0
+    const finished = []
+    for (const e of pendingOnes) {
+      try { await identity.absorbRenounce(e); finished.push(e) }
+      catch (err) { log(`[vault] ${reason}: could not absorb a pending renounce: ${err.message}`) }
     }
-    if (hechas.length) {
-      subacta.clear(hechas)
-      log(`[vault] ${motivo}: ${hechas.length} pending renounce(s) absorbed into the record`)
+    if (finished.length) {
+      subacta.clear(finished)
+      log(`[vault] ${reason}: ${finished.length} pending renounce(s) absorbed into the record`)
     }
-    return hechas.length
+    return finished.length
   }
 
   /**
@@ -626,7 +626,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    */
   const verifyChain = async (args) => {
     const chk = await verifyChainRaw(args)
-    if (chk.ok && args?.data?.v) apuntarVersion(chk.device, args.data.v)
+    if (chk.ok && args?.data?.v) recordVersion(chk.device, args.data.v)
     // DÓNDE CORRE, por el mismo motivo: se apunta de lo firmado. Un fallo al guardarlo no
     // puede tumbar el pedido —es un dato para la lista—, pero se dice.
     if (chk.ok && args?.data?.machine) {
@@ -642,9 +642,35 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   }
 
 
+  /**
+   * LOS ERRORES DE UNA PETICIÓN DE SECRETOS VAN FIRMADOS, con la llave de sellado (la misma que
+   * firma lo que se sirve) y atados a esa petición (`re` = huella de su firma). Lo que va a la
+   * cuenta lo reciben todas sus bóvedas, y la que no puede servir (el teléfono, sin llave de
+   * sellado) contestaba con un error que el servicio tomaba por la respuesta: se quedaba sin
+   * secretos aunque esta bóveda sí se los daba (2026-10-18, accounts). Ahora el servicio solo
+   * obedece el error que verifica contra el acta; uno sin firma no corta nada.
+   *
+   * `errorRe`: a quién se le está contestando una petición de secretos, y con qué huella.
+   */
+  const errorRe = new Map()
+  async function signError (obj, re) {
+    const signed = { op: 'secrets.error', error: String(obj?.error || ''), re, ts: Date.now() }
+    const seal = await signSeal(signed)
+    // Sin llave de sellado no hay firma que poner: el error sale tal cual, y quien pidió no
+    // le hará caso (es justo el caso de la bóveda que no puede servir).
+    if (!seal) return { ...obj, re, signed: null }
+    const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+    return { ...obj, re, signed, seal, acta }
+  }
+
   const reply = (to, obj) => {
+    if (obj?.type === MSG.ERROR && !('signed' in obj) && errorRe.has(to)) {
+      const re = errorRe.get(to)
+      signError(obj, re).then((o) => reply(to, o), (e) => { log('[vault] could not sign an error:', e.message); reply(to, { ...obj, signed: null }) })
+      return
+    }
     try {
-      const enviar = canales.get(to) || ((o) => client.send(to, o))
+      const send = channels.get(to) || ((o) => client.send(to, o))
       // ANUNCIAMOS EN CADA RESPUESTA: el otro lado decide con esto, y decide él porque es
       // el que puede tener la lista al día (§14). Va en el envoltorio y no dentro de un
       // cuerpo firmado a propósito — es un dato para enseñar y para explicar un fallo, no
@@ -654,9 +680,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (bytes > MAX_REPLY_BYTES) {
         log(`[vault] the reply to ${obj?.type} does not fit (${bytes} bytes > ${MAX_REPLY_BYTES}): sending an error instead of killing the connection`)
         audit('reply-too-big', { type: obj?.type || null, bytes })
-        return enviar({ type: MSG.ERROR, error: `reply too big (${bytes} bytes): ask for less at a time` })
+        return send({ type: MSG.ERROR, error: `reply too big (${bytes} bytes): ask for less at a time` })
       }
-      enviar(obj)
+      send(obj)
     } catch (e) { log('[vault] could not reply:', e.message) }
   }
 
@@ -855,11 +881,11 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * multivault no podía existir — una segunda selladora sellaba el acta y luego sus papeles
    * los rechazaban los diez mostradores. Ahora se compara contra la lista que dice el acta.
    *
-   * Sin acta se devuelven nulos a propósito: `verifyDelegation` responde `no-acta` y el
+   * Sin acta se devuelven nulos a propósito: `verifyDelegation` responde `no-record` y el
    * mostrador deniega. Es lo contrario de un repliegue — no hay con qué decidir, así que no
    * se decide que sí.
    */
-  async function contextoActa () {
+  async function actaContext () {
     const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!acta) return { actaSeq: null, sealers: null }
     return { actaSeq: acta.seq, sealers: Acta.sealersOf(acta) }
@@ -887,7 +913,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!isFresh(p.data)) { audit('rejected', { what: 'sign', reason: 'stale' }); return staleReply(from) }
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: SCOPE.SIGN, ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: SCOPE.SIGN, ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'sign')
 
@@ -923,7 +949,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!isFresh(p.data)) return staleReply(from)
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: SCOPE.READ, ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: SCOPE.READ, ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'get')
     if (!await actaAllows(from, chk, SCOPE.READ, 'get')) return
@@ -982,22 +1008,22 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         },
 
         async open ({ nonce, enc, by }) {
-          const guardada = aperturas.get('pending')
+          const saved = aperturas.get('pending')
           aperturas.delete('pending')
-          if (!guardada || guardada.exp <= Date.now()) {
+          if (!saved || saved.exp <= Date.now()) {
             return { ok: false, error: 'unlock: ask for a key first, and use it within a minute' }
           }
           let payload = null
-          try { payload = await openSealed({ privateKey: guardada.privateKey, enc }) } catch (_) { payload = null }
+          try { payload = await openSealed({ privateKey: saved.privateKey, enc }) } catch (_) { payload = null }
           // EL NONCE VA DENTRO DEL SOBRE. Si fuera solo por fuera, un sobre capturado se
           // reenvía con un nonce nuevo y el candado del nonce no sirve de nada.
           if (!payload || payload.nonce !== nonce || typeof payload.key !== 'string') {
             audit('rejected', { what: 'unlock', by, reason: 'envelope' })
             return { ok: false, error: 'unlock: the envelope does not check out' }
           }
-          const derivada = b64ToBytes(payload.key)
+          const derived = b64ToBytes(payload.key)
           try {
-            const r = await openWithSecondary(derivada)
+            const r = await openWithSecondary(derived)
             audit('unlock', { by })
             log(`[vault] opened from the admin by ${by || '????-????'}`)
             return { ok: true, result: { ok: true, locked: false } }
@@ -1007,7 +1033,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
             // que ya no responde y no sabe por qué.
             return { ok: false, code: e.code || null, error: e.message, tries: e.tries ?? null, waitSec: e.waitSec ?? null }
           } finally {
-            derivada.fill(0)
+            derived.fill(0)
           }
         }
       }
@@ -1024,7 +1050,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     const revoked = await revocationSet()
     // `vault:sign` — hablar por ti. No `vault:store`, que es guardar cosas.
-    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.SIGN, ...(await contextoActa()), revoked })
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.SIGN, ...(await actaContext()), revoked })
     if (!chk.ok) return denyChain(from, chk, p, 'profile')
     if (!await actaAllows(from, chk, SCOPE.SIGN, 'profile')) return
 
@@ -1055,17 +1081,17 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         return reply(from, { type: MSG.STORE_RESULT, method: d.method, result: b })
       }
       // profilePut
-      const { key, cls, sobre, value } = d.args || {}
-      const quien = await deviceIdOf(chk.device).catch(() => null)
+      const { key, cls, sobre: envelope, value } = d.args || {}
+      const who = await deviceIdOf(chk.device).catch(() => null)
       let r
       if (cls === 'public') {
-        r = await secrets.profilePutPublic(key, value, { by: quien })
+        r = await secrets.profilePutPublic(key, value, { by: who })
       } else {
-        r = await secrets.putSealed(PROFILE_OWNER, key, sobre, { by: quien })
+        r = await secrets.putSealed(PROFILE_OWNER, key, envelope, { by: who })
       }
-      audit('profile.put', { key, cls: cls || 'private', by: quien, gen: r?.gen ?? null })
+      audit('profile.put', { key, cls: cls || 'private', by: who, gen: r?.gen ?? null })
       // Y a los demás aparatos, que si no se enteran al arrancar y vuelve la divergencia.
-      await notifyMembers('profile', { key, by: quien })
+      await notifyMembers('profile', { key, by: who })
       return reply(from, { type: MSG.STORE_RESULT, method: d.method, result: r })
     } catch (e) {
       return reply(from, { type: MSG.ERROR, error: 'profile: ' + e.message })
@@ -1111,9 +1137,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       return reply(from, { type: MSG.ERROR, error: 'profile locked: unlock it on the vault machine (dotrino-vault unlock) to edit it' })
     }
     const revoked = await revocationSet()
-    let chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.STORE, ...(await contextoActa()), revoked })
+    let chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.STORE, ...(await actaContext()), revoked })
     if (!chk.ok && STORE_READ_METHODS.has(d.method)) {
-      chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.READ, ...(await contextoActa()), revoked })
+      chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, expectedScope: SCOPE.READ, ...(await actaContext()), revoked })
     }
     if (!chk.ok) return denyChain(from, chk, p, 'store')
     // El scope que valió es el que hay que preguntarle al acta: un método de lectura pudo
@@ -1291,7 +1317,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
 
   async function handleDevices (from, p) {
     if (!isFresh(p.data)) return staleReply(from)
-    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await contextoActa()), revoked: await revocationSet() })
+    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await actaContext()), revoked: await revocationSet() })
     if (!chk.ok) return denyChain(from, chk, p, null)
     // DOS RESPUESTAS, PORQUE SON DOS PREGUNTAS DISTINTAS.
     //
@@ -1310,9 +1336,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // génesis), y hasta ahora ningún agente headless podía: solo el navegador la tenía. Es
     // corta a propósito (génesis, cambios de sellador, actual), así que no pasa por `fitChain`.
     const sealerChainOf = async () => { try { return (await identity.sealerChain?.()) || null } catch (e) { log('[vault] could not build the sealer chain:', e.message); return null } }
-    const puedeVerTodo = !!record && Acta.memberCanScope(record, chk.device, SCOPE.READ)
+    const canSeeAll = !!record && Acta.memberCanScope(record, chk.device, SCOPE.READ)
     const { issued, revoked } = await identity.listDelegations()
-    if (!puedeVerTodo) {
+    if (!canSeeAll) {
       if (!record) {
         audit('rejected', { what: 'devices', reason: 'no-record' })
         return reply(from, { type: MSG.ERROR, error: 'unauthorized: this vault has no record to decide with' })
@@ -1386,7 +1412,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // revocado NO puede renovarse (ahí sí toca re-emparejar con aprobación).
   async function handleRenew (from, p) {
     if (!isFresh(p.data)) { audit('rejected', { what: 'renew', reason: 'stale' }); return staleReply(from) }
-    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await contextoActa()), revoked: await revocationSet() })
+    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await actaContext()), revoked: await revocationSet() })
     if (!chk.ok) return denyChain(from, chk, p, 'renew')
     // Reusar el label del cert original (si sigue registrado en delegations).
     const { issued } = await identity.listDelegations()
@@ -1450,7 +1476,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!isValidSecretsNs(ns)) return reply(from, { type: MSG.ERROR, error: 'enckey: invalid namespace' })
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: secretsScope(ns), ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: secretsScope(ns), ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'enckey')
     // MISMA FRONTERA QUE SERVIR EL CAJÓN, y por la misma razón: esto no solo apunta una
@@ -1477,7 +1503,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // Y su cajón PROPIO también: un aparato con variables suyas se quedaba sin poder
       // abrirlas, que es el mismo agujero por otra puerta.
       for (const owner of [`ns:${ns}`, `dev:${chk.device}`]) {
-        await spreadKey(owner, (esPublica) => recipientsOf(owner, { public: esPublica }))
+        await spreadKey(owner, (isPublic) => recipientsOf(owner, { public: isPublic }))
           .catch((e) => log(`[vault] ${owner}: could not hand it the key: ${e.message}`))
       }
       // Con la llave de sellado, como todo lo que sirve la bóveda: la maestra no firma con la
@@ -1518,10 +1544,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    */
   function drawerDigest (ns, devicePub) {
     const b = secrets.bundleFor(ns, devicePub)
-    const filas = Object.entries(b.entries || {})
+    const rows = Object.entries(b.entries || {})
       .map(([k, e]) => [k, b.legacy ? sha256Hex(String(e.v)) : (e.gen ?? null)])
       .sort((a, c) => (a[0] < c[0] ? -1 : 1))
-    return sha256Hex(JSON.stringify(filas))
+    return sha256Hex(JSON.stringify(rows))
   }
 
   /**
@@ -1540,7 +1566,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!isValidSecretsNs(ns)) return reply(from, { type: MSG.ERROR, error: 'digest: invalid namespace' })
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: secretsScope(ns), ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: secretsScope(ns), ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'digest')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
@@ -1573,7 +1599,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   async function handleUpdateAsk (from, p) {
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      ...(await contextoActa()), revoked: await revocationSet()
+      ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'update-ask')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
@@ -1607,10 +1633,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (decided) return say(from, { ok: decided.ok, asked: true })
     // YA HAY UN PEDIDO VIVO por esto mismo (el agente se reinició y vuelve a preguntar): no se
     // timbra otra vez; la respuesta irá a quien pregunta ahora.
-    const vivo = updateAsks.get(key)
-    if (vivo && waiters.has(vivo.id)) {
-      vivo.dest = from
-      return say(from, { pending: true, id: vivo.id, exp: vivo.exp, asked: true })
+    const alive = updateAsks.get(key)
+    if (alive && waiters.has(alive.id)) {
+      alive.dest = from
+      return say(from, { pending: true, id: alive.id, exp: alive.exp, asked: true })
     }
     const ask = { id: null, exp: null, dest: from }
     let pend
@@ -1650,7 +1676,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const ev = op === 'update-needs-root' ? 'update-needs-root' : 'updated'
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      ...(await contextoActa()), revoked: await revocationSet()
+      ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, op)
     const record = (await identity.profileActa?.().catch(() => null))?.acta
@@ -1680,7 +1706,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!isValidSecretsNs(ns)) return reply(from, { type: MSG.ERROR, error: `${op}: invalid namespace` })
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: secretsScope(ns), ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: secretsScope(ns), ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, op)
     const record = (await identity.profileActa?.().catch(() => null))?.acta
@@ -1748,7 +1774,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (typeof p.data?.ek !== 'string') return reply(from, { type: MSG.ERROR, error: 'secrets: missing ek (requester ephemeral key)' })
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      expectedScope: secretsScope(ns), ...(await contextoActa()), revoked: await revocationSet()
+      expectedScope: secretsScope(ns), ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'secrets')
     // FRONTERA DEL CN (acta): además del scope del cert, el acta tiene que decir que este
@@ -1788,7 +1814,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const label = (record?.members || []).find((m) => m.pub === chk.device)?.label || ''
       // QUÉ COMANDO, DESDE QUÉ CARPETA — medido contra `/proc` si se puede.
       let ctx = null
-      try { ctx = contextoDelPedido(p.data?.ctx) } catch (e) {
+      try { ctx = requestContext(p.data?.ctx) } catch (e) {
         audit('rejected', { what: 'secrets', ns, reason: 'ctx-mismatch' })
         log(`[vault] ${ns}: refused ${deviceId || '????-????'} — ${e.message}`)
         return reply(from, { type: MSG.ERROR, code: 'ctx-mismatch', error: 'unauthorized: ' + e.message })
@@ -1796,12 +1822,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // ¿YA DIJISTE QUE SÍ A ESTE COMANDO? Entonces no se vuelve a timbrar: la concesión
       // dura una hora DESDE EL ÚLTIMO USO, así que un servicio que sigue pidiendo la
       // mantiene viva. Cambia el comando o la carpeta y esto ya no encaja: otro pedido.
-      const vigente = grants.allows({ ns, device: chk.device, ctx })
-      if (vigente) {
+      const current = grants.allows({ ns, device: chk.device, ctx })
+      if (current) {
         try {
           const res = await resultFor(ns, chk.device, p.data.ek, record, { publicOnly: false })
-          audit('secrets', { device: deviceId, ns, grant: vigente.id })
-          log(`[vault] ${ns}: ${deviceId || '????-????'} served without ringing (approved command, ${vigente.uses} use(s))`)
+          audit('secrets', { device: deviceId, ns, grant: current.id })
+          log(`[vault] ${ns}: ${deviceId || '????-????'} served without ringing (approved command, ${current.uses} use(s))`)
           return reply(from, { type: MSG.SECRETS_RESULT, ...res })
         } catch (e) {
           return reply(from, { type: MSG.ERROR, error: 'secrets: invalid ek' })
@@ -1813,7 +1839,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // volver POR DONDE VINO. Si la pregunta entró por el mostrador local, mandarla por el
       // proxio la deja en el vacío: quien preguntó está escuchando en el socket, no ahí.
       // Lo cazó el E2E de aprobación, que se quedó esperando cinco minutos.
-      const pend = approvals.request({ ns, device: chk.device, deviceId, label, ek: p.data.ek, ctx, from })
+      const pend = approvals.request({ ns, device: chk.device, deviceId, label, ek: p.data.ek, ctx, from, re: errorRe.get(from) || null })
       audit('secrets.pending', { device: deviceId, ns, id: pend.id })
       log(`[vault] ${ns}: ${deviceId || '????-????'} is waiting for approval (${pend.id})` +
         (ctx ? ` — ${commandLine(ctx, 80)}  [${ctx.cwd || '?'}]` : ' — it does not say what it is running'))
@@ -1857,11 +1883,11 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // aparecer una y otra vez. Falta la envoltura, y eso solo se arregla ABRIENDO la
     // bóveda; decirlo aquí es lo que convierte un bucle mudo en algo que se puede arreglar.
     if (!b.legacy && !publicOnly) {
-      const faltan = [...secrets.missingFor(`ns:${ns}`, devicePub), ...secrets.missingFor(`dev:${devicePub}`, devicePub)]
-      if (faltan.length) {
-        const quien = await deviceIdOf(devicePub).catch(() => '????-????')
-        audit('secrets.no-wrapping', { device: quien, ns, vars: faltan })
-        log(`[vault] ${ns}: ${quien} has no wrapping for ${faltan.join(', ')} — open the vault (dotrino-vault unlock) so it hands it the key`)
+      const missingOnes = [...secrets.missingFor(`ns:${ns}`, devicePub), ...secrets.missingFor(`dev:${devicePub}`, devicePub)]
+      if (missingOnes.length) {
+        const who = await deviceIdOf(devicePub).catch(() => '????-????')
+        audit('secrets.no-wrapping', { device: who, ns, vars: missingOnes })
+        log(`[vault] ${ns}: ${who} has no wrapping for ${missingOnes.join(', ')} — open the vault (dotrino-vault unlock) so it hands it the key`)
       }
     }
     const enc = await seal({ ek, payload })
@@ -1903,7 +1929,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const op = p.data?.op
     const chk = await verifyChain({
       data: p.data, signature: p.signature, cert: p.cert,
-      ...(await contextoActa()), revoked: await revocationSet()
+      ...(await actaContext()), revoked: await revocationSet()
     })
     if (!chk.ok) return denyChain(from, chk, p, 'approval')
     const record = (await identity.profileActa?.().catch(() => null))?.acta
@@ -1923,11 +1949,11 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     // `notices`: lo que no es un pedido y quien aprueba tiene que saber (la bóveda se
     // actualizó). El timbre de una app nativa llega vacío, así que lo lee de aquí.
-    if (op === 'approvals') return answer({ op: 'approvals', items: await conContextoSellado(approvals.list(), chk.device, record), notices: notices.list() })
+    if (op === 'approvals') return answer({ op: 'approvals', items: await withSealedContext(approvals.list(), chk.device, record), notices: notices.list() })
     // LO QUE YA ESTÁ APROBADO SE VE Y SE CORTA DESDE DONDE SE APROBÓ. Una concesión que se
     // renueva con cada uso puede durar indefinidamente: si no se puede mirar ni quitar desde
     // el mismo sitio donde se dio, es un permiso invisible, y eso no lo damos por bueno.
-    if (op === 'grants') return answer({ op: 'grants', items: await conContextoSellado(grants.list(), chk.device, record), ttlMs: GRANT_TTL_MS })
+    if (op === 'grants') return answer({ op: 'grants', items: await withSealedContext(grants.list(), chk.device, record), ttlMs: GRANT_TTL_MS })
     // LOS BLOQUEADOS SE VEN desde donde se bloquean. Desbloquear no: eso es de la bóveda
     // (`dotrino-vault unblock <ID>`) o del administrador, que es lo que pidió el dueño.
     if (op === 'blocked') return answer({ op: 'blocked', items: blocked.list() })
@@ -1991,9 +2017,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       audit('secrets.denied', { device: pend.deviceId, ns: pend.ns, id, by })
       log(`[vault] ${pend.ns}: request of ${pend.deviceId} DENIED by ${by}`)
       try {
-        const err = { type: MSG.ERROR, error: `unauthorized: denied — the "${pend.ns}" request was denied from ${by}` }
-        const porLocal = pend.from && canales.get(pend.from)
-        if (porLocal) porLocal(err)
+        const plain = { type: MSG.ERROR, error: `unauthorized: denied — the "${pend.ns}" request was denied from ${by}` }
+        const err = pend.re ? await signError(plain, pend.re) : plain
+        const byLocal = pend.from && channels.get(pend.from)
+        if (byLocal) byLocal(err)
         else client.sendByPubkey(pend.device, err)
       } catch (e) { log(`[vault] ${pend.ns}: could not tell ${pend.deviceId} it was denied: ${e.message}`) }
       return answer({ op: 'deny.result', id, ok: true })
@@ -2020,8 +2047,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // Por el canal por el que preguntó. Si fue el proxio, `sendByPubkey`: así lo recoge al
     // volver aunque ahora esté apagado. Si fue el socket local, por el socket.
     try {
-      const porLocal = pend.from && canales.get(pend.from)
-      if (porLocal) porLocal({ type: MSG.SECRETS_RESULT, ...res })
+      const byLocal = pend.from && channels.get(pend.from)
+      if (byLocal) byLocal({ type: MSG.SECRETS_RESULT, ...res })
       else client.sendByPubkey(pend.device, { type: MSG.SECRETS_RESULT, ...res })
     } catch (e) { log(`[vault] ${pend.ns}: approved, but the reply did not reach ${pend.deviceId}: ${e.message}`) }
     return answer({ op: 'approve.result', id, ok: true })
@@ -2042,26 +2069,26 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * en vez de mandárselo en claro «para que al menos lo vea»: eso sería cambiar la promesa
    * por comodidad, y encima sin avisar a nadie.
    */
-  async function conContextoSellado (items, aprobador, record) {
-    const encPub = (record?.members || []).find((m) => m.pub === aprobador)?.encPub || null
-    const salida = []
+  async function withSealedContext (items, approver, record) {
+    const encPub = (record?.members || []).find((m) => m.pub === approver)?.encPub || null
+    const output = []
     for (const it of items) {
-      const { ctx, ...resto } = it
-      if (!ctx) { salida.push({ ...resto, ctx: null }); continue }
-      if (!encPub) { salida.push({ ...resto, ctx: null, ctxSealed: false, ctxReason: 'no-enc-key' }); continue }
+      const { ctx, ...rest } = it
+      if (!ctx) { output.push({ ...rest, ctx: null }); continue }
+      if (!encPub) { output.push({ ...rest, ctx: null, ctxSealed: false, ctxReason: 'no-enc-key' }); continue }
       try {
         const cek = await makeContentKey()
         const envelope = await encryptWithCek({ cek, gen: 0, plaintext: JSON.stringify(ctx) })
         const wrap = await wrapForMember({ cek, memberEncPub: encPub })
-        salida.push({ ...resto, ctx: null, ctxSealed: true, ctxWrap: wrap, ctxEnvelope: envelope })
+        output.push({ ...rest, ctx: null, ctxSealed: true, ctxWrap: wrap, ctxEnvelope: envelope })
       } catch (e) {
         // NO SE TRAGA: sin esto, un fallo al sellar se vería en el teléfono igual que un
         // pedido que no dice nada, y nadie sabría que hay algo que arreglar.
-        log(`[vault] could not seal the command of ${it.id} for ${aprobador.slice(0, 24)}…: ${e.message}`)
-        salida.push({ ...resto, ctx: null, ctxSealed: false, ctxReason: 'seal-failed' })
+        log(`[vault] could not seal the command of ${it.id} for ${approver.slice(0, 24)}…: ${e.message}`)
+        output.push({ ...rest, ctx: null, ctxSealed: false, ctxReason: 'seal-failed' })
       }
     }
-    return salida
+    return output
   }
 
   /**
@@ -2153,7 +2180,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    */
   async function handleIncident (from, p) {
     if (!isFresh(p.data)) return staleReply(from)
-    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await contextoActa()), revoked: await revocationSet() })
+    const chk = await verifyChain({ data: p.data, signature: p.signature, cert: p.cert, ...(await actaContext()), revoked: await revocationSet() })
     if (!chk.ok) return denyChain(from, chk, p, 'incident')
     const record = await refreshActa()
     if (!record || !Acta.memberCan(record, chk.device, 'sign')) {
@@ -2208,7 +2235,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   if (identity.me?.publickey && typeof platform.openLocalDesk === 'function') {
     platform.openLocalDesk({
       name: (await pubkeyId(identity.me.publickey)).slice(0, 16),
-      onMessage, channels: canales, maxBytes: MAX_REPLY_BYTES, log
+      onMessage, channels: channels, maxBytes: MAX_REPLY_BYTES, log
     })
   }
 
@@ -2224,7 +2251,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (payload.type === MSG.CHECK) return await handleCheck(from, payload)
       if (payload.type === MSG.DEVICES) return await handleDevices(from, payload)
       if (payload.type === MSG.RENEW) return await handleRenew(from, payload)
-      if (payload.type === MSG.SECRETS) return await handleSecrets(from, payload)
+      if (payload.type === MSG.SECRETS) {
+        const re = sha256Hex(String(payload.signature || ''))
+        errorRe.set(from, re)
+        try { return await handleSecrets(from, payload) } catch (e) {
+          return reply(from, { type: MSG.ERROR, error: e.message })
+        } finally { if (errorRe.get(from) === re) errorRe.delete(from) }
+      }
       if (payload.type === MSG.REWRAP_OK) return await handleRewrapOk(payload)
       if (payload.type === MSG.ADMIN) return await handleAdmin(from, payload)
       if (payload.type === MSG.RENOUNCE) return await handleRenounce(from, payload)
@@ -2257,8 +2290,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // («sin-acta-previa»), y este es el único mostrador donde una llega de un desconocido.
     // Anunciar no es cómo se entra en una cuenta —para eso está el enrolamiento—, así que
     // sin acta propia no se adopta: se dice y se para.
-    const propia = (await identity.profileActa?.().catch(() => null))?.acta || null
-    if (!propia) return log('[vault] a record was announced but this vault has none of its own to compare it with: ignored')
+    const own = (await identity.profileActa?.().catch(() => null))?.acta || null
+    if (!own) return log('[vault] a record was announced but this vault has none of its own to compare it with: ignored')
     try {
       const r = await identity.adoptActa?.(acta)
       if (r?.adopted) log(`[vault] adopted record #${acta.seq} announced by another vault (${r.reason})`)
@@ -2321,13 +2354,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    */
   async function approvePasswordRequest ({ pubkey, op, payload }) {
     let resolve
-    const espera = new Promise((r) => { resolve = r })
+    const wait = new Promise((r) => { resolve = r })
     const fields = Array.isArray(payload?.keys) ? payload.keys.slice(0, 12).map((k) => String(k).slice(0, 40)) : null
     await awaitApproval({
       device: pubkey, ns: 'passwords', kind: 'passwords', what: 'passwords', op,
       ctx: { op: String(op || '').replace(/^pm2\./, ''), fields }, onAnswer: resolve
     })
-    return espera
+    return wait
   }
 
   const startPasswordDesk = async () => {
@@ -2529,14 +2562,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       //
       // El acta es la lista de quién es del perfil: esa es la lista correcta. `issued` se
       // suma porque cubre a quien tiene cert y todavía no aparece ahí.
-      const miembros = (await identity.profileMembers?.().catch(() => null))?.members || []
+      const members = (await identity.profileMembers?.().catch(() => null))?.members || []
       const yo = identity.me?.publickey || null
       // UNO POR LLAVE, no uno por delegación: renovar emite una delegación nueva para la
       // MISMA sub-clave, así que un aparato que lleve tiempo enrolado aparece varias veces
       // y recibía el mismo aviso repetido —una vez por renovación acumulada—. Mismo
       // cuidado que en `notifyNsChange`.
       const seen = new Set()
-      const avisar = (pub) => {
+      const notify = (pub) => {
         if (!pub || pub === yo || seen.has(pub)) return
         seen.add(pub)
         // El fallo NO se traga. Que un aviso no salga es exactamente lo que deja a dos
@@ -2549,8 +2582,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, acta }, { quiet: true, app: 'vault' }) }
         catch (e) { log(`[vault] could not notify ${pub.slice(0, 24)}… of "${ev}": ${e.message}`) }
       }
-      for (const m of miembros) avisar(m.pub)
-      for (const d of issued || []) avisar(d.sub)
+      for (const m of members) notify(m.pub)
+      for (const d of issued || []) notify(d.sub)
       log(`[vault] notified ${seen.size} member(s) of "${ev}" (record #${acta?.seq ?? '?'})`)
     } catch (e) { log('[vault] could not notify members of the change:', e.message) }
     // Y a los replicadores, que no quieren un aviso sino el CONTENIDO: sin esto se
@@ -2578,11 +2611,11 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // LA LLAVE VA DENTRO DEL MENSAJE FIRMADO, no se saca de `from`: `from` es el
     // identificador de la conexión en el proxio, no la llave del miembro. Compararlo con
     // el acta rechazaba a todo el mundo, y en el caso contrario habría sido peor.
-    const quien = body.publickey
-    if (typeof quien !== 'string' || !Acta.memberCan(record, quien, 'replica')) {
+    const who = body.publickey
+    if (typeof who !== 'string' || !Acta.memberCan(record, who, 'replica')) {
       return log('[vault] a replica ack arrived from someone the record does not allow to serve: ignored')
     }
-    if (!(await verifyDeviceSig({ publickey: quien, data: body, signature: p.signature }))) {
+    if (!(await verifyDeviceSig({ publickey: who, data: body, signature: p.signature }))) {
       return log('[vault] a replica ack does not check out against its own key: ignored')
     }
     if (typeof body.seq === 'number' && body.seq >= record.seq) return
@@ -2603,7 +2636,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * peligro —el cliente rechaza un acta con `seq` menor del que ya vio— sino menos
    * disponibilidad, que es exactamente lo que un replicador arriesga.
    */
-  async function pushToReplicas (motivo = 'change') {
+  async function pushToReplicas (reason = 'change') {
     try {
       const record = (await identity.profileActa?.().catch(() => null))?.acta || null
       if (!record) return
@@ -2625,7 +2658,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         try { client.sendByPubkey(r.pub, { type: MSG.REPLICA_PUSH, body, seal }); n++ }
         catch (e) { log(`[vault] could not push to a replica: ${e.message}`) }
       }
-      log(`[vault] pushed record #${record.seq} and ${Object.keys(bundles).length} bundle(s) to ${n} replica(s) on ${motivo}`)
+      log(`[vault] pushed record #${record.seq} and ${Object.keys(bundles).length} bundle(s) to ${n} replica(s) on ${reason}`)
     } catch (e) { log('[vault] could not push to the replicas: ' + e.message) }
   }
 
@@ -2903,7 +2936,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     verify: async ({ data, signature, cert }) => {
       const chk = await verifyChain({
         data, signature, cert,
-        expectedScope: SCOPE.ADMIN, ...(await contextoActa()), revoked: await revocationSet()
+        expectedScope: SCOPE.ADMIN, ...(await actaContext()), revoked: await revocationSet()
       })
       // Quitarse a UNO MISMO desde la consola remota entra por aquí: la segunda petición
       // que mande el aparato ya llega con el certificado retirado. Que se entere con el
@@ -2952,8 +2985,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       audit('rejected', { what: 'renounce', reason: 'no-record' })
       return reply(from, { type: MSG.ERROR, error: 'renounce: this vault has no record to apply it to' })
     }
-    const tiene = new Set(Acta.effectiveCaps(actual, record.member) || [])
-    if (!(record.caps || []).some((c) => tiene.has(c))) {
+    const has = new Set(Acta.effectiveCaps(actual, record.member) || [])
+    if (!(record.caps || []).some((c) => has.has(c))) {
       audit('rejected', { what: 'renounce', reason: 'nothing-to-remove' })
       return reply(from, { type: MSG.ERROR, error: 'renounce: that member no longer holds any of those capabilities' })
     }
@@ -2962,8 +2995,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // esté la bóveda abierta o cerrada. Antes se intentaba sellar directamente, sellar es
       // de la maestra, y con el perfil cerrado la renuncia se perdía con un error — en el
       // único momento en que de verdad hace falta.
-      const guardada = await subacta.add(record)
-      if (!guardada.ok && guardada.reason === 'not-acceptable') {
+      const saved = await subacta.add(record)
+      if (!saved.ok && saved.reason === 'not-acceptable') {
         audit('rejected', { what: 'renounce', reason: 'not-acceptable' })
         return reply(from, { type: MSG.ERROR, error: 'renounce: the entry is not one this vault accepts' })
       }
@@ -3142,13 +3175,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
 
   /** Sin duplicar: un cosellador puede ser además el dueño del cajón. */
   /** Sin repetidos por llave: un aparato puede entrar por dos vías (dueño y admin). */
-  const dedup = (miembros) => {
-    const vistos = new Set()
-    return miembros.filter((m) => m && !vistos.has(m.pub) && vistos.add(m.pub))
+  const dedup = (members) => {
+    const seenOnes = new Set()
+    return members.filter((m) => m && !seenOnes.has(m.pub) && seenOnes.add(m.pub))
   }
-  const conCoselladores = (base, co) => {
-    const vistos = new Set(base.map((m) => m.pub))
-    return [...base, ...co.filter((m) => !vistos.has(m.pub))]
+  const withCosealers = (base, co) => {
+    const seenOnes = new Set(base.map((m) => m.pub))
+    return [...base, ...co.filter((m) => !seenOnes.has(m.pub))]
   }
 
   async function recipientsOf (owner, { public: isPublic = false } = {}) {
@@ -3174,23 +3207,23 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // normal firma y no administra, y tiene que ver tu perfil.
     if (owner === PROFILE_OWNER) {
       const record = (await identity.profileActa?.().catch(() => null))?.acta || null
-      const firman = (record?.members || [])
+      const signers = (record?.members || [])
         .filter((m) => m.encPub && Acta.memberCan(record, m.pub, 'sign'))
         .map((m) => ({ pub: m.pub, encPub: m.encPub }))
-      return conCoselladores(dedup(firman), co)
+      return withCosealers(dedup(signers), co)
     }
     if (owner.startsWith('ns:')) {
       const owned = await nsMembers(owner.slice(3))
       // Sin dueño (un cajón personal, o uno cuyo servicio ya no está) entra quien administra
       // SIEMPRE: si no, no quedaría nadie que pudiera abrirlo sin la frase.
       const base = owned.length ? [...owned, ...admins] : await adminDevices()
-      return conCoselladores(dedup(base), co)
+      return withCosealers(dedup(base), co)
     }
     const pub = owner.slice(owner.indexOf(':') + 1)
     const m = await memberOf(pub)
     // El cajón propio de un aparato de SERVICIO es tan suyo como el de su ns.
-    if (m?.cn) return conCoselladores(dedup([m, ...admins]), co)
-    return conCoselladores(dedup([...(m ? [m] : []), ...await adminDevices()]), co)
+    if (m?.cn) return withCosealers(dedup([m, ...admins]), co)
+    return withCosealers(dedup([...(m ? [m] : []), ...await adminDevices()]), co)
   }
 
   /**
@@ -3284,10 +3317,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     for (const owner of secrets.owners()) {
       // Por VISIBILIDAD: a quien administra se le envuelve la pública de un cajón con dueño
       // y no la privada. La lista de las públicas contiene siempre a la de las privadas.
-      const privados = new Set((await recipientsOf(owner)).map((m) => m.pub))
+      const privateOnes = new Set((await recipientsOf(owner)).map((m) => m.pub))
       for (const m of await recipientsOf(owner, { public: true })) {
         if (!m.encPub || m.pub === master) continue
-        const missing = secrets.missingFor(owner, m.pub, { only: (esPublica) => esPublica || privados.has(m.pub) })
+        const missing = secrets.missingFor(owner, m.pub, { only: (isPublic) => isPublic || privateOnes.has(m.pub) })
         if (!missing.length) continue
         const row = out.get(m.pub) || { pub: m.pub, cn: m.cn || null, owners: {} }
         row.owners[owner] = missing
@@ -3556,8 +3589,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (m.cn && !allowOverwrite && secrets.has?.(owner, key)) {
       throw Object.assign(new Error(`var.set: "${m.cn}" cannot overwrite "${key}" — without an approval a service only fills in what is missing; replacing is for who administers`), { code: 'exists' })
     }
-    const cuerpo = authorBody(owner, key, sealed.e, a.ts)
-    if (!(await verifyDeviceSig({ publickey: a.pub, data: cuerpo, signature: a.sig }))) {
+    const body = authorBody(owner, key, sealed.e, a.ts)
+    if (!(await verifyDeviceSig({ publickey: a.pub, data: body, signature: a.sig }))) {
       throw new Error('var.set: the author signature does not verify over this envelope')
     }
   }
@@ -3576,19 +3609,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!wraps || typeof wraps !== 'object') throw new Error('var.set: the envelope carries no wraps')
     const { recoveryPub, members } = await secrets.recipientsFor(owner, { public: isPublic })
     if (!recoveryPub) throw new Error('var.set: this vault has no recovery key yet')
-    const deben = new Set(members.map((m) => m.pub))
-    const traidos = new Set(Object.keys(wraps).filter((k) => k !== RECOVERY_WRAP))
-    const faltan = [...deben].filter((p) => !traidos.has(p))
-    const sobran = [...traidos].filter((p) => !deben.has(p))
-    if (faltan.length) {
-      throw new Error(`var.set: the envelope leaves ${faltan.length} member(s) of "${owner}" out — they could not read it (ask the vault for the recipients with \`var.recipients\`)`)
+    const mustHave = new Set(members.map((m) => m.pub))
+    const fetched = new Set(Object.keys(wraps).filter((k) => k !== RECOVERY_WRAP))
+    const missingOnes = [...mustHave].filter((p) => !fetched.has(p))
+    const extra = [...fetched].filter((p) => !mustHave.has(p))
+    if (missingOnes.length) {
+      throw new Error(`var.set: the envelope leaves ${missingOnes.length} member(s) of "${owner}" out — they could not read it (ask the vault for the recipients with \`var.recipients\`)`)
     }
-    if (sobran.length) {
-      throw new Error(`var.set: the envelope wraps for ${sobran.length} key(s) the record does not name for "${owner}"`)
+    if (extra.length) {
+      throw new Error(`var.set: the envelope wraps for ${extra.length} key(s) the record does not name for "${owner}"`)
     }
   }
 
-  async function refreshWraps (motivo) {
+  async function refreshWraps (reason) {
     // HAY CANDADO SOLO SI HAY LAS DOS COSAS: contraseña Y alguien que sepa abrirla.
     //
     // `startVault` sin gestor de perfiles trae `hasPassword = () => true` y `openKey =
@@ -3597,18 +3630,18 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // con la llave de la máquina, y el repaso del llavero se saltaba ENTERO: el servicio se
     // quedaba sin su envoltura y contestábamos un paquete que no podía abrir. Es el mismo
     // fallo que se está arreglando, colado por la puerta de al lado.
-    const conCandado = typeof openKey === 'function' && (() => { try { return !!hasPassword() } catch (_) { return true } })()
-    const k = conCandado ? openKey() : null
-    if (conCandado && !k) {
-      log(`[vault] ${motivo}: the record changed but the profile key is not here — the record cannot be sealed while locked, so this should not happen; the keyring was NOT rebuilt`)
+    const withLock = typeof openKey === 'function' && (() => { try { return !!hasPassword() } catch (_) { return true } })()
+    const k = withLock ? openKey() : null
+    if (withLock && !k) {
+      log(`[vault] ${reason}: the record changed but the profile key is not here — the record cannot be sealed while locked, so this should not happen; the keyring was NOT rebuilt`)
       return null
     }
-    const r = await resealAll(k).catch((e) => { log(`[vault] ${motivo}: could not rebuild the keyring: ${e.message}`); return null })
-    if (r?.wrapped) log(`[vault] ${motivo}: keyring rebuilt (${r.wrapped} wrap(s) in ${r.drawers} drawer(s))`)
+    const r = await resealAll(k).catch((e) => { log(`[vault] ${reason}: could not rebuild the keyring: ${e.message}`); return null })
+    if (r?.wrapped) log(`[vault] ${reason}: keyring rebuilt (${r.wrapped} wrap(s) in ${r.drawers} drawer(s))`)
     // LOS SOBRES CADUCOS SE DICEN. Son envolturas de quien ya no debería poder abrir ese
     // cajón: retirarlas en silencio esconde que alguien las tuvo de más.
-    if (r?.dropped) log(`[vault] ${motivo}: ${r.dropped} stale wrap(s) dropped (they belonged to members the record no longer names)`)
-    if (r?.failed?.length) log(`[vault] ${motivo}: ${r.failed.length} drawer(s) could NOT be resealed: ${r.failed.map((f) => f.owner).join(', ')}`)
+    if (r?.dropped) log(`[vault] ${reason}: ${r.dropped} stale wrap(s) dropped (they belonged to members the record no longer names)`)
+    if (r?.failed?.length) log(`[vault] ${reason}: ${r.failed.length} drawer(s) could NOT be resealed: ${r.failed.map((f) => f.owner).join(', ')}`)
     return r
   }
 
@@ -3632,9 +3665,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    *
    * Se puede quitar cuando no queden perfiles de antes de 0.81.0 (2027-03-01).
    */
-  const MIGRACION_RECUPERACION_HASTA = Date.parse('2027-03-01T00:00:00Z')
-  async function migrarRecuperacionALaFrase (adminKey) {
-    if (!adminKey || Date.now() > MIGRACION_RECUPERACION_HASTA) return false
+  const RECOVERY_MIGRATION_UNTIL = Date.parse('2027-03-01T00:00:00Z')
+  async function migrateRecoveryToPhrase (adminKey) {
+    if (!adminKey || Date.now() > RECOVERY_MIGRATION_UNTIL) return false
     try {
       // Si la frase ya la abre, no hay nada que migrar.
       await secrets.recoveryOpensWith(adminKey)
@@ -3646,9 +3679,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // pasar `null` probaba la misma llave dos veces y la migración no migraba nada. Lo
       // dijo el propio diagnóstico: «no abre ni con la contraseña ni con la de la máquina»,
       // cuando la de la máquina no se había llegado a probar.
-      const maquina = disk.machineKey()
-      await secrets.recoveryOpensWith(maquina)                // si esta tampoco, no hay migración que hacer
-      const r = await secrets.rekeyRecovery(maquina, adminKey)
+      const machine = disk.machineKey()
+      await secrets.recoveryOpensWith(machine)                // si esta tampoco, no hay migración que hacer
+      const r = await secrets.rekeyRecovery(machine, adminKey)
       if (!r?.rekeyed) return false
       log('[vault] the recovery copy was sealed with this machine\'s key: re-sealed under the profile password')
       audit('secret.recovery-rekeyed', {})
@@ -3686,12 +3719,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const r = await convertPasswords({
         store: passwordsStore,
         sealed: passwords.sealed,
-        cek: await llaveViejaDeContrasenas(),
+        cek: await oldPasswordsKey(),
         recipients,
         // LA MAESTRA FIRMA LO QUE ESCRIBE, como cualquier aparato que guarda una entrada.
         // Firmar no es leer: lo que se le envuelve a esta bóveda sigue siendo nada.
         author: { publickey: master, sign: (body) => identity.signData(body) },
-        dropOldKey: soltarLlaveVieja,
+        dropOldKey: dropOldKey,
         log
       })
       out.converted = r?.entries || 0
@@ -3720,7 +3753,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   async function resealAll (adminKey = null) {
     // ANTES de reenvolver nada: si la copia de recuperación se quedó bajo la llave de la
     // máquina, se pasa a la frase. Sin esto, todo lo de abajo falla con «wrong password».
-    if (adminKey) await migrarRecuperacionALaFrase(adminKey)
+    if (adminKey) await migrateRecoveryToPhrase(adminKey)
     // Y LA LLAVE DE RECUPERACIÓN EXISTE. Nacía al escribir el primer secreto, así que una
     // bóveda recién creada no tenía a quién envolver — y como crearla necesita la maestra,
     // cerrada ya no había manera. El síntoma: escribir el perfil con la bóveda cerrada
@@ -3736,7 +3769,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // POR VISIBILIDAD, no una lista fija: una pública lleva además la envoltura de quien
       // administra. Con una sola lista se le daría también la de una privada con dueño, que
       // es justo lo que no puede pasar.
-      const members = (esPublica) => recipientsOf(owner, { public: esPublica })
+      const members = (isPublic) => recipientsOf(owner, { public: isPublic })
       try {
         const r = await secrets.rewrap(owner, members, adminKey, { exact: true })
         const after = new Set(secrets.recipientsIn(owner))
@@ -3770,7 +3803,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // Los destinatarios de un cajón no son solo quien lo consume: también quien lo
       // administra (`recipientsOf`). Envolver solo para los primeros dejaba a la consola
       // sin poder destapar lo que ella misma acababa de saldar.
-      const members = (esPublica) => recipientsOf(owner, { public: esPublica })
+      const members = (isPublic) => recipientsOf(owner, { public: isPublic })
       try { out[owner] = await spreadKey(owner, members, adminKey) } catch (e) {
         // Sin frase, el último recurso es pedírselo a quien sí puede: el propio servicio.
         let delegated = 0
@@ -3804,7 +3837,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // (dueño, 2026-09-01: «al envolver hay que envolver siempre para todos los selladores,
     // para que siempre tengan la info fresca»). Dos listas para la misma pregunta acaban
     // siempre así: una se actualiza y la otra no.
-    try { return await spreadKey(owner, (esPublica) => recipientsOf(owner, { public: esPublica }), null) } catch (_) { return null }
+    try { return await spreadKey(owner, (isPublic) => recipientsOf(owner, { public: isPublic }), null) } catch (_) { return null }
   }
   async function deleteSecret (ns, key) { const ok = await secrets.delete(ns, key); if (ok) { audit('secret.rm', { ns, key }); scheduleNotice(ns) } return ok }
 
@@ -4137,10 +4170,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     try {
       const members = (await identity.profileMembers()).members
       for (const { pub, caps } of changes) {
-        const quedaron = new Set(members.find((m) => m.pub === pub)?.caps || [])
-        const perdidos = caps.filter((c) => !quedaron.has(c))
-        if (perdidos.length) {
-          log(`[vault] WARNING these permissions were DROPPED: ${perdidos.join(', ')} — this build's @dotrino/identity does not know them (record unchanged for those)`)
+        const remaining = new Set(members.find((m) => m.pub === pub)?.caps || [])
+        const lost = caps.filter((c) => !remaining.has(c))
+        if (lost.length) {
+          log(`[vault] WARNING these permissions were DROPPED: ${lost.join(', ')} — this build's @dotrino/identity does not know them (record unchanged for those)`)
         }
       }
     } catch (_) { /* comprobar es un extra: si falla, no rompe el cambio */ }
@@ -4260,20 +4293,20 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // la bóveda seguía muda en el proxio con su llave ya admitida en el acta. Al dueño le
       // pasó el 2026-09-05: hizo lo que el log pedía y la consola siguió sin contestar.
       if (r?.locked === false) {
-        try { if (await ensureCommKeyInActa()) await reidentificar?.() } catch (_) {}
+        try { if (await ensureCommKeyInActa()) await reidentify?.() } catch (_) {}
       }
       // Y ABSORBER LO PENDIENTE. La subacta ya lo estaba honrando con el perfil cerrado —de
       // eso vive—, pero mientras siga ahí solo lo sabe esta máquina: al sellarlo, entra en
       // el acta y lo respeta toda la cuenta. Si falla no se arrastra: abrir el perfil no
       // puede depender de esto, y lo pendiente sigue surtiendo efecto igual.
-      if (r?.locked === false) { try { await absorberSubacta('unlock') } catch (_) {} }
+      if (r?.locked === false) { try { await absorbSubacta('unlock') } catch (_) {} }
       // Y LOS APARATOS MUERTOS FUERA DEL ACTA, en una sola (dueño, 2026-09-22). Es el mismo
       // momento: la maestra está en memoria y cambiar el acta es uno de sus dos trabajos.
       // Si falla no se arrastra —abrir no depende de esto—, pero se dice.
       if (r?.locked === false) {
         try {
           const antes = await refreshActa()
-          const aprobaban = (antes?.members || []).filter((m) => Acta.memberCan(antes, m.pub, 'approve')).map((m) => m.pub)
+          const approvedBefore = (antes?.members || []).filter((m) => Acta.memberCan(antes, m.pub, 'approve')).map((m) => m.pub)
           const { removed = [], seq } = await identity.pruneExpiredDevices?.() || {}
           for (const d of removed) {
             const id = await deviceIdOf(d.pub).catch(() => null)
@@ -4284,14 +4317,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           // el papel muerto no podía firmar ninguna aprobación, estuviera o no en el acta—,
           // pero desde ese momento todo pedido de un aparato sin `unattended` se rechaza, y
           // el 2026-09-22 eso pasó en silencio: el teléfono se fue y nadie lo supo en dos días.
-          const despues = await refreshActa()
-          const quedan = (despues?.members || []).filter((m) => Acta.memberCan(despues, m.pub, 'approve')).map((m) => m.pub)
-          const idosPub = lastApproverGone(aprobaban, quedan, removed.map((d) => d.pub))
-          const idos = removed.filter((d) => idosPub.includes(d.pub))
-          if (idos.length) {
-            const quienes = (await Promise.all(idos.map(async (d) => `${await deviceIdOf(d.pub).catch(() => '????-????')}${d.label ? ` (${d.label})` : ''}`))).join(', ')
-            audit('no-approver', { removed: idos.length, seq })
-            log(`[vault] WARNING: nobody in the record can approve any more — ${quienes} was the last. From now on every device gets its keys WITHOUT approval, until you enrol one and grant it \`dotrino-vault caps <ID> +aprueba\``)
+          const after = await refreshActa()
+          const left = (after?.members || []).filter((m) => Acta.memberCan(after, m.pub, 'approve')).map((m) => m.pub)
+          const gonePubs = lastApproverGone(approvedBefore, left, removed.map((d) => d.pub))
+          const gone = removed.filter((d) => gonePubs.includes(d.pub))
+          if (gone.length) {
+            const whom = (await Promise.all(gone.map(async (d) => `${await deviceIdOf(d.pub).catch(() => '????-????')}${d.label ? ` (${d.label})` : ''}`))).join(', ')
+            audit('no-approver', { removed: gone.length, seq })
+            log(`[vault] WARNING: nobody in the record can approve any more — ${whom} was the last. From now on every device gets its keys WITHOUT approval, until you enrol one and grant it \`dotrino-vault caps <ID> +aprueba\``)
           }
         } catch (e) { log(`[vault] unlock: could not remove expired devices: ${e.message}`) }
       }
@@ -4335,7 +4368,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const answer = new Promise((resolve) => { settle = resolve })
       // RETIRAR: otro perfil ya contestó por la máquina, o ya no hace falta. El pedido sale
       // de la lista de quien aprueba en vez de quedarse un día pidiendo algo ya decidido.
-      const retirar = () => {
+      const retire = () => {
         if (!pendId || !waiters.delete(pendId)) return
         const pend = approvals.take(pendId)
         audit('update.withdrawn', { device: pend?.deviceId || null, ns: 'vault', id: pendId })
@@ -4345,9 +4378,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       awaitApproval({
         device: yo, ns: 'vault', kind: 'update', what: 'update',
         ctx: { product: '@dotrino/vaultd', version, from: VERSION }, ttlMs: UPDATE_TTL_MS, onAnswer: settle
-      }).then((pend) => { pendId = pend.id; if (withdrawn) retirar() })
+      }).then((pend) => { pendId = pend.id; if (withdrawn) retire() })
         .catch((e) => { log(`[vault] update: could not ask for approval: ${e.message}`); settle(false) })
-      return { answer, withdraw: () => { withdrawn = true; retirar() } }
+      return { answer, withdraw: () => { withdrawn = true; retire() } }
     },
     announceUpdate,
     approvers: async () => {
@@ -4409,7 +4442,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // dueño (TUI/CLI), donde el contexto ya es suyo y no hay nada que sellar.
     listGrants: () => grants.list(),
     revokeGrant: (id) => grants.revoke(id),
-    revokeGrants: (filtro) => grants.revokeAll(filtro || {}),
+    revokeGrants: (filter) => grants.revokeAll(filter || {}),
     // Aprobar desde el PC avisa igual que aprobar a distancia: el resto de tus
     // dispositivos se entera de que entró alguien, venga de donde venga.
     approveDevice: async (code, adminKey) => {
@@ -4426,7 +4459,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         // envolver hay que envolver siempre para todos los selladores, para que siempre
         // tengan la info fresca»). Repartiendo solo a los del ns, un cajón tocado por esta
         // puerta dejaba a los selladores con la envoltura vieja.
-        await spreadKey(`ns:${m.cn}`, (esPublica) => recipientsOf(`ns:${m.cn}`, { public: esPublica }), adminKey).catch(async (e) => {
+        await spreadKey(`ns:${m.cn}`, (isPublic) => recipientsOf(`ns:${m.cn}`, { public: isPublic }), adminKey).catch(async (e) => {
           log('[vault] could not hand the key to the new service:', e.message)
           // Sin la frase la bóveda no puede envolvérsela… pero un HERMANO suyo sí: otro
           // servicio del mismo cajón ya tiene la llave abierta (§8.11). Si contesta, el
@@ -4557,10 +4590,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
      */
     localChannel (onReply) {
       const id = 'local:' + Math.random().toString(36).slice(2)
-      canales.set(id, (obj) => { try { onReply(obj) } catch (_) {} })
+      channels.set(id, (obj) => { try { onReply(obj) } catch (_) {} })
       return {
         send: (payload) => { onMessage(id, payload).catch((e) => reply(id, { type: MSG.ERROR, error: e.message })) },
-        close: () => { canales.delete(id) }
+        close: () => { channels.delete(id) }
       }
     },
     revokeDevice: async (target) => {

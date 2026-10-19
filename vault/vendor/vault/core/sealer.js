@@ -163,8 +163,8 @@ export function makeSealer () {
      * síntoma sería un servicio arrancando sin configuración y sin decir por qué.
      */
     async wrapFor (cek, members) {
-      const { generation, sinLlave } = await makeGeneration({ members, cek })
-      return { wraps: generation.wraps, sinLlave }
+      const { generation, sinLlave: noKey } = await makeGeneration({ members, cek })
+      return { wraps: generation.wraps, sinLlave: noKey }
     }
   }
 }

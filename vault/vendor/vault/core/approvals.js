@@ -84,7 +84,7 @@ export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS
      * apruebe— y tiene que volver por el mismo sitio: desde que la bóveda atiende también
      * por un socket local, mandarla siempre por el proxio la dejaba en el vacío.
      */
-    request ({ ns, device, deviceId, label = '', ek, ctx = null, from = null, ttlMs = null, kind = 'read' }) {
+    request ({ ns, device, deviceId, label = '', ek, ctx = null, from = null, ttlMs = null, kind = 'read', re = null }) {
       // Pedir las claves otra vez reemplaza al pedido anterior: es la misma pregunta. Una
       // ESCRITURA no: cada una lleva su propio valor, y reemplazarla tiraría la anterior
       // sin que nadie dijera que no.
@@ -92,7 +92,8 @@ export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS
       const ts = now()
       // `ttlMs` lo pone quien pide: una actualización aguanta un día y un comando cinco
       // minutos, y la mesa no tiene por qué saber cuál es cuál (ver `PENDING_TTL_MS`).
-      const p = { id: rnd(), ns, kind, device, deviceId, label, ek, ctx, ts, exp: ts + (ttlMs || pendingTtlMs), from }
+      // `re`: la huella de la petición, para firmarle al que pidió el «denegado» (ver `signError`).
+      const p = { id: rnd(), ns, kind, device, deviceId, label, ek, ctx, ts, exp: ts + (ttlMs || pendingTtlMs), from, re }
       pending.set(p.id, p)
       return publicOf(p)
     },

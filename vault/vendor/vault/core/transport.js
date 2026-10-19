@@ -67,38 +67,38 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   // La puerta tiene que decidir AL INSTANTE (la señal llega y o se atiende o no), y pedir
   // el acta es asíncrono. Así que se guarda una copia y se refresca donde ya se refresca
   // todo: en `identify`, que es lo que corre cada vez que el acta cambia o se reconecta.
-  let actaVista = null
+  let seenActa = null
   // ¿Está esta bóveda ATADA al proxio ahora mismo? Conectado no es identificado: el socket
   // puede estar perfectamente abierto y el sobre rechazado, y entonces nadie la alcanza por
   // su pubkey. Se expone para que `status` lo enseñe en vez de dejarlo a un log del arranque.
-  let identificado = false
-  const enElActa = (token) => {
+  let identified = false
+  const inActa = (token) => {
     // SIN ACTA NO SE NEGOCIA. No se sabe quién es nadie, y en la duda no se arranca a
     // parsear red no confiable. Se sigue por el proxio, que es el escalón que siempre está.
-    if (!actaVista) return false
-    return (actaVista.members || []).some((m) => m?.pub === token)
+    if (!seenActa) return false
+    return (seenActa.members || []).some((m) => m?.pub === token)
   }
-  const client = makeClient ? makeClient({ url, acceptDirectFrom: enElActa }) : new WebSocketProxyClient({
-    url, enableWebRTC: true, acceptDirectFrom: enElActa, autoReconnect: true,
+  const client = makeClient ? makeClient({ url, acceptDirectFrom: inActa }) : new WebSocketProxyClient({
+    url, enableWebRTC: true, acceptDirectFrom: inActa, autoReconnect: true,
     maxReconnectAttempts: 100000, reconnectDelay: 4000
   })
 
   await client.connect()
 
   const identify = async () => {
-    identificado = false
+    identified = false
     if (!client.token) return
     const record = (await identity.profileActa?.().catch(() => null))?.acta || null
-    actaVista = record   // la copia que mira la puerta del canal directo
+    seenActa = record   // la copia que mira la puerta del canal directo
     const comm = commKey?.pub?.() || null
     // ¿Nos nombra el acta? Con `cn` o sin él, lo que el proxio mira es la pertenencia.
-    const esMiembro = comm && (record?.members || []).some((m) => m?.pub === comm)
+    const isMember = comm && (record?.members || []).some((m) => m?.pub === comm)
 
-    if (comm && esMiembro) {
+    if (comm && isMember) {
       // El sobre lo arma el pilar (`identifyAs`), que le pone el destinatario.
       try {
         await client.identifyAs({ publickey: comm, sign: (d) => commKey.sign(d), acta: record })
-        identificado = true
+        identified = true
         // SE DICE QUE SE IDENTIFICÓ, y con qué llave. Este camino era MUDO: al pasar de la
         // maestra a la llave de comunicación, el único rastro de «estoy alcanzable» que
         // quedaba en el log era el del repliegue. Así que cuando la consola decía «no
@@ -133,7 +133,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
       if (!publickey) return
       log('[vault] identifying with the master key: this vault is not in its own record yet (open the profile once to fix it)')
       await client.identifyAs({ publickey, sign: (d) => identity.signData(d), acta: record })
-      identificado = true
+      identified = true
     } catch (e) {
       log(`[vault] cannot identify on the proxy yet: ${e.message} — the profile still opens; unlock it once and it gets its own communication key`)
     }
@@ -175,7 +175,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
    */
   let announcedAt = 0
   const announceAccount = async () => {
-    if (!announce || !identificado) return
+    if (!announce || !identified) return
     announcedAt = Date.now()
     try { await client.publish(announce) } catch (e) {
       log(`[vault] could not announce this account on the proxy (${e.message}) — a borrowed machine will not find this vault by its address`)
@@ -190,38 +190,38 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
    * lo que se pierde es que la despierten, y eso no se puede callar.
    */
   const registerWake = async () => {
-    if (!wakeUrl || !identificado) return
+    if (!wakeUrl || !identified) return
     const comm = commKey?.pub?.() || null
-    if (!comm || !actaVista) { log('[vault] cannot register the wake URL: no communication key in the record yet'); return }
+    if (!comm || !seenActa) { log('[vault] cannot register the wake URL: no communication key in the record yet'); return }
     try {
-      await client.registerWake({ publicKey: comm, sign: (d) => commKey.sign(d), url: wakeUrl, acta: actaVista, channel: announce || undefined })
+      await client.registerWake({ publicKey: comm, sign: (d) => commKey.sign(d), url: wakeUrl, acta: seenActa, channel: announce || undefined })
       log('[vault] wake URL registered on the proxy')
     } catch (e) {
       log(`[vault] could not register the wake URL (${e.code || ''} ${e.message}) — the proxy will not wake this vault`)
     }
   }
 
-  let reintento = null
-  let fallos = 0
+  let retry = null
+  let failures = 0
   const identifyWithRetry = async () => {
-    if (reintento) { clearTimeout(reintento); reintento = null }
+    if (retry) { clearTimeout(retry); retry = null }
     try {
       await identify()
       await announceAccount()
       await registerWake()
-      if (fallos) log(`[vault] identified on the proxy after ${fallos + 1} attempt(s)`)
-      fallos = 0
+      if (failures) log(`[vault] identified on the proxy after ${failures + 1} attempt(s)`)
+      failures = 0
     } catch (e) {
-      fallos++
-      const espera = Math.min(60000, 5000 * fallos)
-      log(`[vault] could not identify on the proxy (${e.message}) — retrying in ${Math.round(espera / 1000)}s; until then this vault is unreachable and cannot ring anyone`)
-      reintento = setTimeout(() => { reintento = null; identifyWithRetry() }, espera)
-      reintento.unref?.()
+      failures++
+      const wait = Math.min(60000, 5000 * failures)
+      log(`[vault] could not identify on the proxy (${e.message}) — retrying in ${Math.round(wait / 1000)}s; until then this vault is unreachable and cannot ring anyone`)
+      retry = setTimeout(() => { retry = null; identifyWithRetry() }, wait)
+      retry.unref?.()
     }
   }
   await identifyWithRetry()
   // Re-identificar al reconectar (el token cambia).
-  client.on('token', () => { fallos = 0; identifyWithRetry() })
+  client.on('token', () => { failures = 0; identifyWithRetry() })
 
   /**
    * QUE NO SE PUEDA VOLVER A QUEDAR MUDA.
@@ -247,7 +247,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   let saidDown = false
   client.on('disconnect', ({ code, reason } = {}) => {
     // Sin socket no hay nadie atado al proxio: lo que se identificó era la conexión anterior.
-    identificado = false
+    identified = false
     if (!downSince) downSince = Date.now()
     if (saidDown) return
     saidDown = true
@@ -267,7 +267,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     // borra al caerse, así que mirarlo daba la bóveda por vuelta con el socket cerrado: el
     // 2026-10-15 dijo «back on the proxy after 50s», no volvió a marcar nunca y pasó hora y
     // media fuera, avisando cada 10 minutos de que no podía anunciarse.
-    if (identificado && client.isConnected && client.token) {
+    if (identified && client.isConnected && client.token) {
       if (downSince) log(`[vault] back on the proxy after ${Math.round((Date.now() - downSince) / 1000)}s`)
       downSince = 0; saidDown = false
       // EL ANUNCIO CADUCA: el proxio borra una entrada de canal a los 20 minutos de publicada.
@@ -286,5 +286,5 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   }, RECHECK_MS)
   watchdog.unref?.()
 
-  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identificado }
+  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identified }
 }

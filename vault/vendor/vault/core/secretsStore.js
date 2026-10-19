@@ -285,10 +285,10 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
    *
    * La cola es de este proceso, que es el único que escribe este archivo.
    */
-  let cola = Promise.resolve()
-  const enFila = (fn) => {
-    const r = cola.then(fn, fn)
-    cola = r.then(() => {}, () => {})
+  let queue = Promise.resolve()
+  const queued = (fn) => {
+    const r = queue.then(fn, fn)
+    queue = r.then(() => {}, () => {})
     return r
   }
 
@@ -309,13 +309,13 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
    */
   const gcKeyring = (bag, k, owner) => {
     if (!bag[k]) return
-    const vivos = new Set()
+    const aliveOnes = new Set()
     // TAMBIÉN LAS PÚBLICAS. Se saltaban porque antes no tenían generación —se guardaban en
     // claro—, así que su llave se recogía por «no la usa nadie» y la variable quedaba
     // ilegible. Desde 2026-09-02 van en sobre como todas y cuentan como todas.
-    for (const e of Object.values(bag[k].vars || {})) if (e.gen != null) vivos.add(e.gen)
-    for (const h of data.history) if (h.owner === owner && h.gen != null) vivos.add(h.gen)
-    bag[k].keyring = (bag[k].keyring || []).filter((g) => vivos.has(g.gen))
+    for (const e of Object.values(bag[k].vars || {})) if (e.gen != null) aliveOnes.add(e.gen)
+    for (const h of data.history) if (h.owner === owner && h.gen != null) aliveOnes.add(h.gen)
+    bag[k].keyring = (bag[k].keyring || []).filter((g) => aliveOnes.has(g.gen))
   }
 
   /**
@@ -350,9 +350,9 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
    */
   const wrapAll = async (cek, owner, isPublic = false) => {
     const members = (await recipients?.(owner, { public: isPublic })) || []
-    const { wraps, sinLlave } = await sealer.wrapFor(cek, members)
+    const { wraps, sinLlave: noKey } = await sealer.wrapFor(cek, members)
     wraps[RECOVERY] = await sealer.wrapForKey(cek, data.recovery.pub)
-    return { wraps, sinLlave }
+    return { wraps, sinLlave: noKey }
   }
 
   return {
@@ -375,7 +375,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      *
      * Idempotente: si ya está, no toca nada.
      */
-    async ensureRecovery (adminKey = null) { return enFila(async () => (await ensureRecovery(adminKey)).pub) },
+    async ensureRecovery (adminKey = null) { return queued(async () => (await ensureRecovery(adminKey)).pub) },
 
     /**
      * MUCHAS ESCRITURAS, UN GUARDADO. Cargar la configuración de un servicio son veinte
@@ -410,13 +410,13 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      */
     bundleFor (ns, devicePub = null, { publicOnly = false } = {}) {
       assertNs(ns)
-      const todo = { ...entriesOf(data.ns, ns), ...(devicePub ? entriesOf(data.dev, devicePub) : {}) }
+      const everything = { ...entriesOf(data.ns, ns), ...(devicePub ? entriesOf(data.dev, devicePub) : {}) }
       // EL FILTRO LO HACE LA BÓVEDA, no quien pide. Si mandara todo y el cliente eligiera,
       // pedir «solo públicas» sería la forma de saltarse la aprobación y llevarse las
       // privadas igual — o sea justo lo contrario de lo que se quiere.
       const entries = publicOnly
-        ? Object.fromEntries(Object.entries(todo).filter(([, e]) => e.pub))
-        : todo
+        ? Object.fromEntries(Object.entries(everything).filter(([, e]) => e.pub))
+        : everything
       if (isLegacy()) return { legacy: true, entries }
 
       const misWraps = (bag, k) => (bag[k]?.keyring || [])
@@ -628,7 +628,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       return this._put(data.dev, pub, `dev:${pub}`, key, value, isPublic, by)
     },
     /** @private */
-    async _put (...a) { return enFila(() => this._putRaw(...a)) },
+    async _put (...a) { return queued(() => this._putRaw(...a)) },
     /** @private El cuerpo, ya en fila (ver `enFila`). */
     async _putRaw (bag, k, owner, key, value, isPublic, by) {
       // El cajón del perfil tiene su propio alfabeto (`nickname`, no `NICKNAME`). Por aquí
@@ -659,7 +659,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       // CEK NUEVA, siempre: no se puede reutilizar la de antes sin poder abrirla.
       const cek = await sealer.newKey()
       const gen = nextGen(bag, k, owner)
-      const { wraps, sinLlave } = await wrapAll(cek, owner, pub)
+      const { wraps, sinLlave: noKey } = await wrapAll(cek, owner, pub)
       const e = await sealer.encrypt(cek, value, gen)
       // La FIRMA dice que este sobre salió de esta bóveda, y con qué acta (§8.8). Si no
       // hay con qué firmar, el sobre sale sin firma: guardar es más importante.
@@ -670,7 +670,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       bag[k].keyring = [...(bag[k].keyring || []), { gen, createdAt: Date.now(), wraps }]
       gcKeyring(bag, k, owner)
       save()
-      return { gen, sinLlave }
+      return { gen, sinLlave: noKey }
     },
 
     /**
@@ -693,18 +693,18 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      * después ni abriendo la bóveda.
      *
      * @param {string} owner `ns:<scope>` o `dev:<pub>`
-     * @param {{e:{iv:string,ct:string,gen?:number}, wraps:Object}} sobre
+     * @param {{e:{iv:string,ct:string,gen?:number}, wraps:Object}} envelope
      */
-    async putSealed (owner, key, sobre, { by = null, public: isPublic = false } = {}) {
-      return enFila(() => this._putSealedRaw(owner, key, sobre, by, !!isPublic))
+    async putSealed (owner, key, envelope, { by = null, public: isPublic = false } = {}) {
+      return queued(() => this._putSealedRaw(owner, key, envelope, by, !!isPublic))
     },
     /** @private */
-    async _putSealedRaw (owner, key, sobre, by, isPublic) {
+    async _putSealedRaw (owner, key, envelope, by, isPublic) {
       if (isLegacy()) throw new Error('putSealed: this store is still v3 (run `migrate` first)')
       if (needsMigration()) throw new NeedsMigration()
       const [kind, k] = splitOwner(owner)
       const bag = kind === 'ns' ? data.ns : data.dev
-      const e = sobre?.e; const wraps = sobre?.wraps
+      const e = envelope?.e; const wraps = envelope?.wraps
       if (!e || typeof e.iv !== 'string' || typeof e.ct !== 'string') {
         throw new Error('putSealed: the envelope must carry `iv` and `ct`')
       }
@@ -823,7 +823,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       return this._setVis(data.dev, pub, `dev:${pub}`, key, isPublic, adminKey)
     },
     /** @private */
-    async _setVis (...a) { return enFila(() => this._setVisRaw(...a)) },
+    async _setVis (...a) { return queued(() => this._setVisRaw(...a)) },
     /** @private El cuerpo, ya en fila. */
     async _setVisRaw (bag, k, owner, key, isPublic, adminKey) {
       const vars = varsOf(bag, k)
@@ -930,7 +930,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      *
      * Y por eso ESTO sí pide la frase: heredar lo viejo obliga a abrirlo.
      */
-    async rewrap (...a) { return enFila(() => this._rewrap(...a)) },
+    async rewrap (...a) { return queued(() => this._rewrap(...a)) },
     /** Los cajones que existen, para poder recorrerlos todos (`ns:…` y `dev:…`). */
     owners () {
       return [...Object.keys(data.ns).map((k) => `ns:${k}`), ...Object.keys(data.dev).map((k) => `dev:${k}`)]
@@ -1004,7 +1004,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      * de los secretos se queda intacta.
      */
     async profilePutPublic (key, value, { by = null } = {}) {
-      return enFila(async () => {
+      return queued(async () => {
         if (isLegacy()) throw new Error('profile: this store is still v3 (run `migrate` first)')
         if (needsMigration()) throw new NeedsMigration()
         assertProfileKey(key)
@@ -1039,9 +1039,9 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       const priv = await openRecovery(adminKey)
       let wrapped = 0
       let sealed = 0
-      const sinLlave = new Set()
+      const noKey = new Set()
       const vars = varsOf(bag, k)
-      const paraVisibilidad = async (esPublica) => (typeof members === 'function' ? members(esPublica) : members)
+      const forVisibility = async (isPublic) => (typeof members === 'function' ? members(isPublic) : members)
 
       // UN VALOR QUE SE QUEDÓ EN CLARO SE SELLA AQUÍ, que es el único sitio donde se puede.
       //
@@ -1060,27 +1060,27 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
         if (typeof e.v !== 'string' || e.e) continue
         const cek = await sealer.newKey()
         const gen = nextGen(bag, k, owner)
-        const r = await sealer.wrapFor(cek, await paraVisibilidad(!!e.pub))
+        const r = await sealer.wrapFor(cek, await forVisibility(!!e.pub))
         r.wraps[RECOVERY] = await sealer.wrapForKey(cek, data.recovery.pub)
-        const sobre = await sealer.encrypt(cek, e.v, gen)
-        const seal = signer ? await signer({ owner, key, gen, iv: sobre.iv, ct: sobre.ct }) : null
+        const envelope = await sealer.encrypt(cek, e.v, gen)
+        const seal = signer ? await signer({ owner, key, gen, iv: envelope.iv, ct: envelope.ct }) : null
         // `pub` y `at` se conservan: no es un valor nuevo, es el mismo mejor guardado.
-        vars[key] = { pub: !!e.pub, owner, gen, e: sobre, seal, at: e.at || Date.now(), by: e.by || null }
+        vars[key] = { pub: !!e.pub, owner, gen, e: envelope, seal, at: e.at || Date.now(), by: e.by || null }
         bag[k].keyring = [...(bag[k].keyring || []), { gen, createdAt: Date.now(), wraps: r.wraps }]
-        for (const x of r.sinLlave) sinLlave.add(x)
+        for (const x of r.sinLlave) noKey.add(x)
         sealed++
       }
 
       // De qué variable es cada generación: es lo que dice si esa CEK es de una pública.
       // Se calcula DESPUÉS de sellar, para que las generaciones recién creadas entren.
-      const visibilidad = new Map()
-      for (const e of Object.values(vars)) if (e.gen != null) visibilidad.set(e.gen, !!e.pub)
-      const paraGen = async (gen) => paraVisibilidad(visibilidad.get(gen) === true)
+      const visibility = new Map()
+      for (const e of Object.values(vars)) if (e.gen != null) visibility.set(e.gen, !!e.pub)
+      const forGen = async (gen) => forVisibility(visibility.get(gen) === true)
       for (const g of bag[k].keyring || []) {
         const w = g.wraps?.[RECOVERY]
         if (!w) continue
         const cek = await sealer.openWrapWith(priv, w)
-        const r = await sealer.wrapFor(cek, await paraGen(g.gen))
+        const r = await sealer.wrapFor(cek, await forGen(g.gen))
         // `exact`: el llavero queda con lo que dice el acta y NADA más. Es lo que hace
         // falta para rehacerlo al abrir la bóveda:
         //   · una envoltura basura que metió alguien se reemplaza por la buena;
@@ -1092,11 +1092,11 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
         // OJO con lo que esto NO es: quitarle la envoltura a alguien no le quita lo que
         // ya leyó ni la llave que se haya guardado. Cortar de verdad es `rotate`.
         g.wraps = exact ? { ...r.wraps, [RECOVERY]: w } : { ...g.wraps, ...r.wraps }
-        for (const s of r.sinLlave) sinLlave.add(s)
+        for (const s of r.sinLlave) noKey.add(s)
         wrapped += Object.keys(r.wraps).length
       }
       save()
-      return { wrapped, sealed, sinLlave: [...sinLlave] }
+      return { wrapped, sealed, sinLlave: [...noKey] }
     },
 
     /**
@@ -1114,7 +1114,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      * El HISTÓRICO se muda con ella: es la misma variable, y dejarlo bajo el nombre viejo
      * lo volvería inalcanzable — se vería como un hueco, no como una decisión.
      */
-    async rename (owner, from, to) { return enFila(() => this._renameRaw(owner, from, to)) },
+    async rename (owner, from, to) { return queued(() => this._renameRaw(owner, from, to)) },
     /** @private */
     async _renameRaw (owner, from, to) {
       if (needsMigration()) throw new NeedsMigration()
@@ -1148,7 +1148,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      *
      * No devuelve lo que el expulsado ya leyó. Eso no se puede deshacer y no se promete.
      */
-    async rotate (...a) { return enFila(() => this._rotate(...a)) },
+    async rotate (...a) { return queued(() => this._rotate(...a)) },
     /** @private */
     async _rotate (owner, members, adminKey = null) {
       needSealer('rotate the key of a drawer')
@@ -1159,30 +1159,30 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       const priv = await openRecovery(adminKey)
 
       const vars = bag[k].vars || {}
-      const claras = {}
+      const plainOnes = {}
       for (const [key, e] of Object.entries(vars)) {
-        if (!e.pub) claras[key] = await sealer.openValue(await this._cekOf(bag, k, e.gen, priv), e.e)
+        if (!e.pub) plainOnes[key] = await sealer.openValue(await this._cekOf(bag, k, e.gen, priv), e.e)
       }
       // Se tira el llavero entero: las generaciones viejas son justamente lo que el que
       // se fue podría abrir. Con ellas se va el histórico de este cajón, que estaba
       // cifrado con ellas — rotar es renunciar a poder revertir lo de antes.
       bag[k].keyring = []
       data.history = data.history.filter((h) => h.owner !== owner)
-      const sinLlave = new Set()
+      const noKey = new Set()
       let gen = 0
-      for (const [key, value] of Object.entries(claras)) {
+      for (const [key, value] of Object.entries(plainOnes)) {
         const cek = await sealer.newKey()
         gen += 1
-        const { wraps, sinLlave: faltan } = await sealer.wrapFor(cek, members)
+        const { wraps, sinLlave: missingOnes } = await sealer.wrapFor(cek, members)
         wraps[RECOVERY] = await sealer.wrapForKey(cek, data.recovery.pub)
-        for (const s of faltan) sinLlave.add(s)
+        for (const s of missingOnes) noKey.add(s)
         const e = await sealer.encrypt(cek, value, gen)
         const seal = signer ? await signer({ owner, key, gen, iv: e.iv, ct: e.ct }) : null
         vars[key] = { pub: false, owner, gen, e, seal, at: Date.now(), by: null }
         bag[k].keyring.push({ gen, createdAt: Date.now(), wraps })
       }
       save()
-      return { rotated: Object.keys(claras).length, sinLlave: [...sinLlave], gen, cambio: true }
+      return { rotated: Object.keys(plainOnes).length, sinLlave: [...noKey], gen, cambio: true }
     },
 
     /**
@@ -1233,7 +1233,7 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      *
      * `null` en cualquiera de las dos significa «la del perfil sin contraseña».
      */
-    async rekeyRecovery (...a) { return enFila(() => this._rekeyRecovery(...a)) },
+    async rekeyRecovery (...a) { return queued(() => this._rekeyRecovery(...a)) },
     /**
      * ¿ESTA llave abre la copia de recuperación? Lanza si no.
      *
@@ -1286,19 +1286,19 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
      * el original, y solo entonces se escribe. Si algo no cuadra no se toca nada y se
      * lanza: media migración es peor que ninguna.
      */
-    async migrate (...a) { return enFila(() => this._migrate(...a)) },
+    async migrate (...a) { return queued(() => this._migrate(...a)) },
     /** @private */
     async _migrate (membersOf, adminKey = null) {
       if (data.schemaVersion === SCHEMA_VERSION) return { migrated: false, reason: 'already-v5' }
       needSealer('seal the store')
-      const desde = data.schemaVersion
+      const since = data.schemaVersion
 
       // De v4: las CEK viejas viven en la copia maestra, y para abrirla hace falta la
       // frase. Es la única vez que se pide.
-      const master = desde === SEALED_MASTER_VERSION ? await sealer.openMaster(data.master, keyOr(adminKey)) : null
-      const claro = async (owner, e) => {
+      const master = since === SEALED_MASTER_VERSION ? await sealer.openMaster(data.master, keyOr(adminKey)) : null
+      const plain = async (owner, e) => {
         if (e.pub) return e.v
-        if (desde === LEGACY_VERSION) return e.v
+        if (since === LEGACY_VERSION) return e.v
         return sealer.decrypt(master, e.e, e.owner || owner)
       }
 
@@ -1312,12 +1312,12 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
         history: []
       }
       const antes = {}
-      const sinLlave = {}
+      const noKey = {}
 
       for (const [kind, src, dst] of [['ns', data.ns, next.ns], ['dev', data.dev, next.dev]]) {
         for (const [k, bag] of Object.entries(src)) {
           const owner = `${kind}:${k}`
-          const entradas = desde === LEGACY_VERSION ? (bag || {}) : (bag?.vars || {})
+          const entries = since === LEGACY_VERSION ? (bag || {}) : (bag?.vars || {})
           const vars = {}
           const keyring = []
           // UNA SOLA generación para todo el cajón, y no es una excepción a «una por
@@ -1328,8 +1328,8 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
           // sin apagar a nadie. Lo que se escriba DESPUÉS ya estrena generación.
           const gen = 1
           let cek = null
-          for (const [key, e] of Object.entries(entradas)) {
-            const value = await claro(owner, e)
+          for (const [key, e] of Object.entries(entries)) {
+            const value = await plain(owner, e)
             antes[`${owner}\u0000${key}`] = value
             // LA PÚBLICA TAMBIÉN SE SELLA (dueño, 2026-09-02). Aquí se dejaba en claro,
             // así que un archivo migrado se quedaba con valores legibles en el disco —
@@ -1337,14 +1337,14 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
             // a quién se le despacha sin aprobación, no cómo se guarda.
             if (!cek) {
               cek = await sealer.newKey()
-              const { wraps, sinLlave: faltan } = await sealer.wrapFor(cek, (await membersOf(owner)) || [])
+              const { wraps, sinLlave: missingOnes } = await sealer.wrapFor(cek, (await membersOf(owner)) || [])
               wraps[RECOVERY] = await sealer.wrapForKey(cek, next.recovery.pub)
-              if (faltan.length) sinLlave[owner] = faltan
+              if (missingOnes.length) noKey[owner] = missingOnes
               keyring.push({ gen, createdAt: Date.now(), wraps })
             }
-            const sobre = await sealer.encrypt(cek, value, gen)
-            const seal = signer ? await signer({ owner, key, gen, iv: sobre.iv, ct: sobre.ct }) : null
-            vars[key] = { pub: !!e.pub, owner, gen, e: sobre, seal, at: Date.now(), by: null }
+            const envelope = await sealer.encrypt(cek, value, gen)
+            const seal = signer ? await signer({ owner, key, gen, iv: envelope.iv, ct: envelope.ct }) : null
+            vars[key] = { pub: !!e.pub, owner, gen, e: envelope, seal, at: Date.now(), by: null }
           }
           dst[k] = { vars, keyring }
         }
@@ -1359,8 +1359,8 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
             // Se abre TODO, también las públicas: ahora van selladas igual, así que la
             // comprobación de que la migración no cambió ningún valor vale para las dos.
             const g = bag.keyring.find((x) => x.gen === e.gen)
-            const abierto = await sealer.openValue(await sealer.openWrapWith(priv, g.wraps[RECOVERY]), e.e)
-            if (abierto !== antes[`${owner}\u0000${key}`]) {
+            const isOpen = await sealer.openValue(await sealer.openWrapWith(priv, g.wraps[RECOVERY]), e.e)
+            if (isOpen !== antes[`${owner}\u0000${key}`]) {
               throw new Error(`secrets: the migration check failed on ${owner}/${key}; nothing was touched`)
             }
           }
@@ -1369,10 +1369,10 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
 
       // Copia de lo anterior antes de pisarlo. Con nodos en producción, deshacer tiene
       // que ser un `mv`, no una restauración. La borra el operador a mano.
-      writeJson(disk, `${file}.v${desde}.bak`, data)
+      writeJson(disk, `${file}.v${since}.bak`, data)
       data = next
       flush()
-      return { migrated: true, from: desde, sinLlave }
+      return { migrated: true, from: since, sinLlave: noKey }
     }
   }
 }

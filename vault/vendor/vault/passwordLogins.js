@@ -489,14 +489,14 @@ export async function registerLogin ({
   if (scope !== undefined) {
     throw Object.assign(new Error('registerLogin takes `caps` (account record permissions), not `scope`'), { code: 'use-caps' })
   }
-  const pedidos = [...new Set(Array.isArray(caps) ? caps : [])]
-  const raros = pedidos.filter((c) => !DEVICE_CAPS.includes(c))
-  if (!pedidos.length || raros.length) {
-    throw Object.assign(new Error(`not device permissions: ${raros.join(', ') || '(none)'} — expected any of ${DEVICE_CAPS.join(', ')}`), { code: 'bad-caps' })
+  const requests = [...new Set(Array.isArray(caps) ? caps : [])]
+  const oddOnes = requests.filter((c) => !DEVICE_CAPS.includes(c))
+  if (!requests.length || oddOnes.length) {
+    throw Object.assign(new Error(`not device permissions: ${oddOnes.join(', ') || '(none)'} — expected any of ${DEVICE_CAPS.join(', ')}`), { code: 'bad-caps' })
   }
   // El certificado lleva el scope de los permisos que lo tienen; los demás (`unattended`,
   // `passkeys`) viven solo en el acta, que es quien decide.
-  const scopes = pedidos.map((c) => capScope(c)).filter(Boolean)
+  const scopes = requests.map((c) => capScope(c)).filter(Boolean)
   if (typeof identity?.admitMember !== 'function') {
     throw Object.assign(new Error('this vault cannot add devices to the account record: no login was created'), { code: 'admit-unavailable' })
   }
@@ -504,9 +504,9 @@ export async function registerLogin ({
   await logins.registerFinish({ user, upload, pub, encPub, deviceId, label, blob })
   try {
     const { cert } = await identity.signDelegation(pub, scopes, { label: label || `login:${user}` })
-    await identity.admitMember({ pub, encPub, label: label || `login:${user}`, cn: null, caps: pedidos, cert })
+    await identity.admitMember({ pub, encPub, label: label || `login:${user}`, cn: null, caps: requests, cert })
     logins.setCert({ user, cert, iss: identity.me?.publickey || null })
-    return { ok: true, user, deviceId, cert, caps: pedidos }
+    return { ok: true, user, deviceId, cert, caps: requests }
   } catch (e) {
     // NADA DE MEDIAS ALTAS: si no entra en el acta, no queda un usuario que pueda entrar a
     // una cuenta que no lo reconoce. Se deshace y se dice.

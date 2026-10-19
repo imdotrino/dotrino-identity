@@ -69,7 +69,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     }
   }
 
-  const avisar = () => { try { onPendingChange() } catch (_) {} }
+  const notify = () => { try { onPendingChange() } catch (_) {} }
   const vault = await startVault({
     platform: {
       disk,
@@ -87,7 +87,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     // El navegador no tiene la contraseña del perfil con la que el binario cierra la copia
     // de recuperación: se cierra con la llave de este almacén, y el núcleo lo dice.
     hasPassword: () => false,
-    onEnrollChallenge: avisar,
+    onEnrollChallenge: notify,
     onAdopted: (info) => { try { onAdopted(info) } catch (_) {} }
   })
 
@@ -109,7 +109,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
    * acta: es verdad que este navegador administra la cuenta. `aprueba` NO, a propósito: con
    * él los servicios pasarían a esperar el visto bueno de una pestaña que puede no estar.
    */
-  const asegurarAdmin = async () => {
+  const ensureAdmin = async () => {
     if (core.masterLocked) return
     const acta = (await identity.profileActa().catch(() => null))?.acta || null
     const yo = (acta?.members || []).find((m) => m.pub === master)
@@ -119,15 +119,15 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     log('[vault] this browser administers the account: admin added to its own key')
   }
   const open = (onReply) => vault.localChannel(onReply)
-  const presentar = async () => {
+  const present = async () => {
     try {
-      await asegurarAdmin()
+      await ensureAdmin()
       const cert = await selfCert()
       core.setSelfVault?.(cert ? { cert, proxy: proxyUrl, open } : null)
     } catch (e) { log('[vault] the console in this browser cannot administer this vault yet: ' + (e?.message || e)) }
   }
-  await presentar()
-  const refresco = setInterval(presentar, SELF_CERT_EVERY_MS)
+  await present()
+  const refresh = setInterval(present, SELF_CERT_EVERY_MS)
 
   return {
     ...vault,
@@ -135,8 +135,8 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     proxy: proxyUrl,
     disk,
     /** Aprueba TIPEANDO el código que muestra el aparato (el núcleo comprueba el compromiso). */
-    approve: async (_deviceId, code) => { try { return await vault.approveDevice(code) } finally { avisar() } },
-    reject: (deviceId) => { try { return vault.rejectDevice(deviceId) } finally { avisar() } },
+    approve: async (_deviceId, code) => { try { return await vault.approveDevice(code) } finally { notify() } },
+    reject: (deviceId) => { try { return vault.rejectDevice(deviceId) } finally { notify() } },
     /**
      * Las máquinas con papel de firma de esta cuenta (excluye los navegadores enrolados con
      * etiqueta `cli`, que no atienden pedidos). Se queda el papel del acta más nueva.
@@ -155,7 +155,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
     revokeDevice: (sub) => vault.revokeDevice({ sub }),
     revoke: (nonce) => vault.revokeDevice(nonce),
     async close () {
-      clearInterval(refresco)
+      clearInterval(refresh)
       try { core.setSelfVault?.(null) } catch (_) {}
       vault.close()
       try { await disk.flush() } catch (e) { log('[vault] some changes could not be saved: ' + (e?.message || e)) }

@@ -69,10 +69,10 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   /**
    * Con qué se juzga un papel: el acta que tiene esta bóveda. Sustituye a `trustedIssuer`,
    * que fijaba UNA llave y por eso los papeles de una segunda selladora no valían.
-   * Sin acta van nulos y `verifyDelegation` contesta `no-acta`: no hay con qué decidir, así
+   * Sin acta van nulos y `verifyDelegation` contesta `no-record`: no hay con qué decidir, así
    * que no se decide que sí.
    */
-  async function contextoActa () {
+  async function actaContext () {
     const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!acta) return { actaSeq: null, sealers: null }
     return { actaSeq: acta.seq, sealers: sealersOf(acta) }
@@ -81,7 +81,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
   let _selfCert = null
   const getSelfCert = async () => {
     // Se rehace cuando el acta cambia, no cuando pasa el tiempo: el papel ya no caduca.
-    const { actaSeq } = await contextoActa()
+    const { actaSeq } = await actaContext()
     if (_selfCert && _selfCert.seq === actaSeq) return _selfCert
     const { cert } = await identity.signDelegation(iss, SIGN_SCOPE)
     _selfCert = cert
@@ -187,7 +187,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) {
       return send(from, { type: MSG.ERROR, error: 'stale request: ts outside the ±5 min window (possible replay, or the device clock is off)' })
     }
-    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await contextoActa()), revoked: await revocationSet() })
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await actaContext()), revoked: await revocationSet() })
     if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
     // Reusar el label del cert original (si sigue registrado en delegations).
     const { issued } = await identity.listDelegations()
@@ -210,7 +210,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     const d = p?.data
     if (!d || !p.signature || !p.cert) return send(from, { type: MSG.ERROR, error: 'invalid request' })
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) return
-    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await contextoActa()) })
+    const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await actaContext()) })
     if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
     const { issued, revoked, revokedCerts } = await identity.listDelegations()
     const devices = await Promise.all((issued || []).map(async (x) => ({
@@ -248,7 +248,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     const chk = await verifyChain({
       data: d, signature: p.signature, cert: p.cert,
       ...(expectedScope ? { expectedScope } : {}),
-      ...(await contextoActa()), revoked: await revocationSet(),
+      ...(await actaContext()), revoked: await revocationSet(),
     })
     if (!chk.ok) {
       send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
