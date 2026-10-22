@@ -215,6 +215,12 @@ export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store
 const enc = (s) => new TextEncoder().encode(s)
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 const isPub = (v) => typeof v === 'string' && v.length > 0
+/** La maestra de la que es una llave de comunicación; solo la del `cn` de la bóveda la lleva. */
+const vaultOfComm = (cn, vault) => {
+  if (cn !== VAULT_CN) throw new Error('vault: only the vault communication key says which vault it is')
+  if (!isPub(vault)) throw new Error('vault: missing the vault master pubkey')
+  return vault
+}
 
 /**
  * La llave de CIFRADO de un miembro (`encPub`): JWK público de una ECDH P-256.
@@ -517,6 +523,9 @@ export function checkShape (acta) {
     // arrancar en vez de avisar. Primero los servicios registran su llave (op
     // `encpub`), y cuando no quede ninguno sin ella se aprieta aquí.
     if (m.encPub != null && !isEncPub(m.encPub)) return 'invalid-encpub'
+    // DE QUÉ BÓVEDA ES una llave de comunicación (`vault`: la maestra por la que habla). Solo
+    // la lleva un miembro con el `cn` de la bóveda: en cualquier otro no significa nada.
+    if (m.vault != null && (!isPub(m.vault) || m.cn !== VAULT_CN)) return 'invalid-vault'
   }
   // LA LLAVE DE SELLADO Y SU REGISTRO. `sealPub` puede no estar (un perfil que no sella
   // secretos), pero si está tiene que decir DESDE QUÉ acta manda: sin `sealSince` no se
@@ -834,8 +843,21 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           // Puente con la identidad que este miembro traía de antes (ver makeContinuity).
           ...(m.continuity ? { continuity: m.continuity } : {}),
           // DÓNDE CORRE (`machine.js`): lo que dijo al emparejar, para reconocerlo en la lista.
-          ...(cleanMachine(m.machine) ? { machine: cleanMachine(m.machine) } : {})
+          ...(cleanMachine(m.machine) ? { machine: cleanMachine(m.machine) } : {}),
+          // DE QUÉ BÓVEDA ES, si es la llave de comunicación de una (ver op `vault`).
+          ...(m.vault != null ? { vault: vaultOfComm(cn, m.vault) } : {})
         })
+        break
+      }
+      // DE QUÉ BÓVEDA ES UNA LLAVE DE COMUNICACIÓN. Con dos bóvedas en la cuenta hay dos llaves
+      // `cn: 'vault'`, y sin esto nadie sabe a cuál escribirle para hablar con UNA de ellas: la
+      // consola elige bóveda y le escribe a su llave, que es la única que la alcanza sin pasar
+      // por las demás. La pone la propia bóveda al admitir su llave, o después, a una que entró
+      // antes de existir el campo.
+      case 'vault': {
+        const m = find(ch.pub)
+        if (!m) throw new Error('vault: that member is not in the record')
+        m.vault = vaultOfComm(m.cn, ch.vault)
         break
       }
       // Registra (o reemplaza) la llave de CIFRADO de un miembro que YA está admitido.

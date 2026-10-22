@@ -110,6 +110,8 @@ export class IdentityFacade {
   admitMember (member) { return this._h('admitMember', member) }
   /** Registra la llave de cifrado de un miembro ya admitido (evita re-enrolarlo). */
   setMemberEncPub (args) { return this._h('setMemberEncPub', args) }
+  /** Dice de qué bóveda es una llave de comunicación ya admitida. */
+  setMemberVault (args) { return this._h('setMemberVault', args) }
   setCaps (pub, caps) { return this._h('setCaps', { pub, caps }) }
   setCapsMany (changes) { return this._h('setCapsMany', { changes }) }
   setLabel (pub, label) { return this._h('setLabel', { pub, label }) }

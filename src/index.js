@@ -474,9 +474,12 @@ export class Identity {
    * Requiere que el cert de este aparato lleve `vault:admin`, que **no se recibe al
    * emparejar**: se concede a mano en la bóveda. Cambiar permisos y traspasar el mando
    * NO se administran a distancia — siguen siendo del master, en su máquina.
+   *
+   * `args.to`: la llave de comunicación de UNA bóveda de la cuenta (`vault` en el acta), para
+   * hablarle a esa y no a la que conteste primero. Espera más: una alojada dormida tarda.
    */
   async vaultAdmin (op, args) {
-    return this._call('vaultAdmin', { op, ...(args || {}) }, 20000)
+    return this._call('vaultAdmin', { op, ...(args || {}) }, args?.to ? 50000 : 20000)
   }
 
   /**

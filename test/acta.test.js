@@ -622,3 +622,22 @@ test('memberEncPub encuentra al miembro aunque el JWK venga escrito de otra form
   assert.equal(memberEncPub(g, alReves), encPub, 'con === esto habría dicho que no es miembro')
   assert.equal(samePubkey(a.pub, (await key()).pub), false)
 })
+
+test('la llave de comunicación dice de qué bóveda es, y solo ella puede decirlo', async () => {
+  const a = await key(); const c = await key(); const d = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  // Al admitirla…
+  const dos = await step(g, [{ op: 'admit', member: { pub: c.pub, label: 'esta bóveda', cn: VAULT_CN, caps: ['sign'], vault: a.pub } }], a)
+  assert.equal(dos.members.find((m) => m.pub === c.pub).vault, a.pub)
+  assert.equal((await verifyActa({ acta: dos })).ok, true)
+  // …o después, a una que entró sin el campo.
+  const tres = await step(dos, [{ op: 'admit', member: { pub: d.pub, label: 'otra', cn: VAULT_CN, caps: ['sign'] } }], a)
+  assert.equal(tres.members.find((m) => m.pub === d.pub).vault, undefined)
+  const cuatro = await step(tres, [{ op: 'vault', pub: d.pub, vault: a.pub }], a)
+  assert.equal(cuatro.members.find((m) => m.pub === d.pub).vault, a.pub)
+  // Un aparato o un servicio no es una bóveda.
+  const e = await key()
+  await assert.rejects(() => applyChanges(cuatro, [{ op: 'admit', member: { pub: e.pub, caps: ['read'], vault: a.pub } }], { by: a.pub }), /only the vault communication key/)
+  await assert.rejects(() => applyChanges(cuatro, [{ op: 'vault', pub: a.pub, vault: a.pub }], { by: a.pub }), /only the vault communication key/)
+  assert.equal(checkShape({ ...cuatro, members: cuatro.members.map((m) => (m.pub === a.pub ? { ...m, vault: a.pub } : m)) }), 'invalid-vault')
+})

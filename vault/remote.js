@@ -348,9 +348,12 @@ async function clientFor (proxy, master) {
   return client
 }
 
-async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
+async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
+  // `to`: a qué llave se escribe, si no es la maestra. Con dos bóvedas en la cuenta, la
+  // maestra del perfil las alcanza a todas; la llave de comunicación de una, solo a ella.
+  const dest = to || master
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function') || !cert) throw new Error('missing pairing data')
-  const client = await clientFor(proxy, master)
+  const client = await clientFor(proxy, dest)
   try {
     try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
     const signed = { ...data, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
@@ -382,7 +385,7 @@ async function vaultRpc ({ master, proxy, device, cert, acta = null, sendType, o
       const t = setTimeout(() => { cleanup(); reject(Object.assign(new Error('the vault did not reply (is it running?)'), { code: 'vault-no-reply' })) }, timeoutMs)
       const cleanup = () => { off(); clearTimeout(t); clearTimeout(graceTimer) }
     })
-    client.sendByPubkey(master, { type: sendType, data: signed, signature, cert })
+    client.sendByPubkey(dest, { type: sendType, data: signed, signature, cert })
     return await pending
   } finally { try { client.close() } catch (_) {} }
 }
@@ -499,7 +502,7 @@ export async function requestRenounce ({ master, proxy, device, cert, record, on
  * El `nonce` de un solo uso va en cada petición porque `approve` y `revoke` cambian
  * estado, y para eso la ventana de frescura de ±5 min no alcanza.
  */
-export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked, nonce: dado, ...rest } = {}) {
+export async function requestAdmin ({ master, to = null, timeoutMs, proxy, device, cert, op, onRevoked, nonce: dado, ...rest } = {}) {
   // EL NONCE SE PUEDE DAR, y hace falta para abrir la bóveda a distancia: ahí va también
   // DENTRO del sobre sellado, y quien lo sella tiene que conocerlo antes de llamar. Si se
   // generara siempre aquí, el de fuera y el de dentro no podrían coincidir — y el de
@@ -509,7 +512,7 @@ export async function requestAdmin ({ master, proxy, device, cert, op, onRevoked
     : [...crypto.getRandomValues(new Uint8Array(16))]
       .map((b) => b.toString(16).padStart(2, '0')).join('')
   const res = await vaultRpc({
-    master, proxy, device, cert, onRevoked,
+    master, to, proxy, device, cert, onRevoked, ...(timeoutMs ? { timeoutMs } : {}),
     sendType: MSG.ADMIN, okType: MSG.ADMIN_RESULT,
     data: { op, ...rest, nonce }
   })

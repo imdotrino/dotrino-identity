@@ -21,7 +21,7 @@ const CONSOLE = /^https:\/\/(vault|profile)\.dotrino\.com$/
  * sus respaldos) y la contraseña del perfil.
  */
 export const CONSOLE_ONLY = Object.freeze([
-  'admitMember', 'removeMember', 'setCaps', 'setCapsMany', 'setLabel', 'setMemberEncPub', 'handoverMaster',
+  'admitMember', 'removeMember', 'setCaps', 'setCapsMany', 'setLabel', 'setMemberEncPub', 'setMemberVault', 'handoverMaster',
   'renounceCaps', 'absorbRenounce', 'adoptActa', 'adoptActaChain', 'joinProfile', 'rotateSealKey', 'setSealKeyProvider',
   'revokeDevice', 'vaultPair', 'vaultAdopt', 'vaultUnpair', 'prepareForAdoption', 'setSelfVault',
   'exportIdentity', 'importIdentity', 'deleteProfile', 'setProfilePassword', 'removeProfilePassword',

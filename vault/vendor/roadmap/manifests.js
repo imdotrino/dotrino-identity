@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.123.0",
+        "current": "0.124.0",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -253,12 +253,12 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.95.1",
+        "current": "0.96.0",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
           "proxy-client": ">=0.39.0",
-          "identity": ">=0.118.0",
+          "identity": ">=0.124.0",
           "opaque": ">=0.1.0",
           "compat": ">=0.4.0",
           "roadmap": ">=0.4.26",
@@ -269,10 +269,10 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.167.1",
+        "current": "0.168.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.118.0",
+          "identity": ">=0.124.0",
           "proxy-client": ">=0.39.0",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.4",
@@ -364,19 +364,26 @@ export const MANIFESTS = Object.freeze({
       "accounts": {
         "repo": "imdotrino/dotrino-accounts",
         "npm": null,
-        "current": "0.5.0",
+        "current": "0.6.0",
         "protocol": 1,
         "requires": {
           "identity": ">=0.116.0",
           "remote-agent": ">=0.23.1",
-          "vault": ">=0.95.0",
+          "vault": ">=0.96.0",
           "pay": ">=0.2.0",
-          "vaultd": ">=0.167.0"
+          "vaultd": ">=0.168.0"
         }
       },
       "ai": {
         "repo": "imdotrino/dotrino-ai",
         "npm": "@dotrino/ai",
+        "current": "0.1.1",
+        "protocol": 1,
+        "requires": {}
+      },
+      "dictation": {
+        "repo": "imdotrino/dotrino-dictation",
+        "npm": "@dotrino/dictation",
         "current": "0.1.1",
         "protocol": 1,
         "requires": {}

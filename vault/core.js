@@ -804,6 +804,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Lo pone quien levanta la bóveda (`setSelfVault`) y lo quita al pararla.
    */
   let selfLink = null
+  /** Lo que se espera a una bóveda elegida: una alojada dormida arranca antes de contestar. */
+  const VAULT_WAKE_MS = 45000
   let selfLinkOff = null
   /** El enlace con el que administrar: el emparejamiento si lo hay, y si no, la bóveda local. */
   const adminLink = () => {
@@ -2598,6 +2600,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         addedAt: m.addedAt || null,
         // Dónde corre, según dijo al emparejarse (`machine.js`). `null` si entró antes.
         machine: m.machine || null,
+        // Si es la llave de comunicación de una bóveda, la maestra de ESA bóveda.
+        vault: m.vault || null,
         isMe: m.pub === publickeyJwkStr,
         isMaster: Acta.canSeal(acta, m.pub),
         // La llave de CIFRADO del miembro y, derivado, si se le puede envolver algo.
@@ -2643,7 +2647,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.
      * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
      */
-    async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null, machine = null } = {}) {
+    async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null, machine = null, vault = null } = {}) {
       // `cn`: si viene, este miembro es un SERVICIO: abre el cajón de secretos de ESE nombre
       // por llevarlo, sin permiso aparte, y no ve nada más del usuario. Sin `cn` es un dispositivo.
       const finales = caps || (cn ? [] : ['store', 'read'])
@@ -2660,8 +2664,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const mine = encPub ? await myCek() : null
         if (mine) wrap = { op: 'wrap', gen: mine.gen, pub, wrap: await Content.wrapForMember({ cek: mine.cek, memberEncPub: encPub }) }
       } catch (_) { wrap = null }
-      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity, machine } }, ...(wrap ? [wrap] : [])])
+      const acta = await sealChanges([{ op: 'admit', member: { pub, encPub, label, cn, caps: finales, cert, continuity, machine, ...(vault ? { vault } : {}) } }, ...(wrap ? [wrap] : [])])
       return { ok: true, seq: acta.seq, wrapped: !!wrap }
+    },
+
+    /**
+     * DE QUÉ BÓVEDA ES una llave de comunicación (`vault`: su maestra). La pone la propia
+     * bóveda a la llave que entró antes de existir el campo; sin él, con dos bóvedas en la
+     * cuenta no hay forma de escribirle a una sola.
+     */
+    async setMemberVault ({ pub, vault } = {}) {
+      const acta = await sealChanges([{ op: 'vault', pub, vault }])
+      return { ok: true, seq: acta.seq }
     },
 
     async setCaps ({ pub, caps } = {}) {
@@ -3123,10 +3137,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * permisos y traspasar el mando NO están, y no es un olvido: eso sigue siendo del
      * master, en su máquina.
      */
-    async vaultAdmin ({ op, ...rest } = {}) {
+    async vaultAdmin ({ op, to = null, ...rest } = {}) {
       const link = adminLink()
       if (!link) throw new Error('this device is not paired with a vault')
       const { v, device } = link
+      // A UNA BÓVEDA CONCRETA de la cuenta: `to` es su llave de comunicación (`vault` en el
+      // acta). La alojada puede estar dormida y tarda en despertar, así que se le da más tiempo.
+      if (to) {
+        if (!(loadActa()?.members || []).some((m) => m.pub === to && m.vault)) {
+          throw Object.assign(new Error('vaultAdmin: that key is not a vault of this account'), { code: 'not-a-vault' })
+        }
+        rest = { ...rest, to, timeoutMs: VAULT_WAKE_MS }
+      }
       if (link.self) return remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest })
       maybeRenewVaultCert()
       try { return await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink }) }
