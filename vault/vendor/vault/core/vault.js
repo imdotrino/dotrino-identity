@@ -46,6 +46,7 @@ import { openCommKey, COMM_CN, COMM_CAPS } from './commKey.js'
 import { seal } from '../sealed.js'
 import { MSG, SCOPE, secretsScope, isValidSecretsNs, VAULT_PROTOCOL, VAULT_SPEAKS } from '../protocol.js'
 import { sha256Hex } from './sha256.js'
+import { createGate } from './gate.js'
 
 const b64ToBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 const byteLength = (s) => new TextEncoder().encode(s).length
@@ -478,9 +479,17 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const acta = info?.acta
       if (!acta || isLocked() || identity.masterLocked) return false
       const pub = await commKey.ensure()
-      if ((acta.members || []).some((m) => m?.pub === pub)) return false
+      const mine = (acta.members || []).find((m) => m?.pub === pub)
       if (!info?.isMaster) return false
-      await identity.admitMember({ pub, label: 'esta bóveda', cn: COMM_CN, caps: [...COMM_CAPS] })
+      // DE QUÉ BÓVEDA ES (`vault`: esta maestra). Con dos bóvedas en la cuenta es lo único que
+      // deja a la consola escribirle a una sola. A la llave que entró antes del campo se le pone.
+      if (mine) {
+        if (mine.vault || !master) return false
+        await identity.setMemberVault({ pub, vault: master })
+        log('[vault] the record now says which vault this communication key speaks for')
+        return true
+      }
+      await identity.admitMember({ pub, label: 'esta bóveda', cn: COMM_CN, caps: [...COMM_CAPS], ...(master ? { vault: master } : {}) })
       log('[vault] this vault is now a member of its own record: it talks with its own key, not the master one')
       return true
     } catch (e) {
@@ -488,12 +497,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       return false
     }
   }
-  await ensureCommKeyInActa()
+  // Lo que se selló aquí se anuncia cuando ya hay transporte (más abajo): sin el aviso, la otra
+  // bóveda de la cuenta no se entera y las dos acaban con actas distintas del mismo número.
+  const commSealedAtStart = await ensureCommKeyInActa()
 
   // `announce`: el canal de ESTA cuenta, para que una máquina prestada —que no tiene
   // ninguna llave y solo sabe la dirección `nombre@AB12-CD34-EF56`— pueda encontrar a quien
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
-  const { client, identify: reidentify, isIdentified } = await createTransport({
+  const { client, identify: reidentify, isIdentified, listen } = await createTransport({
     identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null
   })
 
@@ -501,6 +512,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // que le dicen a un tercero si esta cuenta sigue sellada por quien él cree. Ver
   // `sealers.js` — es una comodidad para quien lee, nunca una dependencia de la bóveda.
   startSealersPublisher({ identity, client, log })
+  if (commSealedAtStart) await notifyMembers('commkey')
 
   async function revocationSet () {
     const { revoked } = await identity.listDelegations()
@@ -2218,7 +2230,16 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     reply(from, { type: MSG.INCIDENT_RESULT, id: pend.id, approvers, blocked: false })
   }
 
-  client.on('message', (from, payload) => {
+  // LA PUERTA (`gate.js`): solo el acta; entrar con contraseña con freno, y el alta solo
+  // mientras hay un emparejamiento abierto. Lo demás se descarta sin contestar.
+  const gate = createGate({
+    MSG,
+    acta: async () => (await identity.profileActa?.().catch(() => null))?.acta || null,
+    pairing: (type, p) => desk.ownsPairing(type, p)
+  })
+
+  // `listen` y no `client.on`: entrega también lo que llegó encolado antes de este punto.
+  listen((from, payload) => {
     // Quien monta la bóveda puede querer saber que hay trabajo (la Lambda se apaga cuando
     // deja de haberlo). Es un aviso, no decide nada.
     try { platform.onActivity?.() } catch (_) {}
@@ -2241,6 +2262,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
 
   async function onMessage (from, payload) {
     if (!payload || typeof payload !== 'object') return
+    const pass = await gate.admit(from, payload)
+    if (!pass.ok) {
+      // Al que entra con contraseña sí se le dice que espere: es la única puerta abierta a
+      // desconocidos, y quien teclea su contraseña tiene que saber por qué no contesta.
+      if (pass.throttled) reply(from, { type: MSG.ERROR, error: 'too many tries: wait before trying again', code: 'too-many-tries', waitMs: pass.waitMs })
+      return
+    }
     try {
       if (payload.type === MSG.HELLO) return desk.handleHello(from, payload)
       if (payload.type === MSG.ENROLL) return await desk.handleEnroll(from, payload)
@@ -2606,6 +2634,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   async function handleReplicaAck (from, p) {
     const body = p?.body
     if (!body || body.op !== 'replica.ack') return
+    // Fresco, o un acuse capturado serviría para hacer empujar a la bóveda cuando quisiera.
+    if (!isFresh(body)) return
     const record = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!record) return
     // LA LLAVE VA DENTRO DEL MENSAJE FIRMADO, no se saca de `from`: `from` es el
@@ -4264,6 +4294,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // Alcanzable ≠ corriendo: si el proxio rechazó el `identify` esta bóveda está viva y
     // nadie puede hablarle. Lo mira `status` (ver `manager.js`, `summary`).
     isIdentified,
+    // Lo que la puerta descartó (`gate.js`): desconocidos y pedidos de entrar frenados.
+    gateStats: () => gate.stats(),
     // Se expone para poder PROBAR que una respuesta que no cabe no mata la conexión: es el
     // único punto por el que sale todo, y el fallo que cierra vive justo ahí.
     reply,
@@ -4293,7 +4325,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // la bóveda seguía muda en el proxio con su llave ya admitida en el acta. Al dueño le
       // pasó el 2026-09-05: hizo lo que el log pedía y la consola siguió sin contestar.
       if (r?.locked === false) {
-        try { if (await ensureCommKeyInActa()) await reidentify?.() } catch (_) {}
+        try {
+          if (await ensureCommKeyInActa()) { await reidentify?.(); await notifyMembers('commkey') }
+        } catch (_) {}
       }
       // Y ABSORBER LO PENDIENTE. La subacta ya lo estaba honrando con el perfil cerrado —de
       // eso vive—, pero mientras siga ahí solo lo sabe esta máquina: al sellarlo, entra en

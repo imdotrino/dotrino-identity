@@ -85,6 +85,21 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
 
   await client.connect()
 
+  // LO ENCOLADO LLEGA AL IDENTIFICARSE, y quien monta la bóveda todavía no escucha: pone su
+  // oyente cuando ya tiene todo listo, bastante después. Sin esto, lo que el proxio guardaba
+  // para una bóveda dormida —el acta nueva que sacó la otra bóveda, un pedido— se entregaba
+  // a nadie y se perdía. Se guarda aquí hasta que llegue el oyente (`listen`).
+  let early = []
+  const offEarly = client.on('message', (from, payload) => { early?.push([from, payload]) })
+  const listen = (fn) => {
+    const off = client.on('message', fn)
+    const pending = early || []
+    early = null
+    try { offEarly?.() } catch (_) {}
+    for (const [from, payload] of pending) { try { fn(from, payload) } catch (_) {} }
+    return off
+  }
+
   const identify = async () => {
     identified = false
     if (!client.token) return
@@ -195,6 +210,11 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     if (!comm || !seenActa) { log('[vault] cannot register the wake URL: no communication key in the record yet'); return }
     try {
       await client.registerWake({ publicKey: comm, sign: (d) => commKey.sign(d), url: wakeUrl, acta: seenActa, channel: announce || undefined })
+      // Y POR SU PROPIA LLAVE. Lo dirigido a la cuenta solo la despierta si no hay nadie más
+      // de la cuenta conectado; con otra bóveda encendida, nunca. La consola que elige ESTA
+      // bóveda le escribe a su llave de comunicación (`vault` en el acta), y es por ella
+      // por donde tiene que despertarse.
+      await client.registerWake({ publicKey: comm, sign: (d) => commKey.sign(d), url: wakeUrl, acta: seenActa, self: true })
       log('[vault] wake URL registered on the proxy')
     } catch (e) {
       log(`[vault] could not register the wake URL (${e.code || ''} ${e.message}) — the proxy will not wake this vault`)
@@ -286,5 +306,5 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   }, RECHECK_MS)
   watchdog.unref?.()
 
-  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identified }
+  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identified, listen }
 }

@@ -202,6 +202,14 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
 
   /** Intercambios a medias: viven en memoria, y por eso un reinicio los tira. */
   const exchanges = new Map()
+  /** Tope de intercambios a medias: un desconocido no puede llenar la memoria abriéndolos. */
+  const MAX_EXCHANGES = 1000
+  /**
+   * EL FRENO DE LOS USUARIOS QUE NO EXISTEN, en memoria. Sin él, tras cinco intentos solo los
+   * usuarios reales contestaban «espera», y eso decía cuáles existen. Así frenan igual.
+   */
+  const ghosts = new Map()
+  const MAX_GHOSTS = 5000
 
   const read = () => {
     const s = load()
@@ -319,8 +327,14 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
       if (typeof request !== 'string' || !request) throw err('bad-input', 'request required')
       const u = isValidUser(user) ? state.users[user] || null : null
       const t = now()
-      if (u?.nextTryAt && u.nextTryAt > t) {
-        throw Object.assign(err('too-many-tries', 'too many tries: wait before trying again'), { waitMs: u.nextTryAt - t })
+      const ghostKey = String(user || '').slice(0, 64)
+      let ghost = u ? null : ghosts.get(ghostKey) || null
+      const next = u ? u.nextTryAt : ghost?.nextTryAt
+      if (next && next > t) {
+        throw Object.assign(err('too-many-tries', 'too many tries: wait before trying again'), { waitMs: next - t })
+      }
+      if (exchanges.size >= MAX_EXCHANGES) {
+        throw Object.assign(err('too-many-tries', 'too many logins in progress: wait before trying again'), { waitMs: EXCHANGE_TTL_MS })
       }
       // EL INTENTO SE CUENTA AQUÍ. Ver el comentario del freno: quien prueba una contraseña
       // puede no mandar nunca el último mensaje, así que si se contara al final no se
@@ -328,7 +342,16 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
       if (u) {
         u.fails = (u.fails || 0) + 1
         u.nextTryAt = t + backoffFor(u.fails)
+      } else {
+        if (!ghost) {
+          if (ghosts.size >= MAX_GHOSTS) ghosts.delete(ghosts.keys().next().value)
+          ghost = { fails: 0, nextTryAt: 0 }
+          ghosts.set(ghostKey, ghost)
+        }
+        ghost.fails++
+        ghost.nextTryAt = t + backoffFor(ghost.fails)
       }
+      const freshSetup = !state.setup
       const setup = await setupOf(state)
       const { state: serverState, response } = await opaque.loginStart({
         setup,
@@ -339,7 +362,10 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
       })
       const lid = crypto.randomUUID()
       exchanges.set(lid, { user: String(user || ''), known: !!u, state: serverState, at: t })
-      save(state)
+      // Solo se escribe el disco por un usuario que existe (su freno tiene que sobrevivir a un
+      // reinicio) o la primera vez, cuando nace la configuración. Por uno inventado no: si no,
+      // cada intento de un desconocido reescribía el archivo.
+      if (u || freshSetup) save(state)
       return { lid, response }
     },
 

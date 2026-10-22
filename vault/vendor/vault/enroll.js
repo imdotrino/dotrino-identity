@@ -504,7 +504,10 @@ export function createEnrollDesk ({
    */
   async function handleActaSealed (from, p) {
     const record = p?.acta
-    const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && (x.from === from || x.dpub))
+    // LA SESIÓN ES LA DEL APARATO QUE SELLÓ EL ACTA. Esto buscaba «la del mismo token o
+    // cualquiera con `dpub`», o sea la primera que esperara un acta, viniera de quien viniera.
+    // Quien sella es lo que identifica al emparejamiento (el token cambia si reconecta).
+    const pend = [...pending.values()].find((x) => x.state === 'AWAITING_ACTA' && x.dpub && x.dpub === record?.sealedBy)
     if (!pend) return fail(from, 'no adoption awaiting a record', pend?.sn)
     if (!record || typeof record !== 'object') return fail(from, 'record missing or unreadable', pend?.sn)
     // Ya no hay campo `sealer`: se le pregunta al PERMISO. Es la misma comprobación —«¿me
@@ -604,7 +607,23 @@ export function createEnrollDesk ({
     return res
   }
 
+  /**
+   * ¿Es este mensaje de un emparejamiento que ESTA bóveda tiene abierto (o acaba de cerrar)?
+   * Es la puerta del alta (`core/gate.js`): fuera de un emparejamiento, el alta no existe y lo
+   * que llegue se descarta sin contestar.
+   */
+  function ownsPairing (type, p) {
+    if (type === MSG_HELLO) { const sn = String(p?.sn || ''); return !!sn && (pending.has(sn) || gone.has(sn)) }
+    if (type === MSG_ENROLL) { const tk = String(p?.data?.token || ''); return !!tk && (pending.has(tk) || gone.has(tk)) }
+    if (type === MSG_ACTA_SEALED) {
+      const by = p?.acta?.sealedBy
+      return !!by && [...pending.values()].some((x) => x.state === 'AWAITING_ACTA' && x.dpub === by)
+    }
+    return false
+  }
+
   return {
+    ownsPairing,
     startPairing, stopPairing, handleEnroll, handleActaSealed, handleHello, approve, reject,
     listPending, findPending, emitRevoke, revoke, revokeDevice,
     get pendingCount () { return pending.size }
