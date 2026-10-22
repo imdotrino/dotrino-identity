@@ -2895,6 +2895,29 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     },
 
     /**
+     * LOS QUE ESTUVIERON Y YA NO ESTÁN: las llaves de las actas que guarda la ventana del
+     * historial (`ACTA_WINDOW`) que el acta actual ya no nombra. La bóveda les contesta, solo
+     * a ellos y solo con su aviso de expulsión, para que se borren aunque no les llegara.
+     * Fuera de la ventana no se sabe nada, y no se inventa.
+     */
+    async pastMembers () {
+      const cur = loadActa()
+      if (!cur) return { members: [] }
+      const now = new Set((cur.members || []).map((m) => m.pub))
+      const seen = new Map()
+      // SOLO LA VENTANA: el historial guarda además los eslabones de la cadena de selladores
+      // (el génesis, para siempre), y esos no cuentan.
+      const ventana = loadHistory().filter((a) => a?.seq !== cur.seq && a?.seq > cur.seq - ACTA_WINDOW)
+      for (const a of ventana) {
+        for (const m of (a?.members || [])) {
+          if (!m?.pub || now.has(m.pub)) continue
+          if (!seen.has(m.pub) || a.seq > seen.get(m.pub)) seen.set(m.pub, a.seq)
+        }
+      }
+      return { members: [...seen].map(([pub, lastSeq]) => ({ pub, lastSeq })) }
+    },
+
+    /**
      * MI tarjeta de perfil: lo mínimo que se le pasa a un contacto para que pueda cifrarme a
      * todos mis dispositivos (perfil, versión y llaves de cifrado). Sin etiquetas, sin
      * permisos, sin certificados: lo demás no es asunto de nadie.

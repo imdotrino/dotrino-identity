@@ -348,6 +348,8 @@ export class Identity {
   async myMembership () { return this._call('myMembership') }
   /** La cadena de actas desde `sinceSeq` (ver la nota en `node.js`). */
   async actaHistory (opts) { return this._call('actaHistory', opts || {}) }
+  /** Los que estuvieron en las actas de la ventana del historial y ya no están. */
+  async pastMembers () { return this._call('pastMembers', {}) }
 
   /** ¿Es ESTE dispositivo el master (el único que puede cambiar el acta)? */
   async isMaster () { return this._call('isMaster') }

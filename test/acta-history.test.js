@@ -87,3 +87,17 @@ test('ya está al día: cadena vacía', async () => {
   assert.deepEqual(chain, [])
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('pastMembers: los que estuvieron en la ventana y ya no están, y nadie más', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const a = await makeDeviceKey({ label: 'A' })
+  const b = await makeDeviceKey({ label: 'B' })
+  await id.admitMember({ pub: a.publickey, label: 'A', caps: ['read'] })
+  await id.admitMember({ pub: b.publickey, label: 'B', caps: ['read'] })
+  assert.deepEqual((await id.pastMembers()).members, [], 'nadie se ha ido')
+  await id.removeMember(a.publickey)
+  const { members } = await id.pastMembers()
+  assert.deepEqual(members.map((m) => m.pub), [a.publickey], 'solo el que salió')
+  fs.rmSync(dir, { recursive: true, force: true })
+})

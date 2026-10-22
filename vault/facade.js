@@ -106,6 +106,8 @@ export class IdentityFacade {
    * sincronizar su acta. Se quedaba con la copia del día que emparejó.
    */
   actaHistory (opts) { return this._h('actaHistory', opts || {}) }
+  /** Los que estuvieron en las actas de la ventana y el acta actual ya no nombra. */
+  pastMembers () { return this._h('pastMembers') }
   isMaster () { return this._h('isMaster') }
   admitMember (member) { return this._h('admitMember', member) }
   /** Registra la llave de cifrado de un miembro ya admitido (evita re-enrolarlo). */

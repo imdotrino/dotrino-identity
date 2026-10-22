@@ -25,6 +25,7 @@ import { openThreadStore, STORE_READ_METHODS, PROFILE_EDIT_METHODS } from './thr
 import { openSecretsStore, assertVar, RECOVERY as RECOVERY_WRAP, PROFILE_OWNER } from './secretsStore.js'
 import { openSubacta } from './subacta.js'
 import { openBlocked } from './blocked.js'
+import { openExNotices } from './exNotices.js'
 import { openNotifiable } from './notifiable.js'
 import { openMachines } from './machines.js'
 import { machineLine } from '@dotrino/identity/machine'
@@ -265,6 +266,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   const passwordsAtRest = disk.atRest
   // Los aparatos BLOQUEADOS por un aprobador (`src/blocked.js`). Cifrado en reposo como lo demás.
   const blocked = openBlocked({ disk })
+  const exNotices = openExNotices({ disk })
   // Qué aprobadores dijeron que pueden recibir avisos (`src/notifiable.js`). No decide nada: se enseña.
   const notifiable = openNotifiable({ disk })
   // Dónde corre cada aparato, según lo último que dijo firmado (`src/machines.js`). Se enseña.
@@ -473,6 +475,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * maestra o quedándose mudos. Se vio el 2026-09-02: de dos perfiles, el que tenía
    * contraseña era el que no tenía `commkey.json`.
    */
+  /**
+   * LOS AVISOS DE LOS QUE SALIERON (`exNotices.js`): uno firmado por cada aparato de las actas
+   * de la ventana que ya no está. Solo con la bóveda ABIERTA y si esta sella: cerrada no firma.
+   */
+  async function syncExNotices () {
+    try {
+      if (isLocked() || identity.masterLocked || !(await identity.isMaster?.())) return
+      const past = ((await identity.pastMembers()).members || []).map((m) => m.pub)
+      const n = await exNotices.sync(past, async (body) => (await identity.signData(body)).signature)
+      if (n) log(`[vault] signed the leaving notice of ${n} former member(s): they get it when they ask`)
+    } catch (e) { log('[vault] could not prepare the notices for former members:', e.message) }
+  }
+
   async function ensureCommKeyInActa () {
     try {
       const info = await identity.profileActa?.()
@@ -513,6 +528,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // `sealers.js` — es una comodidad para quien lee, nunca una dependencia de la bóveda.
   startSealersPublisher({ identity, client, log })
   if (commSealedAtStart) await notifyMembers('commkey')
+  await syncExNotices()
 
   async function revocationSet () {
     const { revoked } = await identity.listDelegations()
@@ -1321,9 +1337,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     const record = (await identity.profileActa?.().catch(() => null))?.acta || null
     const inside = (record?.members || []).some((m) => m?.pub === pub)
-    audit('check', { device: await deviceIdOf(pub).catch(() => null), in: inside })
+    // Solo de los de dentro: un ex-miembro pregunta con freno y no escribe en la bitácora.
+    if (inside) audit('check', { device: await deviceIdOf(pub).catch(() => null), in: true })
     if (inside) return reply(from, { type: MSG.CHECKED, in: true })
-    await notifyIfRevoked(pub, null, null, 'revoked')
+    // UN EX-MIEMBRO: su aviso, el que se firmó una vez (`exNotices`). Primero el aviso y luego
+    // el «no»: el aparato deja de escuchar al recibir el «no». Aquí no se firma nada.
+    const notice = exNotices.get(pub)
+    if (notice) reply(from, { type: MSG.REVOKED, body: notice.body, signature: notice.signature })
     reply(from, { type: MSG.CHECKED, in: false })
   }
 
@@ -2235,7 +2255,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   const gate = createGate({
     MSG,
     acta: async () => (await identity.profileActa?.().catch(() => null))?.acta || null,
-    pairing: (type, p) => desk.ownsPairing(type, p)
+    pairing: (type, p) => desk.ownsPairing(type, p),
+    former: (pub) => exNotices.has(pub)
   })
 
   // `listen` y no `client.on`: entrega también lo que llegó encolado antes de este punto.
@@ -2564,6 +2585,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * `sendByPubkey`, así que al que está apagado le llega cuando encienda (cola 24 h).
    */
   async function notifyMembers (ev, info = {}) {
+    // El acta pudo cambiar (alguien salió): su aviso tiene que estar listo para cuando pregunte.
+    await syncExNotices()
     try {
       // SIN FIRMA, y no falta nada: quien lo usa es el ACTA que viaja al lado, que se
       // autentica sola (otra bóveda la adopta por `canAdopt`; el teléfono solo refresca y
@@ -4328,6 +4351,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         try {
           if (await ensureCommKeyInActa()) { await reidentify?.(); await notifyMembers('commkey') }
         } catch (_) {}
+        await syncExNotices()
       }
       // Y ABSORBER LO PENDIENTE. La subacta ya lo estaba honrando con el perfil cerrado —de
       // eso vive—, pero mientras siga ahí solo lo sabe esta máquina: al sellarlo, entra en

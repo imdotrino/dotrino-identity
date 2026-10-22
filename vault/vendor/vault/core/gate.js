@@ -8,6 +8,9 @@
  *     con freno por conexión y freno global, antes de cualquier trabajo.
  *   · **El alta de un aparato** (`HELLO`, `ENROLL`, `ACTA_SEALED`): solo mientras hay un
  *     emparejamiento abierto y el mensaje es de ESE emparejamiento. Fuera de eso, nada.
+ *   · **Los que salieron** (`CHECK`): un aparato de las actas de la ventana que ya no está pasa
+ *     solo a preguntar si sigue dentro, con su firma y con freno. Se le contesta con su aviso
+ *     de expulsión ya firmado (`exNotices.js`), para que se borre.
  *
  * Lo demás se descarta EN SILENCIO: sin respuesta, sin firma, sin línea en la bitácora y sin
  * tocar el disco. Antes un desconocido conseguía que la bóveda le contestara con el acta
@@ -77,9 +80,10 @@ export function claimOf (MSG, p) {
  * @param {object} o.MSG            los tipos del protocolo
  * @param {() => Promise<object|null>} o.acta   el acta vigente de esta bóveda
  * @param {(type: string, p: object, from: string) => boolean} o.pairing  ¿es de un emparejamiento abierto?
+ * @param {(pub: string) => boolean} [o.former]  ¿estuvo en el acta (y tiene su aviso)?
  * @param {ReturnType<typeof makeLimiter>} [o.limiter]
  */
-export function createGate ({ MSG, acta, pairing, limiter = makeLimiter(), verify = verifyDeviceSig }) {
+export function createGate ({ MSG, acta, pairing, former = () => false, limiter = makeLimiter(), verify = verifyDeviceSig }) {
   const LOGIN = new Set([MSG.LOGIN_START, MSG.LOGIN_FINISH, MSG.LOGIN_CLOSE])
   const PAIRING = new Set([MSG.HELLO, MSG.ENROLL, MSG.ACTA_SEALED])
   const stats = { dropped: 0, throttled: 0, since: Date.now() }
@@ -100,7 +104,12 @@ export function createGate ({ MSG, acta, pairing, limiter = makeLimiter(), verif
     if (!claim || typeof claim.pub !== 'string' || !claim.pub) { stats.dropped++; return { ok: false } }
     // NADA QUE DECIDIR SIN ACTA: se para (no hay a quién atender), no se deja pasar.
     const record = await acta()
-    if (!record || !(record.members || []).some((m) => m?.pub === claim.pub)) { stats.dropped++; return { ok: false } }
+    if (!record) { stats.dropped++; return { ok: false } }
+    const member = (record.members || []).some((m) => m?.pub === claim.pub)
+    // Un ex-miembro, solo a preguntar si sigue dentro, y con freno.
+    const leaving = !member && type === MSG.CHECK && former(claim.pub)
+    if (!member && !leaving) { stats.dropped++; return { ok: false } }
+    if (leaving && !limiter.take('check:' + from)) { stats.throttled++; return { ok: false } }
     if (claim.signature !== null) {
       const ok = typeof claim.signature === 'string' && claim.data &&
         await verify({ publickey: claim.pub, data: claim.data, signature: claim.signature }).catch(() => false)
