@@ -520,7 +520,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // ninguna llave y solo sabe la dirección `nombre@AB12-CD34-EF56`— pueda encontrar a quien
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
   const { client, identify: reidentify, isIdentified, listen } = await createTransport({
-    identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null
+    identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null,
+    bluetooth: platform.bluetooth || null
   })
 
   // El registro público de cadenas de selladores: deposita, si hay a dónde, los eslabones
@@ -878,6 +879,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       markRotationDue(sub).catch((e) => log('[vault] could not rotate after the removal:', e.message))
     },
     defaultScope: [SCOPE.READ],
+    // EMPAREJAR CERCA (pairing-protocol.md §1.6): la invitación se anuncia por Bluetooth
+    // mientras la sesión vive, si este cliente lo tiene. Sin Bluetooth, el QR de siempre.
+    announce: (kind, data) => client.bluetoothAvailable ? client.announceBluetooth(kind, data) : null,
+    // DOS APARATOS RESPONDIERON (§1.7): la sesión ya se canceló; aquí se cuenta como incidente.
+    onContested: ({ devices }) => {
+      announcePairingContested(devices).catch((e) => log('[vault] could not tell the approvers about the contested pairing:', e.message))
+    },
     onChallenge ({ deviceId, scope, machine }) {
       log(`\n[vault] Un dispositivo quiere conectarse:`)
       log(`        deviceId: ${deviceId}`)
@@ -2178,6 +2186,39 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * marcador hasta que el aviso salió, y tragarlo sería borrarlo sin haber avisado.
    * @returns {Promise<{ approvers: number, sent: number, notice: object|null }>}
    */
+  /** Manda un aviso ya apuntado (`notices`) a cada aprobador, sellado. Devuelve a cuántos salió. */
+  async function sendNotice (notice, who, what) {
+    const { id, ev, ts, ...rest } = notice
+    const body = { ev, id, ...rest, ts }
+    const seal = await sealOrFail(body)
+    let sent = 0
+    for (const pub of who) {
+      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault' }); sent++ }
+      catch (e) { log(`[vault] could not tell ${pub.slice(0, 24)}… about ${what}: ${e.message}`) }
+    }
+    return sent
+  }
+
+  /**
+   * UN INCIDENTE DE EMPAREJAMIENTO (pairing-protocol.md §1.7): dos aparatos respondieron a la
+   * misma invitación y la sesión ya se canceló. Se cuenta a quien aprueba como aviso
+   * (`pairing-contested`): no hay nada que aprobar ni a quién bloquear, porque nadie entró.
+   * Sin aprobadores queda en la bitácora (ya lo apuntó el mostrador) y se dice en el log.
+   */
+  async function announcePairingContested (devices) {
+    const record = await refreshActa()
+    const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
+    if (!who.length) {
+      log('[vault] contested pairing: nobody can approve, so nobody is told (grant it with: dotrino-vault caps <ID> +aprueba)')
+      return { approvers: 0, sent: 0 }
+    }
+    const notice = notices.add('pairing-contested', { devices })
+    const sent = await sendNotice(notice, who, 'the contested pairing')
+    log(`[vault] contested pairing: told ${sent} of ${who.length} approver(s)`)
+    if (!sent) throw Object.assign(new Error('no approver could be told'), { code: 'announce-failed' })
+    return { approvers: who.length, sent }
+  }
+
   async function announceUpdate ({ version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, ev = 'updated' }) {
     const record = await refreshActa()
     const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
@@ -2185,14 +2226,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // `deviceId`/`label`: solo cuando quien se actualizó es un APARATO (`update-done`). El
     // aviso de la propia bóveda no los lleva.
     const notice = notices.add(ev, { version, from, product, ...(deviceId ? { deviceId, label: label || '' } : {}) })
-    const { id, ev: _ev, ts, ...rest } = notice
-    const body = { ev, id, ...rest, ts }
-    const seal = await sealOrFail(body)
-    let sent = 0
-    for (const pub of who) {
-      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault' }); sent++ }
-      catch (e) { log(`[vault] could not tell ${pub.slice(0, 24)}… about the update of ${product} to ${version}: ${e.message}`) }
-    }
+    const sent = await sendNotice(notice, who, `the update of ${product} to ${version}`)
     audit(ev === 'updated' ? 'update.announced' : 'update.needs-root', { product, version, from: notice.from, device: deviceId, approvers: who.length, sent })
     log(`[vault] update: told ${sent} of ${who.length} approver(s) that ${deviceId ? `${deviceId} (${product})` : 'this vault'} ${ev === 'updated' ? 'now runs' : 'needs administrator rights to install'} ${version}`)
     if (!sent) throw Object.assign(new Error('no approver could be told'), { code: 'announce-failed' })

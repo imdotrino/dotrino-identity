@@ -32,6 +32,7 @@
 import { verifyDeviceSig, pubkeyId, commitCode } from '@dotrino/identity/capabilities'
 import { verifyContinuity, canSeal, DEVICE_CAPS, VAULT_CN } from '@dotrino/identity/acta'
 import { cleanMachine } from '@dotrino/identity/machine'
+import { encodeInvite } from './invite.js'
 
 /** Un token de emparejamiento vale 5 min. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -132,7 +133,13 @@ export function createEnrollDesk ({
   encPub = null, vaultLabel = '',
   // Token de CONEXIÓN de esta bóveda en el proxy (4 chars): su dirección. Es lo
   // único que necesita el QR corto para que el aparato le hable punto a punto.
-  connToken = null
+  connToken = null,
+  // ANUNCIAR LA INVITACIÓN cerca (pairing-protocol.md §1.6): `(kind, data) => stop | null`.
+  // Lo da quien tiene Bluetooth; la invitación se anuncia mientras la sesión vive.
+  announce = null,
+  // DOS APARATOS RESPONDIERON a la misma invitación (§1.7): la sesión ya se canceló aquí;
+  // quien monta la bóveda lo cuenta como incidente. `{ devices: [{ deviceId, machine }], mode }`.
+  onContested = () => {}
 } = {}) {
   if (!identity) throw new Error('createEnrollDesk: missing identity')
   if (!iss) throw new Error('createEnrollDesk: missing iss (master pubkey)')
@@ -159,7 +166,16 @@ export function createEnrollDesk ({
     try { ({ signature } = await identity.signData(signed)) } catch (e) { log('[vault] could not sign the reply:', e.message); return }
     reply(to, { ...obj, signed, vsig: signature })
   }
-  const fail = (to, error, sn) => tell(to, { type: MSG_ERROR, error }, sn)
+  const fail = (to, error, sn, code) => tell(to, { type: MSG_ERROR, error, ...(code ? { code } : {}) }, sn)
+
+  /** Anuncia la invitación de la sesión, si hay con qué. Devuelve con qué pararlo, o null. */
+  const announceInvite = (qr) => {
+    if (typeof announce !== 'function') return null
+    try { return announce('pair', encodeInvite(qr)) || null } catch (e) {
+      log('[vault] could not announce the invitation nearby:', e.message)
+      return null
+    }
+  }
   const isFresh = (d) => typeof d?.ts === 'number' && Math.abs(Date.now() - d.ts) <= FRESH_WINDOW_MS
 
   /**
@@ -216,13 +232,18 @@ export function createEnrollDesk ({
     const conn = typeof connToken === 'function' ? await connToken() : connToken
     if (conn) {
       const sn = randToken(8)
-      pending.set(sn, { token: sn, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
-      return { token: sn, qr: { v: 2, conn, sn, m: mode, proxy }, expiresInMs: PAIRING_TTL_MS }
+      const qr = { v: 2, conn, sn, m: mode, proxy }
+      const stopAnnounce = announceInvite(qr)
+      pending.set(sn, { token: sn, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL', stopAnnounce })
+      return { token: sn, qr, expiresInMs: PAIRING_TTL_MS, nearby: !!stopAnnounce }
     }
     const token = randToken(PAIR_TOKEN_BYTES)
     const sn = randToken(PAIR_TOKEN_BYTES)
-    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL' })
-    return { token, qr: { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }, expiresInMs: PAIRING_TTL_MS }
+    const qr = { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }
+    const stopAnnounce = announceInvite(qr)
+    pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL', stopAnnounce })
+    // `nearby`: la invitación también se anuncia por Bluetooth (§1.6), para decirlo en pantalla.
+    return { token, qr, expiresInMs: PAIRING_TTL_MS, nearby: !!stopAnnounce }
   }
 
   function stopPairing (token) { forget(token) }
@@ -238,6 +259,8 @@ export function createEnrollDesk ({
     pending.delete(key)
     if (!pend) return
     gone.add(pend.token); if (pend.sn) gone.add(pend.sn)
+    // Cerrada la sesión, la invitación deja de anunciarse.
+    if (pend.stopAnnounce) { try { pend.stopAnnounce() } catch (_) {} pend.stopAnnounce = null }
     while (gone.size > 200) gone.delete(gone.values().next().value)
   }
 
@@ -331,10 +354,25 @@ export function createEnrollDesk ({
       audit('rejected', { what: 'enroll', reason: 'no-commit' })
       return fail(from, 'this device speaks an old pairing version (no code commitment). Update it and try again.', d.sn)
     }
-    // Un solo dispositivo a la vez esperando su código (así aprobar no es ambiguo).
-    if (pend.state === 'PENDING_CONFIRM' && pend.dpub && pend.dpub !== d.dpub) {
-      return fail(from, 'another device is already using this pairing session', d.sn)
+    // DOS APARATOS RESPONDIERON A LA MISMA INVITACIÓN (pairing-protocol.md §1.7): se cancela
+    // la sesión, no se aprueba a ninguno y es un incidente. Antes se rechazaba al segundo y el
+    // primero seguía: si el primero era el intruso, el legítimo se quedaba fuera y el dueño solo
+    // veía un código que no cuadraba. El reclamo se apunta SIN esperar (`claimed`), así dos
+    // ENROLL que llegan juntos no pasan los dos por aquí antes de que el primero lo marque.
+    if (pend.claimed && pend.claimed.dpub !== d.dpub) {
+      const first = pend.claimed
+      const [firstId, secondId] = await Promise.all([deviceIdOf(first.dpub), deviceIdOf(d.dpub)])
+      const devices = [{ deviceId: firstId, machine: first.machine }, { deviceId: secondId, machine: cleanMachine(d.machine) }]
+      forget(d.token)
+      audit('incident', { what: 'enroll', reason: 'pairing-contested', devices: [firstId, secondId] })
+      log(`[vault] pairing cancelled: ${firstId} and ${secondId} both answered the same invitation — reported as an incident`)
+      const why = 'pairing cancelled: another device answered this invitation. Start again.'
+      await Promise.all([fail(first.from, why, d.sn, 'pairing-contested'), fail(from, why, d.sn, 'pairing-contested')])
+      fire(onContested, { devices, mode: pend.mode || 'join' })
+      fire(onPendingChange)
+      return { contested: true }
     }
+    if (!pend.claimed) pend.claimed = { dpub: d.dpub, from, machine: cleanMachine(d.machine) }
 
     const deviceId = await deviceIdOf(d.dpub)
     pend.state = 'PENDING_CONFIRM'

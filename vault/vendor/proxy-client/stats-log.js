@@ -20,7 +20,7 @@
 import { listTransports, PATHS } from './stats.js'
 
 const sum = (peers, dir) => {
-  const t = { proxy: 0, direct: 0, turn: 0, webrtc: 0 }
+  const t = { proxy: 0, direct: 0, turn: 0, webrtc: 0, bluetooth: 0 }
   for (const p of peers) for (const k of PATHS) t[k] += p[dir][k]
   return t
 }

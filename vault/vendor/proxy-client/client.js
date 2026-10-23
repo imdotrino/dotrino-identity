@@ -2,6 +2,8 @@ import { buildSignedChannel, getPublicKeyJwk, signData, samePubkey } from './sig
 import { seal, open, isSealed, isBinSealed, BIN_SEALED, makeMessageKey, encryptBytes, decryptBytes } from './sealing.js'
 import { buildEncPubStatement, readEncPubStatement, isEncPub } from './encpub.js'
 import { WebRTCManager, RTC_TAG, DEFAULT_ICE_SERVERS, loadNodePeerConnection, resolvePeerConnection, pinTurnToIPv4 } from './webrtc.js'
+import { BluetoothManager } from './ble/manager.js'
+import { BLE_TAG } from './ble/wire.js'
 import { TrafficStats, utf8Length, registerTransport, unregisterTransport } from './stats.js'
 import { splitParts, splitBinParts, isPart, Reassembler, DIRECT_PART_CHARS, PROXY_PART_CHARS, QUEUE_MAX_CHARS, RELAY_MAX_CHARS, DIRECT_PART_BYTES, PROXY_PART_BYTES, QUEUE_MAX_BYTES, RELAY_MAX_BYTES } from './parts.js'
 import { pack, unpack, hasBinary, encodeFrame, decodeFrame } from './binpack.js'
@@ -217,6 +219,22 @@ export class WebSocketProxyClient {
     if (this._rtc && typeof options.acceptDirectFrom === 'function') {
       this._rtc.acceptFrom = options.acceptDirectFrom
     }
+
+    // EL BLUETOOTH (docs/bluetooth.md): escalón entre WebRTC directo y TURN. Se enciende a
+    // propósito, con `bluetooth: true` (en Node busca BlueZ, solo en Linux) o con un
+    // adaptador propio. Encenderlo hace que el aparato anuncie que está ahí, y eso no lo
+    // decide un script cualquiera que importe el pilar: lo decide quien monta el cliente.
+    this._bleOption = options.bluetooth || null
+    this._ble = this._bleOption ? new BluetoothManager({
+      getSelfToken: () => this.token,
+      signalSend: (to, payload) => this._proxySendOne(to, payload),
+      deliverMessage: (from, parsed, meta) => this._deliver(from, parsed, meta),
+      emit: (event, ...args) => this._emit(event, ...args),
+      count: (dir, token, bytes, route) =>
+        this._traffic.peer(dir, route, { token, pubkey: this._tokenPubkeys.get(token) || null }, bytes),
+    }) : null
+    if (this._ble && typeof options.acceptDirectFrom === 'function') this._ble.acceptFrom = options.acceptDirectFrom
+    this._bleStarting = null
   }
 
   // ---------- public API ----------
@@ -234,7 +252,55 @@ export class WebSocketProxyClient {
     await loadNodePeerConnection()
   }
 
+  /**
+   * ENCIENDE EL BLUETOOTH, una vez. Corre por detrás desde `connect()`: tiene que estar
+   * anunciando antes de que el otro quiera subir de escalón. Que no haya Bluetooth es el caso
+   * normal y no se dice; que lo haya y no arranque, sí (`bluetooth_unavailable`).
+   */
+  _prepareBluetooth () {
+    if (!this._ble || this._ble.available || this._bleStarting) return this._bleStarting
+    this._bleStarting = (async () => {
+      let adapter = this._bleOption
+      if (adapter === true) {
+        const mod = './ble/bluez.js'
+        const { openBluez } = await import(/* @vite-ignore */ mod)
+        adapter = await openBluez()
+        if (!adapter) return
+      }
+      await this._ble.start(adapter)
+    })().catch((e) => {
+      this._emit('error', { type: 'bluetooth_unavailable', error: e, code: e?.code || null })
+    }).finally(() => { this._bleStarting = null })
+    return this._bleStarting
+  }
+
+  /** Hay Bluetooth encendido en este cliente. */
+  get bluetoothAvailable () { return !!this._ble?.available }
+
+  /**
+   * Anuncia `{kind, data}` por Bluetooth hasta que se llame a lo que devuelve
+   * (docs/bluetooth.md §3). `kind: 'pair'` es la invitación de emparejar; `'contact'`, la
+   * tarjeta de contacto. Lanza `no-bluetooth` si aquí no lo hay.
+   * @returns {() => void}
+   */
+  announceBluetooth (kind, data) {
+    if (!this._ble) throw errorWithCode('bluetooth: this client was made without it (option `bluetooth`)', 'no-bluetooth')
+    return this._ble.announce(kind, data)
+  }
+
+  /**
+   * Lo que anuncian por Bluetooth los aparatos de alrededor con ese `kind`. No necesita el
+   * proxio. `onFound` avisa de cada uno según aparece.
+   * @returns {Promise<{kind: string, data: string}[]>}
+   */
+  async discoverBluetooth ({ kind, timeoutMs, onFound } = /** @type {any} */ ({})) {
+    if (!this._ble) throw errorWithCode('bluetooth: this client was made without it (option `bluetooth`)', 'no-bluetooth')
+    await this._prepareBluetooth()
+    return this._ble.discover({ kind, timeoutMs, onFound })
+  }
+
   connect () {
+    this._prepareBluetooth()
     return new Promise((resolve, reject) => {
       if (this._connected) return resolve(this.token)
       // Un reintento que estaba esperando su turno sobra: este `connect()` ya abre uno.
@@ -257,6 +323,7 @@ export class WebSocketProxyClient {
       this._turnTimer = null
     }
     if (this._rtc) this._rtc.closeAll()
+    if (this._ble) this._ble.stop().catch(() => {})
     if (this.ws) {
       try { this.ws.close(1000) } catch (_) {}
     }
@@ -342,13 +409,13 @@ export class WebSocketProxyClient {
     }
     const tokens = Array.isArray(to) ? to : [to]
     const messageStr = this._wire(payload)
-    if (!this._rtc) {
+    if (!this._rtc && !this._ble) {
       this._sendRaw({ to: tokens, message: messageStr })
       return
     }
     const proxyTokens = []
     for (const t of tokens) {
-      if (!this._rtc.trySend(t, messageStr)) proxyTokens.push(t)
+      if (!this._tryDirect(t, messageStr)) proxyTokens.push(t)
     }
     if (proxyTokens.length) {
       this._sendRaw({ to: proxyTokens, message: messageStr })
@@ -374,6 +441,8 @@ export class WebSocketProxyClient {
    * el siguiente mensaje vuelve a intentarlo.
    */
   _upgradeDirect (tokens) {
+    // El Bluetooth negocia en paralelo con WebRTC y deduplica solo (ble/manager.js).
+    if (this._ble?.available) for (const t of tokens) if (!this._ble.isOpen(t)) this._ble.upgrade(t)
     if (!this._rtc) return
     this._rtcTried = this._rtcTried || new Set()
     for (const t of tokens) {
@@ -402,6 +471,25 @@ export class WebSocketProxyClient {
   /** True if there is an open DataChannel to the given peer. */
   isWebRTCOpen (token) {
     return !!(this._rtc && this._rtc.isOpen(token))
+  }
+
+  /**
+   * EL MEJOR CANAL ABIERTO, en el orden de la escalera (docs/bluetooth.md §1): WebRTC si va
+   * directo, si no Bluetooth, si no WebRTC por TURN. False = por el proxio.
+   */
+  _directFor (token) {
+    const rtcOpen = !!this._rtc?.isOpen(token)
+    if (rtcOpen && this._rtc.peers?.get(token)?.route !== 'turn') return this._rtc
+    if (this._ble?.isOpen(token)) return this._ble
+    if (rtcOpen) return this._rtc
+    return null
+  }
+
+  /** Manda por el mejor canal abierto; si no hay, deja que WebRTC empiece a negociar y da false. */
+  _tryDirect (token, wire) {
+    const d = this._directFor(token)
+    if (d) return d.trySend(token, wire)
+    return this._rtc ? this._rtc.trySend(token, wire) : false
   }
 
   _proxySendOne (to, payload) {
@@ -576,7 +664,7 @@ export class WebSocketProxyClient {
     // mensaje del camino que toca sale en partes. El tamaño de parte lo decide el camino
     // de ahora: el canal directo admite mucho menos por mensaje que el proxio.
     const m = this._measure(payload)
-    const direct = tokens.length === 1 && !!this._rtc?.isOpen(tokens[0])
+    const direct = tokens.length === 1 && !!this._directFor(tokens[0])
     const size = m.bin ? (direct ? DIRECT_PART_BYTES : PROXY_PART_BYTES) : (direct ? DIRECT_PART_CHARS : PROXY_PART_CHARS)
     const relayMax = m.bin ? RELAY_MAX_BYTES : RELAY_MAX_CHARS
     const queueMax = m.bin ? QUEUE_MAX_BYTES : QUEUE_MAX_CHARS
@@ -619,12 +707,14 @@ export class WebSocketProxyClient {
    * existe esto: que la app lo enseñe antes de que el usuario intente algo que no cabe.
    * `webrtc` es un canal directo abierto del que todavía no se sabe si va por TURN.
    * @param {string|null} token
-   * @returns {Promise<'socket'|'direct'|'turn'|'webrtc'|'proxy'|'offline'>}
+   * @returns {Promise<'socket'|'direct'|'turn'|'webrtc'|'bluetooth'|'proxy'|'offline'>}
    */
   async routeTo (token) {
     if (!this._connected) return 'offline'
     if (!token) return 'offline'
-    if (this._rtc?.isOpen(token)) {
+    const d = this._directFor(token)
+    if (d && d === this._ble) return 'bluetooth'
+    if (d) {
       const peer = this._rtc.peers.get(token)
       try { return (await this._rtc.probeRoute(peer)) || 'webrtc' } catch (_) { return 'webrtc' }
     }
@@ -637,7 +727,8 @@ export class WebSocketProxyClient {
    * una pausa corta entre partes, para no chocar con su límite de mensajes por segundo.
    */
   async _sendPiece (token, envelope, peerPubkey, queueFallback, relayFallback = true) {
-    if (this._rtc && await this._rtc.sendDirect(token, this._wire(envelope))) return
+    const d = this._directFor(token)
+    if (d && await d.sendDirect(token, this._wire(envelope))) return
     if (!relayFallback) {
       throw errorWithCode('the direct channel closed in the middle of a message too big for the proxy', 'direct-lost')
     }
@@ -683,7 +774,7 @@ export class WebSocketProxyClient {
       throw errorWithCode('requireSealed: refusing to send a directed message in the clear — use sendSealedTo()', 'unsealed')
     }
     const messageStr = this._wire(envelope)
-    if (!skipDirect && this._rtc && this._rtc.trySend(token, messageStr)) return
+    if (!skipDirect && this._tryDirect(token, messageStr)) return
     const id = `msg_${this._nextId++}`
     const timer = setTimeout(() => this._tokenWatch.delete(id), 15000)
     timer.unref?.()
@@ -1453,7 +1544,9 @@ export class WebSocketProxyClient {
       spec.fireAt = fireAt
     }
     if (payload) spec.payload = payload
-    const data = { op: 'schedule-push', publickey: publicKey, spec: JSON.stringify(spec), ts: Date.now() }
+    // La app va firmada, como en enablePush: el recordatorio suena solo en ella (proxio ≥ 1.9.0;
+    // uno más viejo la ignora y suena en todas, como antes).
+    const data = { op: 'schedule-push', publickey: publicKey, spec: JSON.stringify(spec), ts: Date.now(), ...this._appField() }
     const signature = await normalizeSignature(sign, data)
     const res = await this._request({ type: 'schedule-push', data, signature }, 'push-scheduled')
     return { jobId: res.jobId, nextFire: res.nextFire }
@@ -1476,7 +1569,7 @@ export class WebSocketProxyClient {
 
   /**
    * Listar los push programados propios.
-   * @returns {Promise<Array<{ jobId:number, nextFire:number, cron:string|null, tz:string|null, payload:object|null }>>}
+   * @returns {Promise<Array<{ jobId:number, app:string|null, nextFire:number, cron:string|null, tz:string|null, payload:object|null }>>}
    */
   async listScheduledPushes ({ publicKey, sign } = {}) {
     if (!publicKey || typeof sign !== 'function') throw new Error('listScheduledPushes requires { publicKey, sign }')
@@ -1712,6 +1805,11 @@ export class WebSocketProxyClient {
           this._rtc.handleIncoming(from, parsed)
           break
         }
+        // La señalización del Bluetooth tampoco sube a la app, haya Bluetooth o no.
+        if (parsed && parsed.t === BLE_TAG) {
+          this._ble?.handleIncoming(from, parsed)
+          break
+        }
         // El saludo se atiende AQUÍ, antes de `_deliver`: es del transporte y no sube a
         // la app, así que `requireSealed` no lo ve pasar ni tiene que hacerle una
         // excepción.
@@ -1733,6 +1831,7 @@ export class WebSocketProxyClient {
         this.forgetToken(data.token)
         this._emit('peer_disconnected', data.token, data.channel || null)
         if (this._rtc && data.token) this._rtc.closePeer(data.token)
+        if (this._ble && data.token) this._ble.closePeer(data.token)
         this._resolvePending(data, 'token')
         break
       case 'joined':
@@ -1842,6 +1941,13 @@ export class WebSocketProxyClient {
   async stats () {
     const t = this._traffic
     const routes = this._rtc ? await this._rtc.describe() : new Map()
+    // Un canal de Bluetooth abierto manda sobre un WebRTC que no salió o va por TURN (§1).
+    if (this._ble) {
+      for (const [tok, r] of this._ble.describe()) {
+        const cur = routes.get(tok)
+        if (r === 'bluetooth' ? cur !== 'direct' : !cur) routes.set(tok, r)
+      }
+    }
     const peers = [...t.peers.values()].map((p) => {
       const pubkey = p.pubkey || (p.token && this._tokenPubkeys.get(p.token)) || null
       const rtc = p.token ? routes.get(p.token) : null
@@ -1865,6 +1971,7 @@ export class WebSocketProxyClient {
       publickey: this.myPublickey,
       connected: this._connected,
       webrtc: !!this._rtc,
+      bluetooth: !!this._ble?.available,
       // El relevo: null si nunca se pidió; si no, activo o por qué no (`code`, `retryAt`).
       turn: this._turn ? { ...this._turn } : null,
       since: t.since,

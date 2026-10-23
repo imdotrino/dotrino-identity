@@ -15,6 +15,7 @@
  *   direct   WebRTC sin relevo
  *   turn     WebRTC por un relevo TURN
  *   webrtc   WebRTC sin saber todavía cuál de los dos (getStats no contestó)
+ *   bluetooth el escalón del Bluetooth (docs/bluetooth.md)
  */
 
 /** Longitud en bytes UTF-8 de un string, sin reservar un buffer por mensaje. */
@@ -35,9 +36,9 @@ export function utf8Length (s) {
   return n
 }
 
-export const PATHS = ['proxy', 'direct', 'turn', 'webrtc']
+export const PATHS = ['proxy', 'direct', 'turn', 'webrtc', 'bluetooth']
 
-const zeros = () => ({ proxy: 0, direct: 0, turn: 0, webrtc: 0 })
+const zeros = () => ({ proxy: 0, direct: 0, turn: 0, webrtc: 0, bluetooth: 0 })
 
 export class TrafficStats {
   constructor () {
@@ -55,7 +56,7 @@ export class TrafficStats {
   /**
    * Un mensaje dirigido a (o venido de) una conexión.
    * @param {'in'|'out'} dir
-   * @param {'proxy'|'direct'|'turn'|'webrtc'} path
+   * @param {'proxy'|'direct'|'turn'|'webrtc'|'bluetooth'} path
    * @param {{ token?: string|null, pubkey?: string|null }} who
    * @param {number} bytes
    */
