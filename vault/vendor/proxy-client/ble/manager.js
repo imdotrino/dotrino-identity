@@ -454,9 +454,12 @@ export class BluetoothManager {
     this._scanListeners.add(listener)
     if (this._stopScan) return
     if (!this._scanStarting) {
-      this._scanStarting = this.adapter.scan((dev) => {
+      // Una búsqueda que se está parando todavía ocupa el adaptador: BlueZ contesta `InProgress`
+      // a la siguiente si no se espera a que acabe (dos `discover` seguidos).
+      const stopping = this._scanStopping || Promise.resolve()
+      this._scanStarting = stopping.then(() => this.adapter.scan((dev) => {
         for (const l of [...this._scanListeners]) l(dev)
-      }).then((stop) => {
+      })).then((stop) => {
         this._stopScan = stop
         this._scanStarting = null
         if (!this._scanListeners.size) this._removeScan(null)
@@ -470,6 +473,8 @@ export class BluetoothManager {
     if (this._scanListeners.size || !this._stopScan) return
     const stop = this._stopScan
     this._stopScan = null
-    stop().catch(() => {})
+    const stopping = this._scanStopping = stop().catch(() => {}).then(() => {
+      if (this._scanStopping === stopping) this._scanStopping = null
+    })
   }
 }

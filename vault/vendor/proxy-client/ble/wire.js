@@ -88,6 +88,53 @@ export function decodeBeacon (bytes) {
   } catch (_) { return null }
 }
 
+export const KIND_PAIR = 'pair'
+export const KIND_CONTACT = 'contact'
+export const CONTACT_NICK_MAX = 40
+export const CONTACT_NICK_MAX_BYTES = 60
+
+/** El apodo recortado a 40 unidades UTF-16 y 60 bytes UTF-8, por puntos de código enteros: así cabe en el beacon. */
+export function trimNick (nickname) {
+  let out = ''
+  let bytes = 0
+  for (const ch of String(nickname)) {
+    const b = enc.encode(ch).length
+    if (out.length + ch.length > CONTACT_NICK_MAX || bytes + b > CONTACT_NICK_MAX_BYTES) break
+    out += ch
+    bytes += b
+  }
+  return out
+}
+
+/**
+ * La tarjeta de contacto que se anuncia (`kind: 'contact'`): el mismo fragmento que el enlace
+ * `#to=` del messenger, `to=<publickey en base64url>&nick=<apodo>`. La `publickey` es la cadena
+ * JWK tal cual la escribe la identidad. El apodo va recortado con `trimNick` y codificado como
+ * `encodeURIComponent` (lo que no es `A-Za-z0-9-_.!~*'()` va en %XX de sus bytes UTF-8).
+ */
+export function encodeContact ({ publickey, nickname = '' }) {
+  if (typeof publickey !== 'string' || !publickey) {
+    throw Object.assign(new Error('bluetooth: a contact needs its publickey'), { code: 'bad-contact' })
+  }
+  const nick = trimNick(nickname)
+  return 'to=' + b64u(enc.encode(publickey)) + (nick ? '&nick=' + encodeURIComponent(nick) : '')
+}
+
+/** `{ publickey, nickname }` de una tarjeta anunciada, o null si no se entiende. */
+export function decodeContact (data) {
+  if (typeof data !== 'string') return null
+  const param = (k) => { const m = data.match(new RegExp('(?:^|&)' + k + '=([^&]*)')); return m ? m[1] : null }
+  try {
+    const to = param('to')
+    if (!to) return null
+    const publickey = dec.decode(unb64u(to))
+    const jwk = JSON.parse(publickey)
+    if (!jwk || typeof jwk !== 'object' || typeof jwk.x !== 'string' || typeof jwk.y !== 'string') return null
+    const nick = param('nick')
+    return { publickey, nickname: nick ? trimNick(decodeURIComponent(nick)) : '' }
+  } catch (_) { return null }
+}
+
 // ---------- llave del canal ----------
 
 export async function makeEphemeral () {

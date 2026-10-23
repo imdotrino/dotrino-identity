@@ -3322,7 +3322,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // El acta es la nuestra: no hay nada que adoptar.
       if ((!v?.cert || !device) && adminLink()?.self) {
         const self = adminLink()
-        return remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0 })
+        const res = await remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0 })
+        return { ...res, acta: loadActa() }
       }
       if (!v?.cert || !device) {
         // SOLO SE AVISA SI ES RARO. Un aparato que manda en su propia cuenta —o que aún no
@@ -3350,7 +3351,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         // comprobación de arriba corrió ANTES de tenerla, así que sin esto haría falta una
         // segunda visita para estrenar un permiso recién concedido.
         maybeRenewVaultCert()
-        return res
+        // EL ACTA QUE SE DEVUELVE ES LA ADOPTADA, no la que llegó: la respuesta no trae
+        // remitente comprobable, y quien llama decide con ella quién es de la cuenta (la
+        // terminal, a qué máquina le abre una consola). Si la recibida no se pudo adoptar,
+        // vale la que ya se tenía comprobada.
+        return { ...res, acta: loadActa() }
       } catch (e) { return handleVaultError(e) }
     },
 
