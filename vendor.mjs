@@ -36,14 +36,15 @@ export const VENDORED = [
     pkg: 'dotrino-vault/lib/package.json',
     from: 'dotrino-vault/lib/src',
     to: 'vault/vendor/vault',
-    files: ['index.js', 'enroll.js', 'protocol.js', 'passwordLogins.js', 'loginClient.js', 'b64.js',
+    files: ['index.js', 'enroll.js', 'invite.js', 'protocol.js', 'passwordLogins.js', 'loginClient.js', 'b64.js',
       // LA BÓVEDA ENTERA: el mismo núcleo que el binario (`browser.js` → `core/`).
       'browser.js', 'procContext.js', 'sealed.js', 'admin.js', 'revocation.js', 'core/'],
     note: [
       'browser.js es la bóveda de esta pestaña: el MISMO núcleo que el binario (core/), con',
       'el disco en IndexedDB. Importa @dotrino/{compat,roadmap,passmanager,store/core} y',
       '@dotrino/identity/{facade,machine,content}, todos por el import map de index.html.',
-      'index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia),',
+      'index.js importa ./enroll.js y ./protocol.js (relativos, van en esta misma copia);',
+      'enroll.js importa ./invite.js para anunciar la invitación por Bluetooth.',
       '@dotrino/identity/{capabilities,acta} (= ../../{capabilities,acta}.js) y',
       '@dotrino/proxy-client (= ../proxy-client/), todos por el import map de index.html.',
       'passwordLogins.js es el aparato que se abre con usuario y contraseña: lo carga',
