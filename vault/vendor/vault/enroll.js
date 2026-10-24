@@ -242,7 +242,7 @@ export function createEnrollDesk ({
     const qr = { v: 2, iss, proxy, token, sn, m: mode, ...(acct ? { acct } : {}) }
     const stopAnnounce = announceInvite(qr)
     pending.set(token, { token, exp: Date.now() + PAIRING_TTL_MS, scope, caps, ttlMs, label, sn, mode, account: acct, state: 'AWAITING_ENROLL', stopAnnounce })
-    // `nearby`: la invitación también se anuncia por Bluetooth (§1.6), para decirlo en pantalla.
+    // `nearby`: la invitación también se anuncia en la red local y por Bluetooth (§1.6), para decirlo en pantalla.
     return { token, qr, expiresInMs: PAIRING_TTL_MS, nearby: !!stopAnnounce }
   }
 
@@ -604,8 +604,11 @@ export function createEnrollDesk ({
    * borrado remoto SOLO se dispara con esta firma (nunca con un error cualquiera →
    * cierra el wipe-DoS). Va por `sendByPubkey`: si está apagado, el proxy lo encola 24 h.
    */
-  async function emitRevoke (dpub, nonce) {
-    const body = { op: 'revoke', sub: dpub, nonce, iat: Date.now(), exp: Date.now() + DEVICE_TTL_MS }
+  // `why`: por qué se le dice que se vaya. Sin él es una expulsión del acta; con
+  // 'login-closed', un aparato de contraseña que sigue en el acta pero ya no tiene inicio de
+  // sesión abierto. Para el aparato es lo mismo: lo de esta cuenta se borra de ahí.
+  async function emitRevoke (dpub, nonce, why = null) {
+    const body = { op: 'revoke', sub: dpub, nonce, iat: Date.now(), exp: Date.now() + DEVICE_TTL_MS, ...(why ? { why } : {}) }
     const { signature } = await identity.signData(body)
     try { sendByPubkey(dpub, { type: MSG_REVOKED, body, signature }) }
     catch (e) { log('[vault] could not emit revoke:', e.message) }

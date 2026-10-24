@@ -8,8 +8,8 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 37,
-    "issued": "2026-10-18",
+    "seq": 39,
+    "issued": "2026-10-23",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
       "compat": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.126.1",
+        "current": "0.126.2",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -131,7 +131,7 @@ export const MANIFESTS = Object.freeze({
       "remote-agent": {
         "repo": "imdotrino/dotrino-remote-agent",
         "npm": "@dotrino/remote-agent",
-        "current": "0.23.1",
+        "current": "0.24.0",
         "protocol": 1,
         "requires": {
           "identity": ">=0.121.7",
@@ -143,10 +143,10 @@ export const MANIFESTS = Object.freeze({
       "terminal-agent": {
         "repo": "imdotrino/dotrino-terminal",
         "npm": "@dotrino/terminal-agent",
-        "current": "0.49.1",
+        "current": "0.49.2",
         "protocol": 2,
         "requires": {
-          "remote-agent": ">=0.22.5",
+          "remote-agent": ">=0.24.0",
           "identity": ">=0.121.7",
           "vault": ">=0.93.0",
           "proxy-client": ">=0.38.4",
@@ -181,34 +181,34 @@ export const MANIFESTS = Object.freeze({
         "repo": "imdotrino/dotrino-ia",
         "npm": "@dotrino/ia-agent",
         "deprecated": "2026-10-07: retired, replaced by terminal-agent (dotrino-terminal)",
-        "current": "0.9.1",
+        "current": "0.9.2",
         "protocol": 1,
         "requires": {
-          "remote-agent": ">=0.20.1",
-          "identity": ">=0.117.2",
+          "remote-agent": ">=0.24.0",
+          "identity": ">=0.126.2",
           "vault": ">=0.87.0",
-          "proxy-client": ">=0.36.1"
+          "proxy-client": ">=0.42.1"
         }
       },
       "content": {
         "repo": "imdotrino/dotrino-content",
         "npm": "@dotrino/content",
-        "current": "0.6.9",
+        "current": "0.6.10",
         "protocol": 1,
         "requires": {
-          "remote-agent": ">=0.22.2",
-          "identity": ">=0.120.0",
+          "remote-agent": ">=0.24.0",
+          "identity": ">=0.126.2",
           "vault": ">=0.87.0",
-          "proxy-client": ">=0.36.1"
+          "proxy-client": ">=0.42.1"
         }
       },
       "sealers": {
         "repo": "imdotrino/dotrino-sealers",
         "npm": "@dotrino/sealers",
-        "current": "0.10.4",
+        "current": "0.10.5",
         "protocol": 1,
         "requires": {
-          "remote-agent": ">=0.22.4",
+          "remote-agent": ">=0.24.0",
           "identity": ">=0.121.7",
           "vault": ">=0.93.1",
           "proxy-client": ">=0.38.4"
@@ -217,7 +217,7 @@ export const MANIFESTS = Object.freeze({
       "roadmap": {
         "repo": "imdotrino/dotrino-roadmap",
         "npm": "@dotrino/roadmap",
-        "current": "0.4.32",
+        "current": "0.4.59",
         "protocol": 1,
         "requires": {
           "compat": "0.4.0+"
@@ -269,16 +269,17 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.172.0",
+        "current": "0.172.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.126.0",
-          "proxy-client": ">=0.41.0",
+          "identity": ">=0.126.2",
+          "proxy-client": ">=0.42.1",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.4",
           "compat": ">=0.4.0",
           "opaque": ">=0.1.0",
-          "roadmap": ">=0.4.26"
+          "roadmap": ">=0.4.58",
+          "remote-agent": ">=0.24.0"
         }
       },
       "verifier": {
@@ -352,23 +353,23 @@ export const MANIFESTS = Object.freeze({
       },
       "social-bot": {
         "repo": "imdotrino/dotrino-social-bot",
-        "current": "0.3.0",
+        "current": "0.3.1",
         "protocol": 1,
         "requires": {
           "vault": ">=0.87.0",
-          "identity": ">=0.117.2",
-          "proxy-client": ">=0.36.1",
-          "remote-agent": ">=0.20.1"
+          "identity": ">=0.126.2",
+          "proxy-client": ">=0.42.1",
+          "remote-agent": ">=0.24.0"
         }
       },
       "accounts": {
         "repo": "imdotrino/dotrino-accounts",
         "npm": null,
-        "current": "0.6.0",
+        "current": "0.6.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.116.0",
-          "remote-agent": ">=0.23.1",
+          "identity": ">=0.121.7",
+          "remote-agent": ">=0.24.0",
           "vault": ">=0.96.0",
           "pay": ">=0.2.0",
           "vaultd": ">=0.168.0"
@@ -391,10 +392,10 @@ export const MANIFESTS = Object.freeze({
       "expenses-agent": {
         "repo": "imdotrino/dotrino-expenses-agent",
         "npm": "@dotrino/expenses-agent",
-        "current": "0.1.2",
+        "current": "0.1.3",
         "protocol": 1,
         "requires": {
-          "remote-agent": ">=0.23.1",
+          "remote-agent": ">=0.24.0",
           "vault": ">=0.96.0",
           "update": ">=0.9.2",
           "vaultd": ">=0.154.0"
@@ -416,6 +417,60 @@ export const MANIFESTS = Object.freeze({
       }
     },
     "broken": [
+      {
+        "product": "remote-agent",
+        "versions": "0.23.1",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.22.5",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.22.4",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.22.3",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.22.2",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.22.0",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "remote-agent",
+        "versions": "0.20.1",
+        "why": "el cliente no comprobaba que la máquina siguiera en el acta ni que quien firmaba el ack fuera la máquina pedida: abría sesión con una máquina quitada del acta (robada) o con otra llave de la cuenta que dijera ser esa máquina; y el agente no cerraba la sesión de quien salía del acta",
+        "fix": "sube a @dotrino/remote-agent 0.24.0"
+      },
+      {
+        "product": "terminal-agent",
+        "versions": "0.49.1",
+        "why": "no cerraba la consola abierta de un aparato que salía del acta o perdía sign (la conservaba mientras siguiera escribiendo), y como cliente de las otras máquinas se fiaba de su papel sin mirar el acta",
+        "fix": "sube a @dotrino/terminal-agent 0.49.2 (se actualiza solo)"
+      },
+      {
+        "product": "terminal-agent",
+        "versions": "0.49.0",
+        "why": "no cerraba la consola abierta de un aparato que salía del acta o perdía sign (la conservaba mientras siguiera escribiendo), y como cliente de las otras máquinas se fiaba de su papel sin mirar el acta",
+        "fix": "sube a @dotrino/terminal-agent 0.49.2 (se actualiza solo)"
+      },
       {
         "product": "passmanager-extension",
         "versions": "0.50.0",

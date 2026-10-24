@@ -521,7 +521,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
   const { client, identify: reidentify, isIdentified, listen } = await createTransport({
     identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null,
-    bluetooth: platform.bluetooth || null
+    bluetooth: platform.bluetooth || null, lan: !!platform.lan
   })
 
   // El registro público de cadenas de selladores: deposita, si hay a dónde, los eslabones
@@ -667,7 +667,36 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // propio `reason` para que el otro lado sepa qué le pasa y no lo confunda con un papel
     // viejo (que se arregla renovando) ni con una revocación (que se arregla emparejando).
     if (chk.ok && blocked.has(chk.device)) return { ok: false, reason: 'blocked', device: chk.device }
+    // UN APARATO DE CONTRASEÑA SIN INICIO DE SESIÓN ABIERTO TAMPOCO. Sigue en el acta, así que
+    // su papel verifica; lo que lo deja fuera es que ya no haya sesión (la cerraste desde la
+    // consola, cambiaste la contraseña). Y se le dice, firmado, para que ese navegador borre
+    // la cuenta en vez de quedarse con un perfil que ya no puede hablar con nadie.
+    if (chk.ok && logins.isClosed({ pub: chk.device })) {
+      tellClosedLogin(chk.device, args?.cert?.nonce || null)
+      return { ok: false, reason: 'login-closed', device: chk.device }
+    }
     return chk
+  }
+
+  /**
+   * EL AVISO DE IRSE a un aparato de contraseña sin sesión: el mismo `vault.revoked` firmado
+   * que borra la cuenta de un aparato expulsado, con `why: 'login-closed'`. Uno sin firma no
+   * borraría nada, y no debe (wipe-DoS, `docs/pairing-protocol.md §2.3`).
+   *
+   * Una vez por minuto y llave: cada petición rechazada no puede ser una firma más.
+   */
+  const closedLoginTold = new Map()
+  function tellClosedLogin (pub, nonce = null) {
+    const t = Date.now()
+    if (t - (closedLoginTold.get(pub) || 0) < 60_000) return
+    closedLoginTold.set(pub, t)
+    ;(async () => {
+      // El aviso nombra el papel que el aparato tiene en la mano: si no vino con la petición
+      // (el gestor de contraseñas no lo manda), el vigente que esta bóveda le dio.
+      const n = nonce || ((await identity.listDelegations()).issued || []).find((d) => d.sub === pub)?.nonce || null
+      await desk.emitRevoke(pub, n, 'login-closed')
+      audit('login.cut', { device: await deviceIdOf(pub) })
+    })().catch((e) => log('[vault] could not tell a closed login to leave: ' + e.message))
   }
 
 
@@ -834,6 +863,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // El mismo módulo lo usan «este dispositivo es bóveda» (@dotrino/vault) y la copia
   // vendorizada del iframe de identidad: un solo sitio donde vive el flujo, y por lo
   // tanto un solo sitio donde se comprueba el código antes de firmar el cert.
+  // Los anuncios cerca que siguen abiertos (una invitación sin cerrar): se cortan al apagar la
+  // bóveda, o el socket de la red local la sobreviviría.
+  const announcing = new Set()
   const desk = createEnrollDesk({
     identity,
     iss: master,
@@ -879,9 +911,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       markRotationDue(sub).catch((e) => log('[vault] could not rotate after the removal:', e.message))
     },
     defaultScope: [SCOPE.READ],
-    // EMPAREJAR CERCA (pairing-protocol.md §1.6): la invitación se anuncia por Bluetooth
-    // mientras la sesión vive, si este cliente lo tiene. Sin Bluetooth, el QR de siempre.
-    announce: (kind, data) => client.bluetoothAvailable ? client.announceBluetooth(kind, data) : null,
+    // EMPAREJAR CERCA (pairing-protocol.md §1.6): la invitación se anuncia por Bluetooth y por
+    // la red local mientras la sesión vive, por los medios que este cliente tenga. Sin ninguno
+    // (la pestaña, la extensión, la Lambda), el QR de siempre.
+    announce: (kind, data) => {
+      if (!client.bluetoothAvailable && !platform.lan) return null
+      const started = client.announceNearby(kind, data).catch((e) => {
+        log('[vault] could not announce the invitation nearby:', e.message)
+        return null
+      })
+      const stop = () => { announcing.delete(stop); started.then((s) => s?.()) }
+      announcing.add(stop)
+      return stop
+    },
     // DOS APARATOS RESPONDIERON (§1.7): la sesión ya se canceló; aquí se cuenta como incidente.
     onContested: ({ devices }) => {
       announcePairingContested(devices).catch((e) => log('[vault] could not tell the approvers about the contested pairing:', e.message))
@@ -2466,7 +2508,11 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // UNA sola condición, y es del ACTA: el aparato tiene la capacidad `passwords`.
       // Quitársela —o quitar el aparato— le corta esto en la siguiente pasada, sin
       // que haya una segunda lista que acordarse de tocar.
-      isAllowed: (pub) => !!actaCache && Acta.memberCan(actaCache, pub, 'passwords'),
+      isAllowed: (pub) => {
+        if (!actaCache || !Acta.memberCan(actaCache, pub, 'passwords')) return false
+        if (logins.isClosed({ pub })) { tellClosedLogin(pub); return false }
+        return true
+      },
       encPubOf: (pub) => (actaCache?.members || []).find((m) => m.pub === pub)?.encPub || null,
       // EN VIVO, no del caché: conceder o quitar `unattended` tiene que surtir efecto en
       // el acto. Con el caché, la mesa de contraseñas seguía decidiendo con la foto del
@@ -4705,6 +4751,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       return r
     },
     close () {
+      for (const stop of [...announcing]) { try { stop() } catch (_) {} }
       clearInterval(approvalsSweeper)
       for (const t of pendingNotices.values()) clearTimeout(t)
       pendingNotices.clear()

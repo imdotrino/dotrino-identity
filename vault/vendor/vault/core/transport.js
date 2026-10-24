@@ -36,7 +36,7 @@ export async function masterPubkeyOf (identity) {
  * @param {string} [opts.url] URL del proxy (default wss://proxy.dotrino.com).
  * @returns {Promise<{ client, token:string, identify():Promise<void> }>}
  */
-export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey = null, log = () => {}, makeClient = null, announce = null, wakeUrl = null, bluetooth = null, recheckMs = 60_000, patienceMs = 5 * 60_000, reannounceMs = 10 * 60_000 }) {
+export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey = null, log = () => {}, makeClient = null, announce = null, wakeUrl = null, bluetooth = null, lan = false, recheckMs = 60_000, patienceMs = 5 * 60_000, reannounceMs = 10 * 60_000 }) {
   // Import dinámico DESPUÉS de instalar los globals que el paquete usa.
   // `WebSocketProxyClient` (la clase) y NO el helper `getWebSocketProxyClient`:
   // ese es un SINGLETON de proceso, y con multi-perfil el vault necesita una
@@ -83,7 +83,9 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     maxReconnectAttempts: 100000, reconnectDelay: 4000,
     // EL BLUETOOTH (proxy-client docs/bluetooth.md) lo decide la plataforma: el binario en
     // Linux sí; la pestaña y la extensión no pueden. Misma puerta que WebRTC (`inActa`).
-    ...(bluetooth ? { bluetooth } : {})
+    ...(bluetooth ? { bluetooth } : {}),
+    // LA RED LOCAL (docs/lan.md del pilar): anunciar la invitación por mDNS. Solo el binario.
+    ...(lan ? { lan: true } : {})
   })
 
   await client.connect()

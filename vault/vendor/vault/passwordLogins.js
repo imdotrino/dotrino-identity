@@ -447,6 +447,20 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
       return false
     },
 
+    /**
+     * ¿Es la llave de un aparato de contraseña SIN ningún inicio de sesión abierto? Es la
+     * pregunta que hace quien atiende: un aparato así sigue en el acta —el siguiente inicio
+     * vuelve a usar su llave—, pero hasta entonces no se le sirve nada. Una llave que no es
+     * de ningún aparato de contraseña no es asunto de esto: `false`.
+     */
+    isClosed ({ pub } = {}) {
+      const state = read()
+      for (const u of Object.values(state.users)) {
+        if (u.pub === pub) return !Object.keys(u.sessions || {}).length
+      }
+      return false
+    },
+
     /** Quitar el aparato de aquí. Sacarlo del acta es aparte, y también hay que hacerlo. */
     remove ({ user } = {}) {
       const state = read()

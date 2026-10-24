@@ -212,6 +212,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
     if (typeof d.ts !== 'number' || Math.abs(Date.now() - d.ts) > FRESH_WINDOW_MS) return
     const chk = await verifyChain({ data: d, signature: p.signature, cert: p.cert, ...(await actaContext()) })
     if (!chk.ok) return send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
+    if (closedLogin(from, chk, p)) return
     const { issued, revoked, revokedCerts } = await identity.listDelegations()
     const devices = await Promise.all((issued || []).map(async (x) => ({
       deviceId: x.sub ? await deviceIdOf(x.sub) : null, sub: x.sub || null,
@@ -235,6 +236,25 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
    * Estaba repetido en `handleRenew` y `handleDevices` con matices distintos; al añadir
    * el resto de operaciones eso habría sido cuatro copias divergiendo.
    */
+  /**
+   * UN APARATO DE CONTRASEÑA SIN INICIO DE SESIÓN ABIERTO no pasa (como en el núcleo,
+   * `core/vault.js`): sigue en el acta, pero hasta que vuelva a entrar no se le sirve nada.
+   * Se le contesta y se le manda el aviso FIRMADO de irse, que es lo único que le borra la
+   * cuenta de ese navegador. Una vez por minuto y llave.
+   */
+  const closedLoginTold = new Map()
+  function closedLogin (from, chk, p) {
+    if (!logins || !logins.isClosed({ pub: chk.device })) return false
+    send(from, { type: MSG.ERROR, code: 'unauthorized', reason: 'login-closed', error: 'unauthorized: login-closed' })
+    const t = Date.now()
+    if (t - (closedLoginTold.get(chk.device) || 0) >= 60_000) {
+      closedLoginTold.set(chk.device, t)
+      desk.emitRevoke(chk.device, p?.cert?.nonce || null, 'login-closed')
+        .catch((e) => console.warn('[device-vault] could not tell a closed login to leave: ' + e.message))
+    }
+    return true
+  }
+
   async function authorise (from, p, expectedScope) {
     const d = p?.data
     if (!d || !p.signature || !p.cert) {
@@ -254,6 +274,7 @@ export async function startDeviceVault (identity, { proxyUrl, client: injectedCl
       send(from, { type: MSG.ERROR, error: 'unauthorized: ' + chk.reason })
       return null
     }
+    if (closedLogin(from, chk, p)) return null
     // EL ACTA MANDA, EL PAPEL SOLO ACOMPAÑA. Aquí y no en cada mostrador: el certificado
     // dice a qué se comprometió esta bóveda al conectar el aparato, y el acta lo que puede
     // HOY. Quitarle un permiso sella el acta pero no le retira el papel, que vive hasta 30
