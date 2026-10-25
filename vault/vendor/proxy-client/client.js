@@ -63,6 +63,12 @@ export class WebSocketProxyClient {
     this.autoReconnect = options.autoReconnect !== false
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5
     this.reconnectDelay = options.reconnectDelay ?? 3000
+    // EL TOPE DE LA ESPERA ENTRE REINTENTOS. La espera crece con cada intento fallido y lleva
+    // azar (`_reconnectWait`): cuando el proxio se reinicia, todos sus clientes pierden el
+    // socket en el mismo instante, y con una espera fija volvían todos en el mismo segundo.
+    // Medido el 2026-10-25: el proxio identifica unas 2.500 conexiones por segundo, así que
+    // 100.000 bóvedas a la vez lo tenían ~40 s saturado justo al volver.
+    this.reconnectMaxDelay = options.reconnectMaxDelay ?? 30000
     // UN SOCKET QUE NO ABRE NI FALLA. El WebSocket de Node (y el del navegador) no tiene
     // tope para el saludo: si el TCP entra y nadie contesta el upgrade, se queda en
     // CONNECTING sin disparar `open`, `error` ni `close`. Como el siguiente reintento solo
@@ -419,6 +425,7 @@ export class WebSocketProxyClient {
     if (typeof options.autoReconnect === 'boolean') this.autoReconnect = options.autoReconnect
     if (typeof options.maxReconnectAttempts === 'number') this.maxReconnectAttempts = options.maxReconnectAttempts
     if (typeof options.reconnectDelay === 'number') this.reconnectDelay = options.reconnectDelay
+    if (typeof options.reconnectMaxDelay === 'number') this.reconnectMaxDelay = options.reconnectMaxDelay
 
     // La configuración de sellado TAMBIÉN se aplica aquí. Casi todas las apps piden el
     // cliente con `getWebSocketProxyClient()`, que es un singleton: si el primero en
@@ -1825,13 +1832,24 @@ export class WebSocketProxyClient {
     }
     this._reconnectAttempts++
     this._emit('reconnecting', this._reconnectAttempts, this.maxReconnectAttempts)
-    this._reconnectTimer = setTimeout(() => this._open(), this.reconnectDelay)
+    this._reconnectTimer = setTimeout(() => this._open(), this._reconnectWait(this._reconnectAttempts))
     // UN REINTENTO PENDIENTE NO MANTIENE VIVO EL PROCESO. Desde que se reintenta de verdad
     // —antes la cadena se cortaba sola al primer fallo—, este temporizador basta para que un
     // programa de Node que se olvidó de cerrar el cliente no termine nunca. Lo de siempre:
     // esto es mantenimiento de fondo, y quién se va es decisión de la app. En el navegador
     // `unref` no existe y no hace falta.
     this._reconnectTimer.unref?.()
+  }
+
+  // Cuánto esperar antes del intento `attempt` (1, 2, 3…): `reconnectDelay` como mínimo, más
+  // un azar dentro de una ventana que se dobla en cada intento hasta `reconnectMaxDelay`.
+  // Con los valores por defecto: 3–6 s, 3–9 s, 3–15 s, 3–27 s y de ahí 3–33 s. El mínimo
+  // fijo es para el caso normal (una caída corta de la red), que vuelve enseguida; el azar
+  // reparte a los que se cayeron juntos.
+  _reconnectWait (attempt) {
+    const base = Math.max(0, this.reconnectDelay)
+    const window = Math.min(Math.max(0, this.reconnectMaxDelay), base * 2 ** Math.max(0, attempt - 1))
+    return base + Math.random() * window
   }
 
   _handleFrame (raw) {

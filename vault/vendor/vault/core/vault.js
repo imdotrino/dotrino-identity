@@ -2341,12 +2341,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   })
 
   // `listen` y no `client.on`: entrega también lo que llegó encolado antes de este punto.
-  listen((from, payload) => {
-    // Quien monta la bóveda puede querer saber que hay trabajo (la Lambda se apaga cuando
-    // deja de haberlo). Es un aviso, no decide nada.
-    try { platform.onActivity?.() } catch (_) {}
-    onMessage(from, payload)
-  })
+  listen((from, payload) => { onMessage(from, payload) })
 
   // EL MOSTRADOR LOCAL, siempre que se pueda. Si no se puede abrir (un sistema sin sockets
   // de archivo, un directorio de solo lectura) se dice y se sigue: los servicios usan el
@@ -2365,6 +2360,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   async function onMessage (from, payload) {
     if (!payload || typeof payload !== 'object') return
     const pass = await gate.admit(from, payload)
+    // HAY TRABAJO solo si la puerta lo deja pasar: quien monta la bóveda lo usa para saber
+    // cuándo apagarse (la Lambda, tras 60 s sin trabajo). Antes contaba cualquier mensaje, y
+    // un sondeo que la bóveda ni atiende —el `ra.ping` de Terminal cada 30 s— la tenía
+    // despierta los 15 minutos de cada sesión (2026-10-25). Con el tipo y quién lo manda,
+    // para que quien mide sepa QUÉ la mantiene despierta. Es un aviso, no decide nada.
+    if (pass.ok) { try { platform.onActivity?.({ type: payload.type, pub: pass.pub || null }) } catch (_) {} }
     if (!pass.ok) {
       // Al que entra con contraseña sí se le dice que espere: es la única puerta abierta a
       // desconocidos, y quien teclea su contraseña tiene que saber por qué no contesta.

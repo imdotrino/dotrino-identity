@@ -115,7 +115,7 @@ export function createGate ({ MSG, acta, pairing, former = () => false, limiter 
         await verify({ publickey: claim.pub, data: claim.data, signature: claim.signature }).catch(() => false)
       if (!ok) { stats.dropped++; return { ok: false } }
     }
-    return { ok: true }
+    return { ok: true, pub: claim.pub }
   }
 
   return { admit, stats: () => ({ ...stats }) }

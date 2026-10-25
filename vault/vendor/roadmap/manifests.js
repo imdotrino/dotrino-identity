@@ -8,8 +8,8 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 40,
-    "issued": "2026-10-24T02:16:45.065Z",
+    "seq": 45,
+    "issued": "2026-10-25T17:00:18.298Z",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
       "compat": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.126.3",
+        "current": "0.126.4",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -111,7 +111,7 @@ export const MANIFESTS = Object.freeze({
       },
       "proxy": {
         "repo": "imdotrino/dotrino-proxy",
-        "current": "1.9.0",
+        "current": "1.9.2",
         "protocol": 2,
         "requires": {
           "vault": ">=0.87.0",
@@ -123,7 +123,7 @@ export const MANIFESTS = Object.freeze({
       "proxy-client": {
         "repo": "imdotrino/dotrino-proxy-client",
         "npm": "@dotrino/proxy-client",
-        "current": "0.44.1",
+        "current": "0.45.0",
         "protocol": 2,
         "requires": {
           "identity": ">=0.53.0",
@@ -255,7 +255,7 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.102.1",
+        "current": "0.102.2",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
@@ -271,7 +271,7 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.174.1",
+        "current": "0.174.4",
         "protocol": 1,
         "requires": {
           "identity": ">=0.126.3",
@@ -323,7 +323,7 @@ export const MANIFESTS = Object.freeze({
       },
       "passmanager-extension": {
         "repo": "imdotrino/dotrino-passmanager",
-        "current": "0.57.1",
+        "current": "0.57.2",
         "protocol": 1,
         "requires": {
           "identity": ">=0.118.0",
