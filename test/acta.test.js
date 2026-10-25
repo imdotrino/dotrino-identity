@@ -8,7 +8,7 @@ import {
   genesisActa, sealActa, verifyActa, applyChanges, actaHash, canAdopt, canSeal,
   makeRenounce, verifyRenounce, effectiveCaps, memberCan, CAPS, DEVICE_CAPS,
   memberCanReadSecrets, memberScopes, isService, PAIRED_CAPS, capScope, cnScope, VAULT_CN, checkShape,
-  CAP_SCOPE, sealersOf, memberEncPub, samePubkey
+  CAP_SCOPE, sealersOf, memberEncPub, samePubkey, renounceIsFresh
 } from '../vault/acta.js'
 import { SESSION_FORBIDDEN } from '../vault/session.js'
 
@@ -159,6 +159,33 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   assert.deepEqual(effectiveCaps(tres, b.pub),
     ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'])
   assert.equal(tres.renounced.length, 1)
+})
+
+test('renuncia: una repetida no vuelve a quitar lo que el master devolvió después', async () => {
+  const a = await key(); const b = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  const dos = await step(g, [{ op: 'admit', member: { pub: b.pub, caps: ['read', 'sign'] } }], a)
+  const r = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk, now: 1000 })
+  assert.equal(renounceIsFresh(dos, r), true)
+
+  const tres = await step(dos, [{ op: 'renounce', record: r }], a)
+  assert.deepEqual(effectiveCaps(tres, b.pub), ['read'])
+  // El master se lo devuelve: la renuncia sale del acta, pero la fecha se queda.
+  const cuatro = await step(tres, [{ op: 'caps', pub: b.pub, caps: ['read', 'sign'] }], a)
+  assert.deepEqual(effectiveCaps(cuatro, b.pub), ['read', 'sign'])
+  assert.equal(cuatro.members.find((m) => m.pub === b.pub).renouncedAt, 1000)
+
+  // El MISMO registro, capturado y repetido: ni suelto ni absorbido quita nada.
+  assert.equal(renounceIsFresh(cuatro, r), false)
+  assert.deepEqual(effectiveCaps(cuatro, b.pub, [r]), ['read', 'sign'])
+  const cinco = await step(cuatro, [{ op: 'renounce', record: r }], a)
+  assert.deepEqual(effectiveCaps(cinco, b.pub), ['read', 'sign'])
+
+  // Una renuncia NUEVA del mismo miembro sí vale.
+  const nueva = await makeRenounce({ member: b.pub, caps: ['sign'], privateJwk: b.privateJwk, now: 2000 })
+  assert.equal(renounceIsFresh(cuatro, nueva), true)
+  assert.deepEqual(effectiveCaps(cuatro, b.pub, [nueva]), ['read'])
+  assert.equal((await verifyActa({ acta: cinco })).ok, true)
 })
 
 test('una renuncia no puede dejar al perfil sin firmante al absorberse', async () => {

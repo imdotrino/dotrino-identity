@@ -510,6 +510,7 @@ export function checkShape (acta) {
     // subir `ACTA_V` y negarse a leer las versiones que no se entienden. `unattended`
     // cumple la regla: sin él se pide aprobación.
     if (m.caps.some((c) => typeof c !== 'string' || !c)) return 'member'
+    if (m.renouncedAt != null && (typeof m.renouncedAt !== 'number' || !Number.isFinite(m.renouncedAt))) return 'member'
     // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
     // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
     // mezcle las dos cosas es lo que hace que el límite sea real y no una costumbre.
@@ -887,7 +888,13 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         // miembro, y editarlo lo dejaría sin firma válida.
         const renunciadas = new Set()
         for (const r of next.renounced) if (r.member === m.pub) for (const c of (r.caps || [])) renunciadas.add(c)
-        if (m.caps.some((c) => renunciadas.has(c))) next.renounced = next.renounced.filter((r) => r.member !== m.pub)
+        if (m.caps.some((c) => renunciadas.has(c))) {
+          // Y SE APUNTA HASTA CUÁNDO: sin esto, el mismo registro viejo —que cualquiera vio
+          // pasar por el proxio— volvía a quitarle el permiso que el master le acaba de
+          // devolver, y las veces que quisiera (modelo de amenazas §4.4.bis).
+          for (const r of next.renounced) if (r.member === m.pub) markRenounced(m, r.ts)
+          next.renounced = next.renounced.filter((r) => r.member !== m.pub)
+        }
         break
       }
       case 'label': {
@@ -938,6 +945,11 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         const r = ch.record
         const m = find(r?.member)
         if (!m) break // el que renunció ya no está: nada que hacer
+        // Una renuncia que no es posterior a la última que vio el acta es una repetición: no
+        // quita nada. No se lanza: la absorbe el `unlock` junto a otras, y una vieja no puede
+        // dejar sin sellar a las buenas.
+        if (!renounceIsFresh(next, r)) break
+        markRenounced(m, r.ts)
         m.caps = m.caps.filter((c) => !(r.caps || []).includes(c))
         next.renounced = next.renounced.filter((x) => x.member !== r.member)
         next.renounced.push(r)
@@ -1065,6 +1077,24 @@ export async function verifyRenounce (record) {
   return verifyDeviceSig({ publickey: record.member, data: body, signature: sig })
 }
 
+/** Apunta en el miembro la fecha de la última renuncia suya que vio el acta. */
+function markRenounced (m, ts) {
+  if (typeof ts === 'number' && Number.isFinite(ts) && ts > (m.renouncedAt || 0)) m.renouncedAt = ts
+}
+
+/**
+ * ¿Es NUEVA esta renuncia? Lo es si su `ts` es posterior a la última renuncia de ese miembro
+ * que el acta ya vio (`renouncedAt`). Así un registro capturado no sirve para volver a quitar
+ * un permiso que el master devolvió después: monotonía, como el `seq`. Sin `ts` numérico no
+ * es nueva: no hay con qué ordenarla.
+ */
+export function renounceIsFresh (acta, record) {
+  if (typeof record?.ts !== 'number' || !Number.isFinite(record.ts)) return false
+  const m = (acta?.members || []).find((x) => x.pub === record.member)
+  if (!m) return false
+  return record.ts > (m.renouncedAt || 0)
+}
+
 /**
  * Capacidad EFECTIVA de un miembro: lo que dice el acta menos lo que haya renunciado.
  * `extraRenounces` son renuncias sueltas ya verificadas que todavía no absorbió el master.
@@ -1076,7 +1106,10 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
   // no la enseña ni la cuenta. Sigue en el acta —la firma la cubre— y un lector al día sí
   // la ve. Ver `checkShape` para por qué no se rechaza el acta entera.
   const quitadas = new Set()
-  for (const r of [...(acta.renounced || []), ...extraRenounces]) {
+  // Las del acta ya las selló el master. Las sueltas tienen que ser nuevas: una repetida
+  // no quita lo que se concedió después.
+  const sueltas = extraRenounces.filter((r) => renounceIsFresh(acta, r))
+  for (const r of [...(acta.renounced || []), ...sueltas]) {
     if (r?.member === pub) for (const c of (r.caps || [])) quitadas.add(c)
   }
   return m.caps.filter((c) => CAPS.includes(c) && !quitadas.has(c))

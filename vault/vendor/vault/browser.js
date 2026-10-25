@@ -25,8 +25,32 @@ import { memberScopes } from '@dotrino/identity/acta'
 import { deviceIdOf } from './enroll.js'
 
 const DEFAULT_PROXY = 'wss://proxy.dotrino.com'
-/** Cada cuánto se rehace el papel con el que la consola local administra esta bóveda. */
+/**
+ * Cada cuánto se MIRA si el papel de la consola local sigue al día. Solo se vuelve a firmar
+ * cuando el acta cambió (ver `selfCert`).
+ */
 const SELF_CERT_EVERY_MS = 60_000
+
+/**
+ * EL PAPEL DE LA CONSOLA LOCAL, firmado solo cuando hace falta. Un certificado muere con el
+ * acta (`seq`), así que mientras ni el `seq` ni los permisos de `master` cambien, el de antes
+ * sigue valiendo y no se vuelve a firmar: la bóveda no firma sola sin que nadie haga nada.
+ * Devuelve una función que da el papel vigente, o `null` si el acta no le deja nada.
+ */
+export function selfCertIssuer ({ identity, master }) {
+  let issued = null // { key, cert }
+  return async () => {
+    const acta = (await identity.profileActa().catch(() => null))?.acta || null
+    if (!acta) { issued = null; return null }
+    const scope = memberScopes(acta, master)
+    if (!scope.length) { issued = null; return null }
+    const key = acta.seq + '|' + [...scope].sort().join(',')
+    if (issued?.key === key) return issued.cert
+    const cert = (await identity.signDelegation(master, scope, { label: 'self' })).cert
+    issued = { key, cert }
+    return cert
+  }
+}
 
 /**
  * @param {object} opts
@@ -99,8 +123,10 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
   })
 
   // EL PAPEL CON EL QUE LA CONSOLA DE ESTE NAVEGADOR ADMINISTRA ESTA BÓVEDA: la llave del
-  // perfil firmándose a sí misma con lo que el acta le deja hoy. Se rehace cada minuto
-  // porque el acta cambia (un permiso que te quitas, un sellado nuevo).
+  // perfil firmándose a sí misma con lo que el acta le deja hoy. Se mira cada minuto porque
+  // el acta cambia (un permiso que te quitas, un sellado nuevo), pero se FIRMA solo cuando
+  // cambió: la bóveda no firma sola sin que nadie haga nada (dueño, 2026-10-25). Antes se
+  // rehacía cada minuto, y cada vez retiraba el anterior en el registro de papeles.
   const master = identity.me.publickey
   // LA BÓVEDA ES DE UNA CUENTA. Si en esta pestaña se abre otra (crear perfil, entrar con
   // contraseña), la identidad cambia por debajo y la bóveda firmaría como la nueva con el
@@ -111,13 +137,7 @@ export async function startBrowserVault ({ core, proxyUrl = DEFAULT_PROXY, makeC
       throw Object.assign(new Error('the account open in this tab changed: this vault was started for another one; reload the tab'), { code: 'profile-changed' })
     }
   }
-  const selfCert = async () => {
-    const acta = (await identity.profileActa().catch(() => null))?.acta || null
-    if (!acta) return null
-    const scope = memberScopes(acta, master)
-    if (!scope.length) return null
-    return (await identity.signDelegation(master, scope, { label: 'self' })).cert
-  }
+  const selfCert = selfCertIssuer({ identity, master })
   /**
    * EL DUEÑO EN SU MÁQUINA ADMINISTRA. En el binario eso es la TUI, que no necesita ningún
    * permiso del acta; aquí la consola habla el protocolo de la consola remota, que exige

@@ -50,6 +50,14 @@ const RTC_TAG = '__cc_rtc__'
 let _PC = null
 let _PCLookedUp = false
 
+/**
+ * Si este canal sirve AHORA para mandar: abierto Y con la conexión de debajo `connected`. Un
+ * canal abierto sobre una conexión `disconnected` acepta `send()` y lo pierde.
+ */
+export function usable (peer) {
+  return !!(peer && peer.dc && peer.dc.readyState === 'open' && peer.pc && peer.pc.connectionState === 'connected')
+}
+
 export function setPeerConnection (impl) { _PC = impl; _PCLookedUp = true }
 
 export function resolvePeerConnection () {
@@ -179,7 +187,7 @@ export class WebRTCManager {
    */
   trySend (to, payloadString) {
     const peer = this._ensurePeer(to)
-    if (peer.dc && peer.dc.readyState === 'open') {
+    if (usable(peer)) {
       try {
         peer.dc.send(payloadString)
         this.count?.('out', to, utf8Length(payloadString), peer.route || 'webrtc')
@@ -201,10 +209,10 @@ export class WebRTCManager {
   async sendDirect (to, payloadString, highWater = 1024 * 1024) {
     const peer = this.peers.get(to)
     const dc = peer && peer.dc
-    if (!dc || dc.readyState !== 'open') return false
+    if (!usable(peer)) return false
     while (dc.bufferedAmount > highWater) {
       await new Promise((r) => setTimeout(r, 15))
-      if (dc.readyState !== 'open') return false
+      if (!usable(peer)) return false
     }
     try {
       dc.send(payloadString)
@@ -218,7 +226,7 @@ export class WebRTCManager {
   /** Optional: explicitly preconnect to a peer. */
   connect (to) {
     const peer = this._ensurePeer(to)
-    if (peer.dc && peer.dc.readyState === 'open') return Promise.resolve()
+    if (usable(peer)) return Promise.resolve()
     if (!peer.negotiating) this._startNegotiation(peer).catch(() => {})
     return new Promise((resolve, reject) => {
       peer.openWaiters.push({ resolve, reject })
@@ -260,7 +268,7 @@ export class WebRTCManager {
   async describe () {
     const out = new Map()
     for (const peer of this.peers.values()) {
-      const open = !!(peer.dc && peer.dc.readyState === 'open')
+      const open = usable(peer)
       if (open) { try { await this.probeRoute(peer) } catch (_) {} }
       out.set(peer.remote, open ? (peer.route || 'webrtc') : peer.failed ? 'failed' : peer.negotiating ? 'connecting' : null)
     }
@@ -268,8 +276,7 @@ export class WebRTCManager {
   }
 
   isOpen (to) {
-    const p = this.peers.get(to)
-    return !!(p && p.dc && p.dc.readyState === 'open')
+    return usable(this.peers.get(to))
   }
 
   // ---------- internals ----------
@@ -311,9 +318,22 @@ export class WebRTCManager {
         this._signal(peer, { kind: 'ice', candidate: ev.candidate })
       }
     }
+    // EL CANAL «ABIERTO» NO BASTA. Si la red de debajo se corta (pantalla apagada, cambio de
+    // wifi, la pestaña congelada en Android), el canal sigue diciendo `open` hasta que ICE da
+    // la conexión por muerta, y eso tarda decenas de segundos: lo que se mandara ahí se perdía
+    // sin subir al TURN ni al proxio. Por eso solo se usa con la conexión `connected` (ver
+    // `usable`), y cada cambio se anuncia para que quien escribe vuelva a mirar el camino.
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      const st = pc.connectionState
+      if (st === 'failed' || st === 'closed') {
         this._failPeer(peer)
+        // Cerrarlo es lo que avisa (`dc.onclose` → `webrtc_close`).
+        try { if (peer.dc) peer.dc.close() } catch (_) {}
+      } else if (st === 'disconnected') {
+        if (peer.dc && peer.dc.readyState === 'open') this.emit('webrtc_close', peer.remote)
+      } else if (st === 'connected') {
+        // Volvió de `disconnected` con el canal intacto: vuelve a ser el camino.
+        if (peer.dc && peer.dc.readyState === 'open' && peer.wasOpened) this.emit('webrtc_open', peer.remote)
       }
     }
     pc.ondatachannel = (ev) => this._attachDC(peer, ev.channel)
@@ -362,6 +382,7 @@ export class WebRTCManager {
     // Los bytes como ArrayBuffer: un Blob se lee de forma asíncrona y desordenaría las partes.
     try { dc.binaryType = 'arraybuffer' } catch (_) {}
     dc.onopen = () => {
+      peer.wasOpened = true
       // Por dónde salió: directo o por TURN. Por detrás, sin retrasar a nadie.
       this.probeRoute(peer).catch(() => {})
       this.emit('webrtc_open', peer.remote)
