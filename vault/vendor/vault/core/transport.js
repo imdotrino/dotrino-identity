@@ -228,8 +228,13 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
 
   let retry = null
   let failures = 0
+  // CERRADO ES CERRADO. En el binario cerrar es salir del proceso, pero la Lambda reusa el
+  // contenedor: el watchdog y el reintento de una sesión ya terminada seguían marcando al
+  // proxio con una identidad destruida («Identity not ready») en la sesión siguiente.
+  let closed = false
   const identifyWithRetry = async () => {
     if (retry) { clearTimeout(retry); retry = null }
+    if (closed) return
     try {
       await identify()
       await announceAccount()
@@ -288,6 +293,7 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     log(`[vault] the transport gave up reconnecting after ${attempts} attempt(s) — this vault is unreachable until it is restarted`)
   })
   const watchdog = setInterval(async () => {
+    if (closed) return
     // CONECTADO DE VERDAD, no «tengo un token». El token es el de la última conexión y no se
     // borra al caerse, así que mirarlo daba la bóveda por vuelta con el socket cerrado: el
     // 2026-10-15 dijo «back on the proxy after 50s», no volvió a marcar nunca y pasó hora y
@@ -311,5 +317,11 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   }, RECHECK_MS)
   watchdog.unref?.()
 
-  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identified, listen }
+  const close = () => {
+    closed = true
+    clearInterval(watchdog)
+    if (retry) { clearTimeout(retry); retry = null }
+  }
+
+  return { client, token: client.token, identify: identifyWithRetry, isIdentified: () => identified, listen, close }
 }

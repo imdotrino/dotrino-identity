@@ -97,6 +97,40 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     throw Object.assign(new Error('startVault: a platform with a disk and openIdentity is required'), { code: 'no-platform' })
   }
   const disk = platform.disk
+
+  // Va aquí arriba y no junto a lo demás de la subacta: `Acta` la usan cosas que corren
+  // durante el arranque (`notifyMembers` → `pushToReplicas`), y declarada más abajo
+  // reventaba con «Cannot access 'Acta' before initialization» al sellar la llave de
+  // comunicación (la segunda bóveda en Lambda, 2026-10-25).
+  // ----- LA SUBACTA: lo decidido que todavía no selló el acta (`src/subacta.js`) -----
+  //
+  // Sellar es de la maestra, así que con el perfil CERRADO una renuncia no surtía ningún
+  // efecto: el aparato conservaba todos sus permisos hasta que alguien fuera a la máquina
+  // a teclear la contraseña. Justo el caso que la renuncia existe para cubrir.
+  //
+  // Se honra ya, sin sellar, y es seguro porque una entrada de la subacta SOLO PUEDE
+  // QUITAR: no concede nada a nadie, y va firmada por el miembro al que afecta.
+  const subacta = openSubacta(disk)
+
+  /**
+   * EL ACTA, LEÍDA CON LA SUBACTA EN LA MANO.
+   *
+   * Envuelve al pilar en UN sitio en vez de pasar la lista en los diecisiete mostradores:
+   * una comprobación repetida diecisiete veces son dieciséis sitios donde olvidarla, y
+   * olvidarla aquí significa atender a un aparato que ya renunció.
+   *
+   * Solo se tocan las cinco que DECIDEN. El resto del pilar pasa tal cual.
+   */
+  const Acta = {
+    ...ActaPilar,
+    memberCan: (acta, pub, cap) => ActaPilar.memberCan(acta, pub, cap, subacta.forMember(pub)),
+    memberCanScope: (acta, pub, scope) => ActaPilar.memberCanScope(acta, pub, scope, subacta.forMember(pub)),
+    memberCanReadSecrets: (acta, pub, ns) => ActaPilar.memberCanReadSecrets(acta, pub, ns, subacta.forMember(pub)),
+    memberCanSign: (acta, pub, ns = null) => ActaPilar.memberCanSign(acta, pub, ns, subacta.forMember(pub)),
+    memberScopes: (acta, pub) => ActaPilar.memberScopes(acta, pub, subacta.forMember(pub)),
+    effectiveCaps: (acta, pub) => ActaPilar.effectiveCaps(acta, pub, subacta.forMember(pub))
+  }
+
   const VERSION = platform.version
   if (typeof VERSION !== 'string' || !VERSION) throw Object.assign(new Error('startVault: the platform must say which version this is'), { code: 'no-version' })
   // La identidad del perfil la abre la plataforma: en el binario sale de su directorio
@@ -519,7 +553,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // `announce`: el canal de ESTA cuenta, para que una máquina prestada —que no tiene
   // ninguna llave y solo sabe la dirección `nombre@AB12-CD34-EF56`— pueda encontrar a quien
   // la atiende. Lo construye la pieza compartida, porque quien lo busca es la extensión.
-  const { client, identify: reidentify, isIdentified, listen } = await createTransport({
+  const { client, identify: reidentify, isIdentified, listen, close: closeTransport } = await createTransport({
     identity, url: proxyUrl, commKey, log, announce: vaultChannel(fp), makeClient: platform.makeClient || null, wakeUrl: platform.wakeUrl || null,
     bluetooth: platform.bluetooth || null, lan: !!platform.lan
   })
@@ -593,35 +627,6 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   const versionDe = (pub) => versiones.get(pub) || null
   /** Dónde corre un aparato: lo último que dijo firmado (`machines`) o, si no, lo del acta. */
   const machineOf = (pub, record) => machines.of(pub) || (record?.members || []).find((m) => m.pub === pub)?.machine || null
-
-  // ----- LA SUBACTA: lo decidido que todavía no selló el acta (`src/subacta.js`) -----
-  //
-  // Sellar es de la maestra, así que con el perfil CERRADO una renuncia no surtía ningún
-  // efecto: el aparato conservaba todos sus permisos hasta que alguien fuera a la máquina
-  // a teclear la contraseña. Justo el caso que la renuncia existe para cubrir.
-  //
-  // Se honra ya, sin sellar, y es seguro porque una entrada de la subacta SOLO PUEDE
-  // QUITAR: no concede nada a nadie, y va firmada por el miembro al que afecta.
-  const subacta = openSubacta(disk)
-
-  /**
-   * EL ACTA, LEÍDA CON LA SUBACTA EN LA MANO.
-   *
-   * Envuelve al pilar en UN sitio en vez de pasar la lista en los diecisiete mostradores:
-   * una comprobación repetida diecisiete veces son dieciséis sitios donde olvidarla, y
-   * olvidarla aquí significa atender a un aparato que ya renunció.
-   *
-   * Solo se tocan las cinco que DECIDEN. El resto del pilar pasa tal cual.
-   */
-  const Acta = {
-    ...ActaPilar,
-    memberCan: (acta, pub, cap) => ActaPilar.memberCan(acta, pub, cap, subacta.forMember(pub)),
-    memberCanScope: (acta, pub, scope) => ActaPilar.memberCanScope(acta, pub, scope, subacta.forMember(pub)),
-    memberCanReadSecrets: (acta, pub, ns) => ActaPilar.memberCanReadSecrets(acta, pub, ns, subacta.forMember(pub)),
-    memberCanSign: (acta, pub, ns = null) => ActaPilar.memberCanSign(acta, pub, ns, subacta.forMember(pub)),
-    memberScopes: (acta, pub) => ActaPilar.memberScopes(acta, pub, subacta.forMember(pub)),
-    effectiveCaps: (acta, pub) => ActaPilar.effectiveCaps(acta, pub, subacta.forMember(pub))
-  }
 
   /**
    * ABSORBER lo pendiente en el acta. Solo con la bóveda abierta, que es la única que
@@ -4755,6 +4760,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       clearInterval(approvalsSweeper)
       for (const t of pendingNotices.values()) clearTimeout(t)
       pendingNotices.clear()
+      closeTransport()
       try { client.close() } catch (_) {} identity.destroy()
     }
   }

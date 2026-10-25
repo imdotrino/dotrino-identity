@@ -8,8 +8,8 @@
 export const MANIFESTS = Object.freeze({
   "dotrino": {
     "manifest": "dotrino",
-    "seq": 39,
-    "issued": "2026-10-23",
+    "seq": 40,
+    "issued": "2026-10-24T02:16:45.065Z",
     "note": "Registro comun de compatibilidad del ecosistema. Se edita a mano en este repo y se consulta con @dotrino/roadmap. Rangos: ver @dotrino/compat/ranges (x.y.z, >= > <= <, «a - b», «*», o una lista que es un O).",
     "products": {
       "compat": {
@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.126.2",
+        "current": "0.126.3",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -49,13 +49,14 @@ export const MANIFESTS = Object.freeze({
       },
       "messenger": {
         "repo": "imdotrino/dotrino-messenger",
-        "current": "0.8.1",
+        "current": "0.8.2",
         "protocol": 2,
         "requires": {
           "identity": ">=0.117.0",
-          "proxy-client": ">=0.36.1",
+          "proxy-client": ">=0.44.0",
           "store": ">=0.12.3",
-          "proxy": "1.6.1+"
+          "proxy": "1.6.1+",
+          "profile": ">=0.21.0"
         }
       },
       "messenger-android": {
@@ -101,10 +102,11 @@ export const MANIFESTS = Object.freeze({
       "profile": {
         "repo": "imdotrino/dotrino-profile",
         "npm": "@dotrino/profile",
-        "current": "0.20.3",
+        "current": "0.21.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.33.0"
+          "identity": ">=0.33.0",
+          "proxy-client": ">=0.44.0"
         }
       },
       "proxy": {
@@ -121,7 +123,7 @@ export const MANIFESTS = Object.freeze({
       "proxy-client": {
         "repo": "imdotrino/dotrino-proxy-client",
         "npm": "@dotrino/proxy-client",
-        "current": "0.42.1",
+        "current": "0.44.1",
         "protocol": 2,
         "requires": {
           "identity": ">=0.53.0",
@@ -253,11 +255,11 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.100.0",
+        "current": "0.102.1",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
-          "proxy-client": ">=0.41.0",
+          "proxy-client": ">=0.44.1",
           "identity": ">=0.126.0",
           "opaque": ">=0.1.0",
           "compat": ">=0.4.0",
@@ -269,11 +271,11 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.172.1",
+        "current": "0.174.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.126.2",
-          "proxy-client": ">=0.42.1",
+          "identity": ">=0.126.3",
+          "proxy-client": ">=0.44.1",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.4",
           "compat": ">=0.4.0",
@@ -321,7 +323,7 @@ export const MANIFESTS = Object.freeze({
       },
       "passmanager-extension": {
         "repo": "imdotrino/dotrino-passmanager",
-        "current": "0.57.0",
+        "current": "0.57.1",
         "protocol": 1,
         "requires": {
           "identity": ">=0.118.0",
@@ -333,7 +335,7 @@ export const MANIFESTS = Object.freeze({
       },
       "app": {
         "repo": "imdotrino/dotrino-app",
-        "current": "0.4.26",
+        "current": "0.4.27",
         "protocol": 1,
         "requires": {
           "proxy": "1.6.0+",
@@ -343,7 +345,7 @@ export const MANIFESTS = Object.freeze({
       },
       "app-ios": {
         "repo": "imdotrino/dotrino-app",
-        "current": "0.4.16",
+        "current": "0.4.17",
         "protocol": 1,
         "requires": {
           "proxy": "1.6.0+",
@@ -974,6 +976,15 @@ export const MANIFESTS = Object.freeze({
         ],
         "why": "el paquete no traía lib/cid.js, que lib/public.js importa: el node no arranca (ERR_MODULE_NOT_FOUND)",
         "fix": "sube a @dotrino/content 0.6.6"
+      },
+      {
+        "product": "proxy-client",
+        "versions": [
+          "0.43.0",
+          "0.44.0"
+        ],
+        "why": "el anuncio en la red local (mDNS) mantenía vivo el proceso: quien anunciaba una invitación sin cerrarla no terminaba nunca (las pruebas de la bóveda se colgaban en CI)",
+        "fix": "sube a @dotrino/proxy-client 0.44.1"
       }
     ]
   }
