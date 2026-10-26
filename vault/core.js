@@ -2389,7 +2389,22 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * hubieras subido— porque el avatar vive en el `me` de cada perfil, no en el registro.
      */
     async listProfiles () {
-      return loadProfiles().map((p) => {
+      // LAS BÓVEDAS DE CADA PERFIL, para que una pantalla deje elegir a cuál hablarle antes de
+      // nada, aunque sea de otro perfil (vault.dotrino.com/vault, dueño 2026-10-26). Salen del
+      // ACTA de cada uno, que está en claro en el kv igual que el cert de abajo: es un documento
+      // firmado y no un secreto. Solo lectura: no se cambia el activo ni se firma nada.
+      const vaultsOf = async (pid) => {
+        try {
+          const raw = pid === currentPid ? kv.getItem(ACTA_STORAGE) : rawKv.getItem(`dotrino.identity.p.${pid}.acta`)
+          const acta = raw ? JSON.parse(raw) : null
+          const members = acta?.members || []
+          return await Promise.all(members.filter((m) => m.cn === Acta.VAULT_CN && m.vault).map(async (m) => {
+            const owner = members.find((x) => x.pub === m.vault)
+            return { comm: m.pub, master: m.vault, id: await Acta.memberId(m.vault), label: owner?.label || '' }
+          }))
+        } catch (_) { return [] }
+      }
+      return Promise.all(loadProfiles().map(async (p) => {
         let avatar = null
         try {
           const raw = p.id === currentPid ? JSON.stringify(me || null) : rawKv.getItem(`dotrino.identity.p.${p.id}.me`)
@@ -2418,10 +2433,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const login = loginMetaOf(p.id)
         return {
           id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid,
-          pendingJoin: !!p.pendingJoin, vault, approve,
+          pendingJoin: !!p.pendingJoin, vault, approve, vaults: await vaultsOf(p.id),
           ...(login ? { login: { user: login.user, address: login.address, volatile: !!login.volatile } } : {})
         }
-      })
+      }))
     },
     async currentProfile () {
       const e = loadProfiles().find((p) => p.id === currentPid) || {}

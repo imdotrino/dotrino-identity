@@ -73,3 +73,45 @@ test('listProfiles dice cuál está conectado y cuál aprueba, sin tocar el acti
   id.destroy()
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+// LAS BÓVEDAS DE CADA PERFIL (vault.dotrino.com/vault empieza eligiendo una, aunque sea de
+// otro perfil: dueño, 2026-10-26). Salen del acta de cada uno, también sin tocar el activo.
+test('listProfiles dice qué bóvedas tiene cada perfil, sin tocar el activo', async () => {
+  const dir = tmp()
+  const archivo = path.join(dir, 'identity.json')
+  let id = await Identity.connect({ dir })
+  const p1 = (await id.currentProfile()).id
+  const p2 = (await id.createProfile('Trabajo')).id
+  // Va en el perfil que NO está activo: en el activo, un acta que no lo nombra es una
+  // expulsión y el arranque la borra (que es lo correcto).
+  const activo = (await id.currentProfile()).id
+  const otro = activo === p1 ? p2 : p1
+  id.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 300)) // que acabe de escribir lo suyo
+
+  const llave = async () => JSON.stringify(await crypto.subtle.exportKey('jwk',
+    (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
+  const [pc, commPc, nube, commNube, tel] = await Promise.all([llave(), llave(), llave(), llave(), llave()])
+  const acta = {
+    v: 5, seq: 3, profileId: pc, sealedBy: pc,
+    members: [
+      { pub: pc, label: 'PC', caps: ['sealer'] },
+      { pub: commPc, cn: 'vault', vault: pc, caps: ['sign'] },
+      { pub: nube, label: 'nube', caps: ['sealer'] },
+      { pub: commNube, cn: 'vault', vault: nube, caps: ['sign'] },
+      { pub: tel, label: 'teléfono', caps: ['sign'] }
+    ]
+  }
+  const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
+  kv[`dotrino.identity.p.${otro}.acta`] = JSON.stringify(acta)
+  fs.writeFileSync(archivo, JSON.stringify(kv))
+
+  id = await Identity.connect({ dir })
+  const lista = await id.listProfiles()
+  const trabajo = lista.find((p) => p.id === otro)
+  assert.deepEqual(trabajo.vaults.map((v) => [v.comm, v.master, v.label]), [[commPc, pc, 'PC'], [commNube, nube, 'nube']])
+  assert.match(trabajo.vaults[0].id, /^[0-9A-F]{4}-[0-9A-F]{4}/)
+  assert.ok(Array.isArray(lista.find((p) => p.id === activo).vaults), 'el activo también lo trae')
+  assert.equal((await id.currentProfile()).id, activo, 'y el activo no cambió')
+  id.destroy()
+})
