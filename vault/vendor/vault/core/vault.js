@@ -464,20 +464,29 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * Solo lo intenta el master —es el único que sella actas— y no bloquea el arranque: sin
    * llave los sobres salen sin firma, que es lo que ya pasaba antes de §8.8.
    */
-  try {
-    const info = await identity.profileActa?.()
-    const acta = info?.acta
-    // CON EL PERFIL ABIERTO. Estrenar la llave de sellado SELLA EL ACTA, y una bóveda
-    // cerrada no sella nada — la misma regla que el bloque de abajo. Cerrada se queda sin
-    // llave y los sobres salen sin firma (lo que ya pasaba antes de §8.8), y se arregla sola
-    // la primera vez que alguien abra el perfil.
-    if (info?.isMaster && acta && !isLocked() && (!acta.sealPub || !sealKeys.has(acta.sealPub))) {
+  // CADA BÓVEDA, SU LLAVE (`docs/replicas.md` §11.5). Lo que se mira es la llave que el acta
+  // nombra para ESTA bóveda (su miembro), no la del acta: con dos bóvedas en la cuenta, la del
+  // acta la estrenó la última que selló, y mirar esa hacía que cada una se la quitara a la otra
+  // al abrirse. Se llama al arrancar y al abrir (`takeMasterKey`): un perfil con contraseña
+  // arranca cerrado siempre, y sin lo segundo no estrenaría la suya nunca.
+  async function ensureOwnSealKey () {
+    try {
+      const info = await identity.profileActa?.()
+      const acta = info?.acta
+      // CON EL PERFIL ABIERTO. Estrenar la llave de sellado SELLA EL ACTA, y una bóveda
+      // cerrada no sella nada. Cerrada se queda sin llave propia y lo que sirve lo firma con
+      // la del acta si es suya; si no, no sirve firmado hasta que se abra o una hermana se la
+      // nombre («presellar», op `sealkey`).
+      if (!info?.isMaster || !acta || isLocked()) return false
+      const mine = (acta.members || []).find((m) => m.pub === master)
+      if (mine?.sealPub && sealKeys.has(mine.sealPub)) return false
       const r = await identity.rotateSealKey()
       // Sin `%s`: este `log` va con un prefijo por delante, así que el formato no es lo
       // primero y `console.log` no lo sustituye (salía «record #%s 2»).
-      log(`[vault] new sealing key in record #${r.seq}`)
-    }
-  } catch (e) { log('[vault] could not set up the sealing key:', e.message) }
+      log(`[vault] new sealing key for this vault in record #${r.seq}`)
+      return true
+    } catch (e) { log('[vault] could not set up the sealing key:', e.message); return false }
+  }
 
   /**
    * LA LLAVE DE COMUNICACIÓN, dentro del acta.
@@ -549,6 +558,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   }
   // Lo que se selló aquí se anuncia cuando ya hay transporte (más abajo): sin el aviso, la otra
   // bóveda de la cuenta no se entera y las dos acaban con actas distintas del mismo número.
+  await ensureOwnSealKey()
   const commSealedAtStart = await ensureCommKeyInActa()
 
   // `announce`: el canal de ESTA cuenta, para que una máquina prestada —que no tiene
@@ -2381,8 +2391,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // El socket se nombra por la LLAVE de esta bóveda: una máquina puede tener varias, y un
   // servicio solo conoce la maestra que lleva pineada. Así los dos lados calculan la misma
   // ruta sin mirar ningún índice.
+  // Se guarda para CERRARLO con la bóveda: abierto tras `close()`, un servicio de esta máquina
+  // seguía entrando por aquí (es el camino más directo) y le contestaba una identidad ya
+  // destruida («Identity not ready»), en vez de salir por el proxio a otra bóveda de la cuenta.
+  let localDesk = null
   if (identity.me?.publickey && typeof platform.openLocalDesk === 'function') {
-    platform.openLocalDesk({
+    localDesk = platform.openLocalDesk({
       name: (await pubkeyId(identity.me.publickey)).slice(0, 16),
       onMessage, channels: channels, maxBytes: MAX_REPLY_BYTES, log
     })
@@ -3419,9 +3433,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   async function signSeal (body) {
     try {
       const acta = (await identity.profileActa?.().catch(() => null))?.acta
-      if (!acta?.sealPub) return null
-      const sig = await sealKeys.sign(acta.sealPub, body)
-      return sig ? { seq: acta.seq, sig } : null
+      if (!acta) return null
+      // LA DEL ACTA, SI ES NUESTRA: es la que sabe verificar un agente de antes de §11.5.
+      if (acta.sealPub && sealKeys.has(acta.sealPub)) {
+        const sig = await sealKeys.sign(acta.sealPub, body)
+        if (sig) return { seq: acta.seq, sig }
+      }
+      // LA DE ESTA BÓVEDA (`docs/replicas.md` §11.5): la firma dice de cuál es (`vault`), y quien
+      // verifica busca la llave de esa bóveda en el acta. Así sirve también la bóveda que no
+      // selló la última acta.
+      const mine = (acta.members || []).find((m) => m.pub === master)
+      if (!mine?.sealPub || !sealKeys.has(mine.sealPub)) return null
+      const sig = await sealKeys.sign(mine.sealPub, body)
+      return sig ? { seq: acta.seq, sig, vault: master } : null
     } catch (_) { return null }
   }
 
@@ -4480,6 +4504,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         try {
           if (await ensureCommKeyInActa()) { await reidentify?.(); await notifyMembers('commkey') }
         } catch (_) {}
+        await ensureOwnSealKey()
         await syncExNotices()
       }
       // Y ABSORBER LO PENDIENTE. La subacta ya lo estaba honrando con el perfil cerrado —de
@@ -4808,6 +4833,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       for (const t of pendingNotices.values()) clearTimeout(t)
       pendingNotices.clear()
       closeTransport()
+      try { localDesk?.close?.() } catch (_) {}
       try { client.close() } catch (_) {} identity.destroy()
     }
   }
