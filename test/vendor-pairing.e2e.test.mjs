@@ -133,7 +133,7 @@ test('la copia servida concede `passwords` al emparejar',
  */
 test('la copia servida crea un inicio de sesión con contraseña y lo deja entrar', async (t) => {
   const { client: opaqueClient } = await import('../vault/vendor/opaque/src/index.js')
-  const { makeDeviceKey } = await import('../vault/capabilities.js')
+  const { makeDeviceKey, makeDeviceEncKey } = await import('../vault/capabilities.js')
 
   const core = await nucleo()
   // Sin proxio: el mostrador de contraseñas no manda nada por la red — es la consola de
@@ -147,7 +147,7 @@ test('la copia servida crea un inicio de sesión con contraseña y lo deja entra
   const fin = opaqueClient.registrationFinish({ state: start.state, response, password })
   const device = await makeDeviceKey({ label: 'equipo prestado' })
   const r = await handle.loginRegisterFinish({
-    user: 'ana', upload: fin.upload, pub: device.publickey, label: 'equipo prestado', blob: 'sellado:' + fin.exportKey.slice(0, 8)
+    user: 'ana', upload: fin.upload, pub: device.publickey, encPub: (await makeDeviceEncKey()).encPublickey, label: 'equipo prestado', blob: 'sellado:' + fin.exportKey.slice(0, 8)
   })
   assert.ok(r.cert?.sig, 'el aparato sale con su certificado')
 

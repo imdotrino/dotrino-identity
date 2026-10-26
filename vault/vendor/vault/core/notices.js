@@ -22,7 +22,7 @@ export const NOTICE_TTL_MS = 24 * 60 * 60 * 1000
  * (`docs/pairing-protocol.md` §1.7). No pide nada: no hay a quién bloquear, porque ninguno
  * entró. Lo cuenta, con el ID y la máquina de los dos.
  */
-export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested']
+export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested', 'log-anchor']
 
 const newId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('')
 
@@ -58,8 +58,19 @@ export function openNotices ({ disk, now = Date.now }) {
      * administrador). `product`: qué (`@dotrino/vaultd` es la propia bóveda);
      * `deviceId`/`label`: el aparato, si fue uno.
      */
-    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null }) {
+    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null, logSeq = null, head = null, tsa = null }) {
       if (!NOTICE_EVS.includes(ev)) throw fail('bad-notice', `unknown notice: ${ev}`)
+      // EL ANCLA DE LA BITÁCORA (`logAnchor.js`): la cabeza sellada por el signer, para que el
+      // aprobador la guarde. Solo se queda la última: la anterior ya no dice nada que esta no diga.
+      if (ev === 'log-anchor') {
+        if (typeof logSeq !== 'number' || typeof head !== 'string' || !tsa || typeof tsa.signature !== 'string') {
+          throw fail('bad-notice', `${ev}: logSeq, head and the signer receipt are required`)
+        }
+        const n = { id: newId(), ev, logSeq, head, tsa, ts: now() }
+        items = [...items.filter(alive).filter((x) => x.ev !== 'log-anchor'), n]
+        save()
+        return n
+      }
       if (ev === 'pairing-contested') {
         if (!Array.isArray(devices) || devices.length < 2) throw fail('bad-notice', `${ev}: the devices that answered are required`)
         const n = {

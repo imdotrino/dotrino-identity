@@ -47,6 +47,7 @@ import { openCommKey, COMM_CN, COMM_CAPS } from './commKey.js'
 import { seal } from '../sealed.js'
 import { MSG, SCOPE, secretsScope, isValidSecretsNs, VAULT_PROTOCOL, VAULT_SPEAKS } from '../protocol.js'
 import { sha256Hex } from './sha256.js'
+import { sealHead, ANCHOR_EVERY_MS, ANCHOR_FIRST_MS } from './logAnchor.js'
 import { createGate } from './gate.js'
 
 const b64ToBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
@@ -798,8 +799,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    *
    * **Lo que esto NO resuelve, dicho para no venderlo de más:** quien tenga la máquina
    * puede cortar el final de la cadena y quedarse con un prefijo válido. Eso no se cierra
-   * en local — pide anclar el último hash fuera (un TSA, otro aparato). Lo que sí cierra
-   * es reescribir el pasado sin dejar rastro, que es el caso que importaba.
+   * en local: la cabeza se ancla fuera, sellada por el signer y guardada por los aparatos
+   * con `approve` (`anchorLog`, `logAnchor.js`). Lo que la cadena cierra sola es reescribir
+   * el pasado sin dejar rastro, que es el caso que importaba.
    */
   const AUDIT_MAX_BYTES = 1024 * 1024
   /** Cuántos archivos viejos se guardan. Es la RETENCIÓN, y va declarada. */
@@ -2234,13 +2236,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * @returns {Promise<{ approvers: number, sent: number, notice: object|null }>}
    */
   /** Manda un aviso ya apuntado (`notices`) a cada aprobador, sellado. Devuelve a cuántos salió. */
-  async function sendNotice (notice, who, what) {
+  async function sendNotice (notice, who, what, { quiet = false } = {}) {
     const { id, ev, ts, ...rest } = notice
     const body = { ev, id, ...rest, ts }
     const seal = await sealOrFail(body)
     let sent = 0
     for (const pub of who) {
-      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault' }); sent++ }
+      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault', ...(quiet ? { quiet: true } : {}) }); sent++ }
       catch (e) { log(`[vault] could not tell ${pub.slice(0, 24)}… about ${what}: ${e.message}`) }
     }
     return sent
@@ -2265,6 +2267,35 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!sent) throw Object.assign(new Error('no approver could be told'), { code: 'announce-failed' })
     return { approvers: who.length, sent }
   }
+
+  /**
+   * ANCLAR LA BITÁCORA (`logAnchor.js`, modelo de amenazas §4.3): la cabeza, sellada por el
+   * signer, a cada aparato con `approve`. Solo si la bitácora creció desde la última vez, y
+   * sin apuntarlo en ella: una entrada nueva cambiaría la cabeza que se acaba de anclar.
+   * Sin aprobadores no hay dónde dejarla, y se dice. Si el signer no contesta, no se manda
+   * sin sello: se reintenta en la próxima vuelta.
+   */
+  let anchoredSeq = 0
+  async function anchorLog () {
+    if (!auditPrev || auditSeq <= anchoredSeq) return { anchored: false, reason: 'nothing-new' }
+    const record = await refreshActa()
+    const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
+    if (!who.length) {
+      log('[vault] log anchor: nobody can approve, so the log head stays only on this machine (grant it with: dotrino-vault caps <ID> +aprueba)')
+      return { anchored: false, reason: 'no-approvers' }
+    }
+    const logSeq = auditSeq; const head = auditPrev
+    const tsa = await sealHead(head, { fetchFn: platform.fetch || globalThis.fetch })
+    const notice = notices.add('log-anchor', { logSeq, head, tsa })
+    // CALLADO: no es nada que hacer, y timbrar cada pocas horas haría sonar el teléfono con un
+    // pedido vacío. La app lo lee de la lista de avisos la próxima vez que pregunte.
+    const sent = await sendNotice(notice, who, 'the log anchor', { quiet: true })
+    if (!sent) throw Object.assign(new Error('no approver could be told'), { code: 'announce-failed' })
+    anchoredSeq = logSeq
+    log(`[vault] log anchor: entry ${logSeq} sealed and sent to ${sent} of ${who.length} approver(s)`)
+    return { anchored: true, logSeq, sent }
+  }
+  const runAnchor = () => anchorLog().catch((e) => log(`[vault] log anchor: not sent this round (${e.code || 'error'}: ${e.message}); retrying in ${Math.round(ANCHOR_EVERY_MS / 3600000)} h`))
 
   async function announceUpdate ({ version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, ev = 'updated' }) {
     const record = await refreshActa()
@@ -2545,6 +2576,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   } catch (e) {
     log(`[vault] passwords: could not start (${e.message}); everything else keeps going`)
   }
+
+  // La primera ancla sale a los diez minutos de arrancar (lo escrito mientras estuvo apagada) y
+  // luego cada pocas horas. No antes: un arranque no es actividad, y una bóveda que vive menos
+  // —una prueba, un reinicio— no tiene por qué llamar al signer.
+  const anchorFirst = setTimeout(runAnchor, ANCHOR_FIRST_MS)
+  anchorFirst.unref?.()
+  const anchorSweeper = setInterval(runAnchor, ANCHOR_EVERY_MS)
+  anchorSweeper.unref?.()
 
   log(`[vault] listo · id ${fp} · ${store.getTree().children.length} nodos`)
 
@@ -3116,13 +3155,17 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // ese aparato no hizo.
     //
     // Mirando lo que el acta dice HOY, un registro repetido no quita nada y se para aquí.
-    // Lo que esto NO cierra, y queda anotado: si el dueño vuelve a conceder ese permiso, el
-    // mismo registro viejo lo quita otra vez. Cerrarlo del todo pide que el acta recuerde
-    // la fecha de la última renuncia por miembro y rechace las que no sean posteriores.
+    // Y si el dueño volvió a conceder ese permiso, el acta recuerda la fecha de la última
+    // renuncia del miembro (`renouncedAt`, identity ≥ 0.127.0): una que no sea posterior es
+    // una repetición y no se honra (modelo de amenazas §4.4.bis, cerrado el 2026-10-25).
     const actual = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!actual) {
       audit('rejected', { what: 'renounce', reason: 'no-record' })
       return reply(from, { type: MSG.ERROR, error: 'renounce: this vault has no record to apply it to' })
+    }
+    if (!Acta.renounceIsFresh(actual, record)) {
+      audit('rejected', { what: 'renounce', reason: 'stale' })
+      return reply(from, { type: MSG.ERROR, error: 'renounce: not newer than the last renounce this record saw', code: 'renounce-stale' })
     }
     const has = new Set(Acta.effectiveCaps(actual, record.member) || [])
     if (!(record.caps || []).some((c) => has.has(c))) {
@@ -4527,6 +4570,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       return { answer, withdraw: () => { withdrawn = true; retire() } }
     },
     announceUpdate,
+    anchorLog,
     approvers: async () => {
       const record = await refreshActa()
       if (!record) return []
@@ -4759,6 +4803,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     close () {
       for (const stop of [...announcing]) { try { stop() } catch (_) {} }
       clearInterval(approvalsSweeper)
+      clearTimeout(anchorFirst)
+      clearInterval(anchorSweeper)
       for (const t of pendingNotices.values()) clearTimeout(t)
       pendingNotices.clear()
       closeTransport()

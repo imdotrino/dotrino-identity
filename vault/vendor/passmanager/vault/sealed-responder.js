@@ -77,7 +77,15 @@ export class SealedResponder {
       // contestar sellado, así que no se contesta — el token no es una llave.
       const pubkey = meta?.fromPubkey || this.client?.pubkeyOfToken?.(from) || null
       if (!pubkey) { this.onRequest({ op: p.op, outcome: 'anonymous', from: null }); return }
-      await this.handle({ from, pubkey, msg: p, sealed: meta?.sealed === true })
+      // UN PEDIDO NO TUMBA LA BÓVEDA. Este manejador corre suelto en el evento del socket:
+      // lo que se escape de aquí es un rechazo sin dueño, y Node cierra el proceso. Pasó el
+      // 2026-10-26 con un aparato sin llave de cifrado en el acta: cada pedido suyo reiniciaba
+      // la bóveda entera. Se anota y se sigue atendiendo a los demás.
+      try {
+        await this.handle({ from, pubkey, msg: p, sealed: meta?.sealed === true })
+      } catch (e) {
+        this.onRequest({ op: p.op, outcome: 'unanswered', from: pubkey, code: e?.code || null })
+      }
     }
     this.client.on('message', this._handler)
   }
@@ -98,6 +106,9 @@ export class SealedResponder {
     // Los códigos son los del responder de siempre (`responder.js`): «la política dice que
     // no» es `denied` y «el humano dijo que no» es `not-approved`. Se arreglan distinto —uno
     // dando permiso al aparato, el otro volviendo a pedir— y quien pide los distingue así.
+    // SIN SU LLAVE DE CIFRADO NO HAY RESPUESTA POSIBLE, así que tampoco se hace el trabajo:
+    // abrir o escribir algo para no poder contárselo a nadie es tocar la bóveda en balde.
+    if (!this.encPubOf(pubkey)) { anota('no-encpub', { code: 'no-encpub' }); return }
     if (!sealed) { anota('unsealed'); return this.#send(from, pubkey, replyError(rid, CODES.UNSEALED, 'unsealed request')) }
     if (!SEALED_OPS.includes(op)) { anota('unknown-op'); return this.#send(from, pubkey, replyError(rid, CODES.DENIED, 'operation not allowed: ' + op)) }
     if (!this.isAllowed(pubkey)) { anota('denied'); return this.#send(from, pubkey, replyError(rid, CODES.DENIED, 'this device cannot ask for passwords')) }

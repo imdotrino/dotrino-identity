@@ -507,8 +507,8 @@ export async function createPasswordLogin ({ user, password, label, caps, begin,
   const fin = opaque.registrationFinish({ state: start.state, response: begun.response, password })
   const device = await makeDeviceKey({ label })
   const enc = await makeDeviceEncKey()
-  const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.privateJwk })
-  return finish({ user, upload: fin.upload, pub: device.publickey, encPub: enc.publickey, label, blob, caps })
+  const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.encPrivateJwk })
+  return finish({ user, upload: fin.upload, pub: device.publickey, encPub: enc.encPublickey, label, blob, caps })
 }
 
 export async function registerLogin ({
@@ -540,6 +540,10 @@ export async function registerLogin ({
   if (typeof identity?.admitMember !== 'function') {
     throw Object.assign(new Error('this vault cannot add devices to the account record: no login was created'), { code: 'admit-unavailable' })
   }
+  // SIN LLAVE DE CIFRADO NO ENTRA. Un aparato así está en el acta pero nada se le puede
+  // sellar: no recibe contraseñas ni cajones, y lo único que hace es pedir. Pasó el
+  // 2026-10-26 (el alta leía `enc.publickey`, que no existe) y nadie lo vio hasta usarlo.
+  if (!encPub) throw Object.assign(new Error('a password login needs its encryption public key'), { code: 'no-encpub' })
   const deviceId = await deviceIdOf(pub)
   await logins.registerFinish({ user, upload, pub, encPub, deviceId, label, blob })
   try {
