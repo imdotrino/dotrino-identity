@@ -2582,8 +2582,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     },
 
     /** La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS. */
-    sealKeyAt ({ seq } = {}) {
-      return Acta.sealKeyAt(loadActa(), seq)
+    sealKeyAt ({ seq, vault = null } = {}) {
+      return Acta.sealKeyAt(loadActa(), seq, vault)
     },
 
     async profileMembers () {

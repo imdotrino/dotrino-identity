@@ -453,7 +453,7 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', c
     // EL ESLABÓN 1 de la cadena publicable, todavía SIN FIRMAR: lo firma `sealActa` con la
     // misma llave, y después firma el acta que lo lleva. Es lo único que sale al registro.
     sealerLink: { v: SEALER_LINK_V, profileId: pub, seq: 1, by: pub, sealers: [pub], prev: null, iat: now },
-    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS, 'sealer'], addedAt: now, cert: null }],
+    members: [{ pub, encPub, label: String(label || '').slice(0, 60), cn: null, caps: [...PAIRED_CAPS, 'sealer'], addedAt: now, cert: null, ...(sealPub ? { sealPub, sealSince: 1 } : {}) }],
     revoked: [],
     renounced: [],
     // Llavero del contenido: una entrada por generación, con la clave del perfil ENVUELTA
@@ -527,6 +527,13 @@ export function checkShape (acta) {
     // DE QUÉ BÓVEDA ES una llave de comunicación (`vault`: la maestra por la que habla). Solo
     // la lleva un miembro con el `cn` de la bóveda: en cualquier otro no significa nada.
     if (m.vault != null && (!isPub(m.vault) || m.cn !== VAULT_CN)) return 'invalid-vault'
+    // LA LLAVE DE SELLADO DE ESTA BÓVEDA (`docs/replicas.md` §11.5 de dotrino-vault). Cada bóveda
+    // de la cuenta tiene la suya, y el acta las nombra todas: la que sella nombra la suya y
+    // conserva las de sus hermanas. Desde qué acta manda (`sealSince`), igual que la del acta.
+    if (m.sealPub != null) {
+      if (!isPub(m.sealPub)) return 'invalid-sealpub'
+      if (!Number.isInteger(m.sealSince) || m.sealSince < 1 || m.sealSince > acta.seq) return 'sealsince'
+    } else if (m.sealSince != null) return 'sealsince'
   }
   // LA LLAVE DE SELLADO Y SU REGISTRO. `sealPub` puede no estar (un perfil que no sella
   // secretos), pero si está tiene que decir DESDE QUÉ acta manda: sin `sealSince` no se
@@ -540,6 +547,8 @@ export function checkShape (acta) {
   for (const k of acta.sealKeys) {
     if (!isPub(k?.pub)) return 'invalid-sealkey'
     if (!Number.isInteger(k.from) || !Number.isInteger(k.to) || k.from < 1 || k.to < k.from) return 'sealkey-range'
+    // `by`: de qué bóveda era esa llave. Sin él es una del acta (la de antes de §11.5).
+    if (k.by != null && !isPub(k.by)) return 'invalid-sealkey'
   }
   }
   if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'duplicate-member'
@@ -822,6 +831,22 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
 
   const find = (pub) => next.members.find((m) => m.pub === pub)
 
+  // CADA BÓVEDA, SU LLAVE (§11.5 de `docs/replicas.md` de dotrino-vault). La que sella nombra
+  // la suya recién estrenada en su propio miembro; las de sus hermanas siguen como estaban,
+  // porque los miembros se copian enteros. La de antes pasa al registro con `by`, para que los
+  // sobres que firmó sigan verificando.
+  const nameSealKey = (m, pub) => {
+    if (!isPub(pub)) throw new Error('sealkey: invalid sealing key (expected a P-256 public JWK)')
+    if (m.sealPub === pub) return
+    if (m.sealPub) next.sealKeys.push({ pub: m.sealPub, from: m.sealSince, to: acta.seq, by: m.pub })
+    m.sealPub = pub
+    m.sealSince = next.seq
+  }
+  if (sealPub) {
+    const mine = find(by)
+    if (mine) nameSealKey(mine, sealPub)
+  }
+
   for (const ch of list) {
     switch (ch?.op) {
       case 'admit': {
@@ -848,6 +873,19 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
           // DE QUÉ BÓVEDA ES, si es la llave de comunicación de una (ver op `vault`).
           ...(m.vault != null ? { vault: vaultOfComm(cn, m.vault) } : {})
         })
+        // Una bóveda que entra puede traer ya su llave de sellado: la que la admite la nombra
+        // («presellar»), y la nueva sirve firmado desde el primer momento sin tener que sellar.
+        if (m.sealPub != null) nameSealKey(next.members[next.members.length - 1], m.sealPub)
+        break
+      }
+      // NOMBRAR LA LLAVE DE SELLADO DE UNA HERMANA (§11.5). Su pública llega por la
+      // sincronización; la privada no sale de su máquina. Solo a quien puede sellar: es la
+      // llave de una bóveda, y un aparato que no sella no firma nada de lo que se sirve.
+      case 'sealkey': {
+        const m = find(ch.pub)
+        if (!m) throw new Error('sealkey: that member is not in the record')
+        if (!cleanCaps(m.caps).includes('sealer')) throw new Error('sealkey: only a vault that can seal has a sealing key')
+        nameSealKey(m, ch.sealPub)
         break
       }
       // DE QUÉ BÓVEDA ES UNA LLAVE DE COMUNICACIÓN. Con dos bóvedas en la cuenta hay dos llaves
@@ -1049,10 +1087,19 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
  * que comprobarlo. `null` si no había ninguna (perfil que no sellaba) o si el `seq` viene
  * del futuro, que es un sobre que no puede ser bueno.
  */
-export function sealKeyAt (acta, seq) {
+export function sealKeyAt (acta, seq, vault = null) {
   if (!acta || !Number.isInteger(seq) || seq < 1 || seq > acta.seq) return null
+  // LA DE UNA BÓVEDA CONCRETA (§11.5): la firma dice de cuál es (`seal.vault`). Tiene que seguir
+  // pudiendo sellar: una bóveda a la que se le quitó no firma nada que valga.
+  if (vault != null) {
+    const m = (acta.members || []).find((x) => samePubkey(x.pub, vault))
+    if (!m || !memberCan(acta, m.pub, 'sealer')) return null
+    if (m.sealPub && seq >= m.sealSince) return m.sealPub
+    for (const k of acta.sealKeys || []) if (k.by && samePubkey(k.by, m.pub) && seq >= k.from && seq <= k.to) return k.pub
+    return null
+  }
   if (acta.sealPub && seq >= acta.sealSince) return acta.sealPub
-  for (const k of acta.sealKeys || []) if (seq >= k.from && seq <= k.to) return k.pub
+  for (const k of acta.sealKeys || []) if (!k.by && seq >= k.from && seq <= k.to) return k.pub
   return null
 }
 

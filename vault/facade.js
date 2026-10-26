@@ -93,7 +93,7 @@ export class IdentityFacade {
   /** Estrena la llave de sellado en un acta nueva, sin tocar a ningún miembro. */
   rotateSealKey () { return this._h('rotateSealKey') }
   /** Con qué llave se comprueban los sobres que se firmaron con el acta `seq`. */
-  sealKeyAt (seq) { return this._h('sealKeyAt', { seq }) }
+  sealKeyAt (seq, vault = null) { return this._h('sealKeyAt', { seq, vault }) }
   myMembership () { return this._h('myMembership') }
   /**
    * La CADENA de actas desde `sinceSeq` (para que un dispositivo que estuvo apagado

@@ -16,6 +16,8 @@ async function key () {
     privateJwk: await crypto.subtle.exportKey('jwk', pair.privateKey)
   }
 }
+/** El registro de las llaves DEL ACTA (las de antes de §11.5); las de cada bóveda llevan `by`. */
+const legacy = (acta) => acta.sealKeys.filter((k) => !k.by)
 const step = async (acta, changes, who, opts = {}) =>
   sealActa({ acta: await applyChanges(acta, changes, { by: who.pub, ...opts }), privateJwk: who.privateJwk })
 
@@ -41,14 +43,14 @@ test('rotar: la llave nueva manda desde su acta, y la vieja sigue verificando su
   acta = await step(acta, [{ op: 'label', pub: a.pub, label: 'PC' }], a)
   assert.equal(acta.seq, 2)
   assert.equal(acta.sealPub, s1.pub)
-  assert.deepEqual(acta.sealKeys, [], 'sin rotación no hay nada que guardar')
+  assert.deepEqual(legacy(acta), [], 'sin rotación no hay nada que guardar')
 
   // Y ahora sí, entra un aparato y con él una llave de sellado nueva.
   acta = await step(acta, [{ op: 'admit', member: { pub: b.pub, label: 'Teléfono' } }], a, { sealPub: s2.pub })
   assert.equal(acta.seq, 3)
   assert.equal(acta.sealPub, s2.pub)
   assert.equal(acta.sealSince, 3)
-  assert.deepEqual(acta.sealKeys, [{ pub: s1.pub, from: 1, to: 2 }])
+  assert.deepEqual(legacy(acta), [{ pub: s1.pub, from: 1, to: 2 }])
 
   // Lo que importa: con qué llave se comprueba un sobre según el acta que lo selló.
   assert.equal(sealKeyAt(acta, 1), s1.pub, 'un sobre de cuando mandaba la primera')
@@ -99,8 +101,58 @@ test('estrenar la llave de sellado es, por si sola, un acta nueva', async () => 
   acta = await step(acta, [], a, { sealPub: s2.pub })
   assert.equal(acta.seq, 2)
   assert.equal(acta.sealPub, s2.pub)
-  assert.deepEqual(acta.sealKeys, [{ pub: s1.pub, from: 1, to: 1 }])
+  assert.deepEqual(legacy(acta), [{ pub: s1.pub, from: 1, to: 1 }])
 
   // Y sin llave nueva, una lista vacía sigue siendo lo que era: nada que sellar.
   await assert.rejects(() => applyChanges(acta, [], { by: a.pub }), /no changes/)
+})
+
+// ----- una llave de sellado POR BÓVEDA (§11.5 de dotrino-vault/docs/replicas.md) -----
+
+test('cada bóveda, su llave: la que sella nombra la suya y conserva la de su hermana', async () => {
+  const a = await key(); const b = await key()
+  const sa1 = await key(); const sa2 = await key(); const sb = await key()
+  let acta = await sealActa({ acta: genesisActa({ pub: a.pub, sealPub: sa1.pub }), privateJwk: a.privateJwk })
+  // A admite a B, que trae su llave de sellado: A se la PRESELLA.
+  acta = await step(acta, [{ op: 'admit', member: { pub: b.pub, label: 'Lambda', caps: ['sealer', 'sign'], sealPub: sb.pub } }], a)
+  assert.equal(sealKeyAt(acta, acta.seq, b.pub), sb.pub, 'B firma desde el acta que la admitió, sin sellar nada')
+  assert.equal(sealKeyAt(acta, acta.seq, a.pub), sa1.pub)
+  const desde = acta.seq
+
+  // A vuelve a sellar y estrena la suya: la de B sigue ahí, porque A no puede rotarla.
+  acta = await step(acta, [{ op: 'label', pub: a.pub, label: 'PC' }], a, { sealPub: sa2.pub })
+  assert.equal(sealKeyAt(acta, acta.seq, a.pub), sa2.pub)
+  assert.equal(sealKeyAt(acta, 1, a.pub), sa1.pub, 'la vieja de A sigue verificando su tramo')
+  assert.equal(sealKeyAt(acta, acta.seq, b.pub), sb.pub)
+  assert.equal(sealKeyAt(acta, desde - 1, b.pub), null, 'B no firmaba antes de entrar')
+  assert.equal((await verifyActa({ acta })).ok, true)
+})
+
+test('la llave de una hermana se nombra con `sealkey`, y solo a quien puede sellar', async () => {
+  const a = await key(); const b = await key(); const c = await key(); const sb = await key()
+  let acta = await sealActa({ acta: genesisActa({ pub: a.pub }), privateJwk: a.privateJwk })
+  acta = await step(acta, [
+    { op: 'admit', member: { pub: b.pub, caps: ['sealer', 'sign'] } },
+    { op: 'admit', member: { pub: c.pub, caps: ['sign'] } }
+  ], a)
+  acta = await step(acta, [{ op: 'sealkey', pub: b.pub, sealPub: sb.pub }], a)
+  assert.equal(sealKeyAt(acta, acta.seq, b.pub), sb.pub)
+  await assert.rejects(() => applyChanges(acta, [{ op: 'sealkey', pub: c.pub, sealPub: sb.pub }], { by: a.pub }), /only a vault that can seal/)
+
+  // Una bóveda a la que se le quita sellar deja de firmar nada que valga.
+  acta = await step(acta, [{ op: 'caps', pub: b.pub, caps: ['sign'] }], a)
+  assert.equal(sealKeyAt(acta, acta.seq, b.pub), null)
+})
+
+test('la llave del acta y la de una bóveda no se confunden', async () => {
+  const a = await key(); const s1 = await key(); const s2 = await key()
+  let acta = await sealActa({ acta: genesisActa({ pub: a.pub, sealPub: s1.pub }), privateJwk: a.privateJwk })
+  acta = await step(acta, [], a, { sealPub: s2.pub })
+  // Sin `vault`, el camino de siempre (lo que verifica un agente viejo).
+  assert.equal(sealKeyAt(acta, 1), s1.pub)
+  assert.equal(sealKeyAt(acta, 2), s2.pub)
+  // Con `vault`, el registro de esa bóveda.
+  assert.equal(sealKeyAt(acta, 1, a.pub), s1.pub)
+  assert.equal(sealKeyAt(acta, 2, a.pub), s2.pub)
+  assert.equal(checkShape({ ...acta, members: acta.members.map((m) => ({ ...m, sealSince: 99 })) }), 'sealsince')
 })
