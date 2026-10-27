@@ -1452,6 +1452,38 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * apagado sin bajar la guardia: cada eslabón se comprueba contra el anterior en vez de
    * aceptar un salto a ciegas.
    */
+  /**
+   * RELLENAR LOS HUECOS DEL HISTORIAL con actas que trae otro (2026-10-27). Cada acta nombra a
+   * la anterior por su hash (`prev`), así que una que falta se puede aceptar sin fiarse de quien
+   * la manda: entra solo si su hash es el `prev` de la siguiente que ya tengo, y se baja eslabón
+   * a eslabón desde las que conozco. Nunca cambia la vigente: solo completa lo que hay detrás.
+   */
+  async function fillHistoryNow (actas) {
+    const cur = loadActa()
+    if (!cur || !Array.isArray(actas) || !actas.length) return { added: 0 }
+    const known = new Map([...loadHistory(), cur].map((a) => [a.seq, a]))
+    const offered = new Map(actas.filter((a) => a && a.profileId === cur.profileId && typeof a.seq === 'number').map((a) => [a.seq, a]))
+    let added = 0
+    for (const s of [...known.keys()].sort((a, b) => b - a)) {
+      let node = known.get(s)
+      while (node && node.seq > 1 && node.prev && !known.has(node.seq - 1)) {
+        const c = offered.get(node.seq - 1)
+        if (!c || await Acta.actaHash(c) !== node.prev) break
+        if (!(await Acta.verifyActa({ acta: c, expectedProfileId: cur.profileId })).ok) break
+        pushHistory(c)
+        known.set(c.seq, c)
+        added++
+        node = c
+      }
+    }
+    return { added }
+  }
+  function fillHistory (actas) {
+    const run = adoptQueue.then(() => fillHistoryNow(actas))
+    adoptQueue = run.catch(() => {})
+    return run
+  }
+
   async function adoptChain (chain) {
     let last = null
     for (const a of [...(chain || [])].sort((x, y) => x.seq - y.seq)) {
@@ -1487,6 +1519,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     const current = loadActa()
     const r = await Acta.canAdopt({ candidate, current })
     if (!r.adopt) return { adopted: false, reason: r.reason, seq: current?.seq ?? null }
+    // LA QUE DEJA DE SER VIGENTE ENTRA EN EL HISTORIAL, igual que al sellar (2026-10-27). Sin
+    // esto, una bóveda que adopta lo que sella su hermana pierde las suyas: el PC selló la #75
+    // (entra la Nube), adoptó la #76 y la #77 de ella, y se quedó sin la #75 ni la #76. Un
+    // aparato en la #74 ya no podía llegar a la #77: se la mandaba sola, sellada por alguien
+    // que la #74 no conoce, y la rechazaba sin decir nada.
+    pushHistory(current)
     saveActa(candidate)
     emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, adopted: r.reason })
     const sigoDentro = (candidate.members || []).some((m) => m?.pub === publickeyJwkStr)
@@ -3073,6 +3111,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /** Adopta una cadena completa (para ponerse al día tras estar apagado). */
     async adoptActaChain ({ chain } = {}) { return adoptChain(chain) },
 
+    /** Completa el historial con las actas que falten detrás de la vigente (`fillHistoryNow`). */
+    async fillActaHistory ({ actas } = {}) { return fillHistory(actas) },
+
+    /** Las últimas actas que guardo, con la vigente: lo que otra bóveda necesita para rellenar. */
+    async recentActas ({ count = 10 } = {}) {
+      const cur = loadActa()
+      if (!cur) return { actas: [] }
+      return { actas: [...loadHistory().filter((a) => a.seq < cur.seq).slice(-Math.max(0, count - 1)), cur] }
+    },
+
     /** Une este dispositivo al perfil de otra bóveda (solo si aquí no hay nada que perder). */
     async joinProfile ({ acta } = {}) { return joinProfile(acta) },
 
@@ -3471,10 +3519,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink })
         // El acta viaja con la lista: así los cambios de política llegan sin canal aparte.
         // Si estuve apagado, viene la CADENA y se adopta eslabón a eslabón (§1.3).
+        // Y si no encaja, SE DICE (2026-10-27): callado, el navegador de Seyacat se quedó en la #74
+        // con la bóveda en la #77, y la única pista era que no salía la bóveda de la nube.
         try {
-          if (res.chain?.length && res.chain[0].profileId === loadActa()?.profileId) await adoptChain(res.chain)
-          else if (res.acta) await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta))
-        } catch (_) {}
+          const antes = loadActa()?.seq ?? null
+          const r = res.chain?.length && res.chain[0].profileId === loadActa()?.profileId
+            ? await adoptChain(res.chain)
+            : res.acta ? await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta)) : null
+          const llega = res.acta?.seq ?? res.chain?.[res.chain.length - 1]?.seq ?? null
+          if (r && !r.adopted && !r.joined && llega != null && antes != null && llega > antes) {
+            console.warn(`[identity] the vault is on record #${llega} and this device stays on #${antes}: ${r.reason}`)
+          }
+        } catch (e) { console.warn('[identity] could not adopt the record from the vault: ' + e.message) }
         // El acta acaba de llegar: si trae permisos que el cert no lleva, se renueva YA. La
         // comprobación de arriba corrió ANTES de tenerla, así que sin esto haría falta una
         // segunda visita para estrenar un permiso recién concedido.

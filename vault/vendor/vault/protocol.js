@@ -127,12 +127,12 @@ export const SCOPE = Object.freeze({
   ADMIN: 'vault:admin',
   APPROVE: 'vault:approve', // aprobar pedidos de secretos (cajones con `approval`); se concede a mano, como admin
   // El gestor de contraseñas: pedir credenciales de la bóveda, de a una y por dominio.
-  // Nunca lista la bóveda entera. Este SÍ se empareja (`pair --scope contrasenas`): es
+  // Nunca lista la bóveda entera. Este SÍ se empareja (`pair --scope passwords`): es
   // lo primero que hace la extensión, y no tendría sentido obligar a un segundo paso.
   PASSWORDS: 'vault:passwords',
   // SELLAR EL ACTA: la OTRA bóveda de esta cuenta. Con esto puede admitir aparatos y
   // cambiar permisos si la principal se pierde — que es todo el punto del multivault. Como
-  // `admin`, no se empareja: se concede a mano (`caps <ID> +sella`).
+  // `admin`, no se empareja: se concede a mano (`caps <ID> +sealer`).
   SEALER: 'vault:sealer'
 })
 

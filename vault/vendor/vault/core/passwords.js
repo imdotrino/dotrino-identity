@@ -16,7 +16,7 @@
  *   · filtra por destinatario al entregar, y decide si hace falta un dedo encima.
  *
  * Lo que SIGUE igual: el protocolo es de a una credencial, `list` no existe en remoto, y la
- * aprobación es la misma del resto del vault (`caps +aprueba`).
+ * aprobación es la misma del resto del vault (`caps +approve`).
  */
 
 import { SealedStore, SealedResponder } from '@dotrino/passmanager'

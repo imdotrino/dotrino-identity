@@ -357,7 +357,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     ...(platform.opaque ? { opaque: platform.opaque } : {})
   })
 
-  /** Los aparatos que el acta autoriza a pedir credenciales (`caps <ID> +contraseñas`). */
+  /** Los aparatos que el acta autoriza a pedir credenciales (`caps <ID> +passwords`). */
   const passwordDevices = () => (actaCache?.members || []).filter((m) => Acta.memberCan(actaCache, m.pub, 'passwords'))
 
   /**
@@ -1012,7 +1012,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * ANTES de hacer nada, en todos los mostradores.
    *
    * El certificado dice a qué se comprometió esta bóveda cuando conectó el aparato; el
-   * acta dice lo que puede HOY. Y no coinciden: `caps <ID> -lee` sella el acta pero no
+   * acta dice lo que puede HOY. Y no coinciden: `caps <ID> -read` sella el acta pero no
    * reemite ni revoca el papel, que vive hasta 30 días. Sin esto, quitarle un permiso a un
    * aparato no se lo quitaba — seguía leyendo, guardando o firmando un mes más.
    *
@@ -1066,7 +1066,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
 
     // MANDA EL ACTA, NO EL PAPEL. Esto miraba solo el certificado, y era el único
     // mostrador que lo hacía —`approve` y los secretos ya preguntaban al acta—. El agujero
-    // que dejaba: `caps <ID> -firma` quita `sign` del acta pero NO reemite ni revoca el
+    // que dejaba: `caps <ID> -sign` quita `sign` del acta pero NO reemite ni revoca el
     // cert del aparato, que sigue diciendo `vault:sign` hasta 30 días. Entonces su
     // `signData` local veía que ya no puede y se lo PEDÍA a la bóveda… que decía que sí.
     // O sea que quitarle el permiso de firmar no se lo quitaba: lo cambiaba de firmar él
@@ -1135,6 +1135,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * Y el molino lo hace el ADMIN: aquí llega la derivada, nunca la contraseña.
    */
   const EPHEMERAL_TTL_MS = 60 * 1000
+  // Cuántas actas viajan con el aviso a las hermanas: cada una es el acta entera (unos KB), y el
+  // frame del proxio corta en 1 MB.
+  const SIBLING_ACTAS = 5
   /** Los cambios de unos segundos van juntos a las hermanas (`scheduleDrawerPush`). */
   const DRAWER_PUSH_DEBOUNCE_MS = 3000
   const aperturas = new Map()   // nonce -> { privateKey, exp }
@@ -2069,7 +2072,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   /**
    * PEDIDOS DE APROBACIÓN (aparatos marcados con `approval on`). Entran por `vault.secrets` con
    * `op: approvals | approve | deny`, firmados por un aparato al que el ACTA le da `approve`
-   * — que, como `admin`, no se empareja: se concede a mano (`caps <ID> +aprueba`).
+   * — que, como `admin`, no se empareja: se concede a mano (`caps <ID> +approve`).
    *
    * DECIDE EL ACTA, NO EL PAPEL (dueño, 2026-09-26). El papel solo prueba que el aparato es
    * de esta bóveda y no está revocado; por eso no se le pide `vault:approve`. Pedírselo
@@ -2267,7 +2270,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const body = { ev: 'approval', id: pend.id, ns: pend.ns, kind: pend.kind || 'read', deviceId: pend.deviceId, label: pend.label, exp: pend.exp, ts: Date.now() }
       const seal = await sealOrFail(body)
       const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
-      if (!who.length) log(`[vault] ${pend.ns}: nobody can approve (grant it with: dotrino-vault caps <ID> +aprueba)`)
+      if (!who.length) log(`[vault] ${pend.ns}: nobody can approve (grant it with: dotrino-vault caps <ID> +approve)`)
       // EL FALLO NO SE TRAGA. Un aviso que no sale es un teléfono que no timbra, y eso
       // desde fuera se ve igual que «nadie ha aprobado todavía»: se espera para siempre
       // sin nada que mirar. Es el mismo cuidado que en `notifyMembers`.
@@ -2323,7 +2326,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const record = await refreshActa()
     const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
     if (!who.length) {
-      log('[vault] contested pairing: nobody can approve, so nobody is told (grant it with: dotrino-vault caps <ID> +aprueba)')
+      log('[vault] contested pairing: nobody can approve, so nobody is told (grant it with: dotrino-vault caps <ID> +approve)')
       return { approvers: 0, sent: 0 }
     }
     const notice = notices.add('pairing-contested', { devices })
@@ -2346,7 +2349,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const record = await refreshActa()
     const who = (record?.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
     if (!who.length) {
-      log('[vault] log anchor: nobody can approve, so the log head stays only on this machine (grant it with: dotrino-vault caps <ID> +aprueba)')
+      log('[vault] log anchor: nobody can approve, so the log head stays only on this machine (grant it with: dotrino-vault caps <ID> +approve)')
       return { anchored: false, reason: 'no-approvers' }
     }
     const logSeq = auditSeq; const head = auditPrev
@@ -2413,7 +2416,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     const approvers = (record.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).length
     if (!approvers) {
-      log(`[vault] incident (${kind}) about ${deviceId} reported by ${by}: nobody can approve, so nobody is asked (grant it with: dotrino-vault caps <ID> +aprueba)`)
+      log(`[vault] incident (${kind}) about ${deviceId} reported by ${by}: nobody can approve, so nobody is asked (grant it with: dotrino-vault caps <ID> +approve)`)
       return reply(from, { type: MSG.INCIDENT_RESULT, id: null, approvers: 0, blocked: false })
     }
     // `ns` es el que reporta: la pantalla dice «X falló la clave de la terminal de Y». El
@@ -2525,7 +2528,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const own = (await identity.profileActa?.().catch(() => null))?.acta || null
     if (!own) return log('[vault] a record was announced but this vault has none of its own to compare it with: ignored')
     try {
-      const r = await identity.adoptActa?.(acta)
+      // Con las actas de detrás, la cadena: es lo que deja llegar a una bóveda atrasada aunque
+      // en el hueco haya cambiado quién sella.
+      const actas = Array.isArray(payload.actas) && payload.actas.length ? payload.actas : null
+      const r = actas ? await identity.adoptActaChain?.(actas) : await identity.adoptActa?.(acta)
+      if (actas) {
+        const f = await identity.fillActaHistory?.(actas)
+        if (f?.added) log(`[vault] filled ${f.added} missing record(s) of the history from another vault`)
+      }
       if (r?.adopted) log(`[vault] adopted record #${acta.seq} announced by another vault (${r.reason})`)
       // Y el RECHAZO también se dice. Callarlo dejaría el peor fallo de todos: se concede
       // un permiso en una máquina, la otra no se entera, y no hay una sola línea que lo
@@ -2649,7 +2659,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     actaSweeper.unref?.()
     if (passwordDevices().length) await startPasswordDesk()
     // Ni código de enlace ni pegar nada: un gestor entra como cualquier otro aparato.
-    else log('[vault] passwords: no device may ask yet · pair one with `dotrino-vault pair --scope contrasenas`')
+    else log('[vault] passwords: no device may ask yet · pair one with `dotrino-vault pair --scope passwords`')
   } catch (e) {
     log(`[vault] passwords: could not start (${e.message}); everything else keeps going`)
   }
@@ -2798,8 +2808,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (!acta) return
       const mine = await commKey.ensure().catch(() => null)
       const siblings = (acta.members || []).filter((m) => m.cn === COMM_CN && m.vault && m.vault !== master && m.pub !== mine)
+      // CON LAS ÚLTIMAS ACTAS, no solo la vigente (2026-10-27): la hermana puede no tener las
+      // que hay detrás —el PC se quedó sin la #75 y la #76 que selló la Nube— y sin ellas no
+      // puede poner al día a sus aparatos. Se autentican solas: cada una nombra a la anterior
+      // por su hash, y quien las recibe solo acepta las que encajan.
+      const actas = (await identity.recentActas?.(SIBLING_ACTAS).catch(() => null))?.actas || null
       for (const m of siblings) {
-        try { client.sendByPubkey(m.pub, { type: MSG.ADMIN_EVENT, body: { ev: 'record', reason, ts: Date.now() }, acta }, { quiet: true, app: 'vault' }) }
+        try { client.sendByPubkey(m.pub, { type: MSG.ADMIN_EVENT, body: { ev: 'record', reason, ts: Date.now() }, acta, actas }, { quiet: true, app: 'vault' }) }
         catch (e) { log(`[vault] could not send the record to a sibling vault: ${e.message}`) }
       }
       if (siblings.length) log(`[vault] sent record #${acta.seq} to ${siblings.length} sibling vault(s) on ${reason}`)
@@ -3351,7 +3366,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     readActivity,
     vars: varsDesk,
     // CERT ∩ ACTA, igual que los secretos con su CN. El cert dice qué se emitió; el acta,
-    // qué decidió el dueño AHORA. Sin el segundo, `caps <ID> -administra` no surtía efecto
+    // qué decidió el dueño AHORA. Sin el segundo, `caps <ID> -admin` no surtía efecto
     // hasta que el cert caducara: quitarle la administración a un aparato que ya no es de
     // fiar exigía revocarlo entero. Con el cruce, deja de administrar en el acto.
     verify: async ({ data, signature, cert }) => {
@@ -4599,7 +4614,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const r = await identity.setCapsMany(changes)
     // ¿SE QUEDÓ ALGUNO POR EL CAMINO? El acta tiene una lista CERRADA de permisos y
     // `cleanCaps` descarta los que no conoce — correcto al recibir un acta ajena, y
-    // pésimo aquí: conceder `+sella` con una versión del pilar que no sabe qué es
+    // pésimo aquí: conceder `+sealer` con una versión del pilar que no sabe qué es
     // devolvía «Listo», resellaba el acta y no concedía nada. Costó una tarde en un
     // contenedor, porque la imagen traía la versión de npm y el árbol local otra.
     try {
@@ -4765,7 +4780,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           if (gone.length) {
             const whom = (await Promise.all(gone.map(async (d) => `${await deviceIdOf(d.pub).catch(() => '????-????')}${d.label ? ` (${d.label})` : ''}`))).join(', ')
             audit('no-approver', { removed: gone.length, seq })
-            log(`[vault] WARNING: nobody in the record can approve any more — ${whom} was the last. From now on every device gets its keys WITHOUT approval, until you enrol one and grant it \`dotrino-vault caps <ID> +aprueba\``)
+            log(`[vault] WARNING: nobody in the record can approve any more — ${whom} was the last. From now on every device gets its keys WITHOUT approval, until you enrol one and grant it \`dotrino-vault caps <ID> +approve\``)
           }
         } catch (e) { log(`[vault] unlock: could not remove expired devices: ${e.message}`) }
       }

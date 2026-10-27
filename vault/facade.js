@@ -124,6 +124,12 @@ export class IdentityFacade {
   renounceCaps (caps) { return this._h('renounceCaps', { caps }) }
   absorbRenounce (record) { return this._h('absorbRenounce', { record }) }
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
+  /** Adopta una cadena de actas, eslabón a eslabón (para ponerse al día tras estar apagado). */
+  adoptActaChain (chain) { return this._h('adoptActaChain', { chain }) }
+  /** Completa el historial con las actas que falten detrás de la vigente, comprobadas por hash. */
+  fillActaHistory (actas) { return this._h('fillActaHistory', { actas }) }
+  /** Las últimas actas guardadas, con la vigente. */
+  recentActas (count) { return this._h('recentActas', { count }) }
   /** Une ESTE perfil a la cuenta de otro (solo si nació para eso: `createProfile(n, { forVault: true })`). */
   joinProfile (acta) { return this._h('joinProfile', { acta }) }
   /** Marca este perfil como nacido para ADOPTAR la cuenta de otro (camino A: lo usa la bóveda). */
