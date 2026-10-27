@@ -2476,12 +2476,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // antes de que su bóveda nombrara su llave de comunicación: ese perfil salía sin ninguna. El
       // papel de este aparato lo firmó su bóveda y dice cuál es (`master`), así que esa entra
       // siempre; sin llave de comunicación conocida (`comm: null`), se le habla por la cuenta.
-      const vaultsOf = async (pid, certMaster) => {
+      //
+      // SOLO LAS DE SU CUENTA (2026-10-27: «las bóvedas de otros perfiles se listan en el perfil que
+      // no le corresponde»). Un acta guardada que no nombra la llave del propio perfil no es la de
+      // su cuenta —una copia cruzada o de antes—, y sus bóvedas no son de ese perfil: no se listan.
+      // Lo mismo el papel: solo vale el que se emitió para la llave de ese perfil.
+      const vaultsOf = async (pid, mine, certMaster) => {
+        if (!mine) return []
         let members = []
         try {
           const raw = pid === currentPid ? kv.getItem(ACTA_STORAGE) : rawKv.getItem(`dotrino.identity.p.${pid}.acta`)
           members = (raw ? JSON.parse(raw) : null)?.members || []
         } catch (_) { members = [] }
+        if (!members.some((m) => m.pub === mine)) members = []
         const out = await Promise.all(members.filter((m) => m.cn === Acta.VAULT_CN && m.vault).map(async (m) => {
           const owner = members.find((x) => x.pub === m.vault)
           return { comm: m.pub, master: m.vault, id: await Acta.memberId(m.vault), label: owner?.label || '' }
@@ -2518,14 +2525,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           const v = raw ? JSON.parse(raw) : null
           vault = !!v?.cert
           approve = vault && (v.cert.scope || []).includes('vault:approve')
-          if (vault && typeof v.master === 'string') certMaster = v.master
+          if (vault && typeof v.master === 'string' && v.cert.sub === (p.id === currentPid ? publickeyJwkStr : p.pubkey)) certMaster = v.master
         } catch (_) {}
         // Un inicio de sesión con contraseña se enseña como lo que es: el menú del botón de
         // perfil pone su «Salir» al lado, que es lo único que lo cierra desde aquí.
         const login = loginMetaOf(p.id)
         return {
           id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid,
-          pendingJoin: !!p.pendingJoin, vault, approve, vaults: await vaultsOf(p.id, certMaster),
+          pendingJoin: !!p.pendingJoin, vault, approve, vaults: await vaultsOf(p.id, p.id === currentPid ? publickeyJwkStr : (p.pubkey || null), certMaster),
           ...(login ? { login: { user: login.user, address: login.address, volatile: !!login.volatile } } : {})
         }
       }))

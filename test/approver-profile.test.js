@@ -96,6 +96,8 @@ test('listProfiles dice qué bóvedas tiene cada perfil, sin tocar el activo', a
   const llave = async () => JSON.stringify(await crypto.subtle.exportKey('jwk',
     (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
   const [pc, commPc, nube, commNube, tel] = await Promise.all([llave(), llave(), llave(), llave(), llave()])
+  const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
+  const suya = JSON.parse(kv['dotrino.identity.profiles']).find((p) => p.id === otro).pubkey
   const acta = {
     v: 5, seq: 3, profileId: pc, sealedBy: pc,
     members: [
@@ -103,10 +105,10 @@ test('listProfiles dice qué bóvedas tiene cada perfil, sin tocar el activo', a
       { pub: commPc, cn: 'vault', vault: pc, caps: ['sign'] },
       { pub: nube, label: 'nube', caps: ['sealer'] },
       { pub: commNube, cn: 'vault', vault: nube, caps: ['sign'] },
-      { pub: tel, label: 'teléfono', caps: ['sign'] }
+      { pub: tel, label: 'teléfono', caps: ['sign'] },
+      { pub: suya, label: 'este navegador', caps: ['sign'] }
     ]
   }
-  const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
   kv[`dotrino.identity.p.${otro}.acta`] = JSON.stringify(acta)
   fs.writeFileSync(archivo, JSON.stringify(kv))
 
@@ -135,14 +137,42 @@ test('listProfiles: la bóveda del CERTIFICADO sale aunque la copia del acta sea
     (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
   const [boveda, comm] = await Promise.all([llave(), llave()])
   // Copia de antes de que la llave de comunicación llevara `vault`.
-  const acta = { v: 5, seq: 2, profileId: boveda, sealedBy: boveda, members: [{ pub: boveda, label: 'Servidor', caps: ['sealer'] }, { pub: comm, cn: 'vault', caps: ['sign'] }] }
   const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
+  const suya = JSON.parse(kv['dotrino.identity.profiles']).find((p) => p.id === otro).pubkey
+  const acta = { v: 5, seq: 2, profileId: boveda, sealedBy: boveda, members: [{ pub: boveda, label: 'Servidor', caps: ['sealer'] }, { pub: comm, cn: 'vault', caps: ['sign'] }, { pub: suya, caps: ['sign'] }] }
   kv[`dotrino.identity.p.${otro}.acta`] = JSON.stringify(acta)
-  kv[`dotrino.identity.p.${otro}.vault.cert`] = JSON.stringify({ master: boveda, cert: { scope: ['vault:sign'] } })
+  kv[`dotrino.identity.p.${otro}.vault.cert`] = JSON.stringify({ master: boveda, cert: { sub: suya, scope: ['vault:sign'] } })
   fs.writeFileSync(archivo, JSON.stringify(kv))
 
   id = await Identity.connect({ dir })
   const cepi = (await id.listProfiles()).find((p) => p.id === otro)
   assert.deepEqual(cepi.vaults.map((v) => [v.comm, v.master, v.label]), [[null, boveda, 'Servidor']])
+  id.destroy()
+})
+
+test('listProfiles: un acta o un papel que no son de la cuenta del perfil no ponen bóvedas en él', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vaults-cruzadas-'))
+  const archivo = path.join(dir, 'identity.json')
+  let id = await Identity.connect({ dir })
+  const p1 = (await id.currentProfile()).id
+  const p2 = (await id.createProfile('Otra')).id
+  const activo = (await id.currentProfile()).id
+  const otro = activo === p1 ? p2 : p1
+  id.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const llave = async () => JSON.stringify(await crypto.subtle.exportKey('jwk',
+    (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
+  const [ajena, comm, alguien] = await Promise.all([llave(), llave(), llave()])
+  // El acta de OTRA cuenta, que no nombra la llave de este perfil, y un papel emitido a otra llave.
+  const acta = { v: 5, seq: 9, profileId: ajena, sealedBy: ajena, members: [{ pub: ajena, label: 'Ajena', caps: ['sealer'] }, { pub: comm, cn: 'vault', vault: ajena, caps: ['sign'] }, { pub: alguien, caps: ['sign'] }] }
+  const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
+  kv[`dotrino.identity.p.${otro}.acta`] = JSON.stringify(acta)
+  kv[`dotrino.identity.p.${otro}.vault.cert`] = JSON.stringify({ master: ajena, cert: { sub: alguien, scope: ['vault:sign'] } })
+  fs.writeFileSync(archivo, JSON.stringify(kv))
+
+  id = await Identity.connect({ dir })
+  const p = (await id.listProfiles()).find((x) => x.id === otro)
+  assert.deepEqual(p.vaults, [], 'ninguna bóveda ajena en este perfil')
   id.destroy()
 })
