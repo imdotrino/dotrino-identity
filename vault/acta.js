@@ -89,7 +89,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * Lista CERRADA de capacidades.
  *
  * `sealer` es SELLAR EL ACTA, y desde 2026-08-30 es un permiso como los demás — se da y se
- * quita con `caps <ID> +sella`. Antes no existía: sellar era «ser el master», y punto. Se
+ * quita con `caps <ID> +sealer`. Antes no existía: sellar era «ser el master», y punto. Se
  * abrió para el **multivault**: que una segunda bóveda pueda sellar hace que perder una
  * máquina no se lleve la cuenta por delante. Cuidado con no confundirlo con el CAMPO
  * `acta.sealer`, que es otra cosa: el campo dice **quién manda** (y solo cambia en un

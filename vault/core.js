@@ -3330,7 +3330,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * CONSOLA REMOTA: administrar el perfil desde este dispositivo (ver
      * `dotrino-vault/docs/consola-remota.md`). Requiere que el cert de este aparato
      * lleve `vault:admin`, que **no se recibe al emparejar**: se concede a mano en la
-     * bóveda (`dotrino-vault caps <ID> +administra`).
+     * bóveda (`dotrino-vault caps <ID> +admin`).
      *
      * `op`: `pending` · `pair` · `approve` · `reject` · `revoke` · `audit`. Cambiar
      * permisos y traspasar el mando NO están, y no es un olvido: eso sigue siendo del
@@ -3357,7 +3357,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /**
      * PEDIDOS DE APROBACIÓN: lo que le toca al teléfono cuando un cajón de la bóveda exige
      * el visto bueno por uso. `op`: `approvals` (listar) · `approve` · `deny` (con `id`).
-     * Requiere `vault:approve` en el cert, que se concede a mano (`caps <ID> +aprueba`).
+     * Requiere `vault:approve` en el cert, que se concede a mano (`caps <ID> +approve`).
      *
      * `profile` apunta a OTRA cuenta de este mismo dispositivo (ver `vaultApprovalsAll`):
      * sin él es la activa, como siempre.
@@ -3377,7 +3377,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       try {
         let r
         try { r = await ask(v.cert) } catch (e) {
-          // PAPEL VIEJO: tras `caps <ID> +aprueba` el papel que tengo no trae `vault:approve`,
+          // PAPEL VIEJO: tras `caps <ID> +approve` el papel que tengo no trae `vault:approve`,
           // y si el aviso del acta nueva no llegó (o llegó y el freno de una hora ya había
           // gastado su intento) no se renovaba nunca: el aprobador se quedaba en
           // «unauthorized: scope» para siempre. Se renueva UNA vez y se reintenta; la bóveda
