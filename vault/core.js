@@ -956,10 +956,24 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // La vigente cuenta como parte del material aunque todavía no esté en la historia
     // (ahí entra al dejar de serlo). Sin esto, una cuenta recién creada devolvía [].
     const porSeq = new Map([...loadHistory(), cur].map((a) => [a.seq, a]))
-    const eslabones = [...porSeq.values()].filter((a) => a.sealerChanged || a.seq === 1).sort((a, b) => a.seq - b.seq)
-    // Y la actual va al final si ella misma no es un eslabón: el verificador necesita ver
-    // la cabeza para saber en qué `seq` está y quién la selló.
-    return eslabones.length && eslabones[eslabones.length - 1].seq === cur.seq ? eslabones : [...eslabones, cur]
+    // SE SIGUEN LAS ANCLAS DESDE LA CABEZA (2026-10-27). Antes se juntaban todos los eslabones
+    // guardados, y si faltaba uno —la #54 de Seyacat no entró en la historia del PC: adoptó una
+    // posterior de un salto— el siguiente apuntaba a un acta que no estaba y la cadena entera
+    // caía con `not-chained`: la bóveda alojada nueva no podía entrar. Siguiendo las anclas, la
+    // cadena llega hasta donde encadena; y como la raíz vale si la firmó la llave del perfil
+    // (`verifySealerChain`), un eslabón así basta. Si no la firmó, falla igual que antes, y se ve.
+    const out = [cur]
+    let node = cur
+    while (node.sealerAnchor) {
+      const prev = porSeq.get(node.sealerAnchor.seq)
+      if (!prev) return out
+      out.unshift(prev)
+      node = prev
+    }
+    // Un acta sin ancla es de antes de v4/v5: lo que va antes se arma como siempre, con los
+    // eslabones marcados y el génesis.
+    const antes = [...porSeq.values()].filter((a) => a.seq < node.seq && (a.sealerChanged || a.seq === 1)).sort((a, b) => a.seq - b.seq)
+    return [...antes, ...out]
   }
 
   const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }

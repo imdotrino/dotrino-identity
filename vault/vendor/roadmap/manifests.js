@@ -15,23 +15,23 @@ export const MANIFESTS = Object.freeze({
       "compat": {
         "repo": "imdotrino/dotrino-compat",
         "npm": "@dotrino/compat",
-        "current": "0.4.1",
+        "current": "0.5.0",
         "protocol": 1,
         "requires": {}
       },
       "env": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/env",
-        "current": "0.108.1",
+        "current": "0.109.0",
         "protocol": 1,
         "requires": {
-          "vault": ">=0.108.1"
+          "vault": ">=0.109.0"
         }
       },
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.130.1",
+        "current": "0.130.4",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -133,13 +133,14 @@ export const MANIFESTS = Object.freeze({
       "remote-agent": {
         "repo": "imdotrino/dotrino-remote-agent",
         "npm": "@dotrino/remote-agent",
-        "current": "0.25.0",
+        "current": "0.26.0",
         "protocol": 1,
         "requires": {
           "identity": ">=0.121.7",
-          "vault": ">=0.85.0",
+          "vault": ">=0.90.0",
           "proxy-client": ">=0.36.1",
-          "vaultd": ">=0.154.0"
+          "vaultd": ">=0.154.0",
+          "compat": ">=0.5.0"
         }
       },
       "tunnel": {
@@ -269,14 +270,14 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.108.1",
+        "current": "0.109.0",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
           "proxy-client": ">=0.44.1",
-          "identity": ">=0.130.1",
+          "identity": ">=0.130.4",
           "opaque": ">=0.1.0",
-          "compat": ">=0.4.0",
+          "compat": ">=0.5.0",
           "roadmap": ">=0.4.26",
           "passmanager": ">=0.18.6",
           "store": ">=0.12.3"
@@ -285,14 +286,14 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.181.1",
+        "current": "0.182.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.130.1",
+          "identity": ">=0.130.4",
           "proxy-client": ">=0.44.1",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.6",
-          "compat": ">=0.4.0",
+          "compat": ">=0.5.0",
           "opaque": ">=0.1.0",
           "roadmap": ">=0.4.58",
           "remote-agent": ">=0.24.0",
@@ -382,12 +383,12 @@ export const MANIFESTS = Object.freeze({
       "accounts": {
         "repo": "imdotrino/dotrino-accounts",
         "npm": null,
-        "current": "0.7.0",
+        "current": "0.7.1",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.121.7",
-          "remote-agent": ">=0.24.0",
-          "vault": ">=0.96.0",
+          "identity": ">=0.130.4",
+          "remote-agent": ">=0.26.0",
+          "vault": ">=0.109.0",
           "pay": ">=0.2.0",
           "vaultd": ">=0.168.0",
           "update": ">=0.9.2"
