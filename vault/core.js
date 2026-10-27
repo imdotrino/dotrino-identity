@@ -391,11 +391,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   }
 
   /**
-   * Escribe un par. Si hay candado ABIERTO, la privada va sellada; si no, en claro bajo el
-   * cifrado en reposo de siempre. Un perfil sin contraseña se queda como estaba.
+   * Escribe un par. La MAESTRA, si hay candado ABIERTO, va sellada; todo lo demás, en claro
+   * bajo el cifrado en reposo de siempre. Un perfil sin contraseña se queda como estaba.
+   *
+   * Solo la maestra (dueño, 2026-10-25: la bóveda sirve cerrada). La llave de CIFRADO es de
+   * servicio: con ella la bóveda abre la clave de contenido, y sellada bajo la contraseña la
+   * bóveda cerrada no podía ni cifrar la lista de variables de la consola. Le pasó a la
+   * alojada, cuya identidad nace con el candado ya abierto (2026-10-27).
    */
   async function guardarPar (storageKey, privateJwk, publicJwk) {
-    if (keyLock?.seal) {
+    if (storageKey === KEY_STORAGE && keyLock?.seal) {
       const sealed = await keyLock.seal(JSON.stringify(privateJwk))
       if (sealed) return kv.setItem(storageKey, JSON.stringify({ sealed, publicJwk }))
     }
@@ -413,6 +418,25 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     if (guardado.sealed) return { ok: true, already: true }
     await guardarPar(KEY_STORAGE, guardado.privateJwk, guardado.publicJwk)
     return { ok: true, sealed: true }
+  }
+
+  /**
+   * LA LLAVE DE CIFRADO SALE DE DEBAJO DE LA CONTRASEÑA, al abrir (ver `guardarPar`). Una
+   * identidad que la creó con el candado abierto la tiene sellada: se abre con la llave de la
+   * contraseña, que ahora está en la mano, y se vuelve a escribir bajo el cifrado en reposo.
+   * Es la misma llave: no cambia nada del acta. Sin candado o ya en claro, no hace nada.
+   */
+  async function unsealEncKeypair () {
+    const raw = kv.getItem(ENC_KEY_STORAGE)
+    if (!raw) return { ok: false, reason: 'none' }
+    const guardado = JSON.parse(raw)
+    if (!guardado.sealed) return { ok: true, already: true }
+    const abierto = keyLock?.open ? await keyLock.open(guardado.sealed) : null
+    if (!abierto) throw Object.assign(new Error('the encryption key is sealed and the lock did not open it'), { code: 'enc-key-sealed' })
+    kv.setItem(ENC_KEY_STORAGE, JSON.stringify({ privateJwk: JSON.parse(abierto), publicJwk: guardado.publicJwk }))
+    encKeypair = await loadOrCreateEncKeypair()
+    encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
+    return { ok: true, unsealed: true }
   }
 
   /**
@@ -3796,6 +3820,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     async reloadMasterKey () {
       keypair = await loadOrCreateKeypair()
       publickeyJwkStr = JSON.stringify(keypair.publicJwk)
+      if (keypair?.privateKey) await unsealEncKeypair()
       return { locked: !keypair?.privateKey }
     },
     sync,
