@@ -5,4 +5,4 @@
  * si no coincide con la del paquete: una versión anunciada que no es la que corre es peor
  * que no anunciar ninguna.
  */
-export const LIB_VERSION = '0.105.0'
+export const LIB_VERSION = '0.106.0'

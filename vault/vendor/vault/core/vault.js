@@ -233,6 +233,23 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * variables (la escritura se aplica al aprobar). Si nadie contesta, vence solo con un no:
    * nada se queda colgado para siempre.
    */
+  /** Lo aprobado para VER una privada desde la consola (`varsDesk.reveal`): una lectura por pedido. */
+  const revealGrants = new Map()
+  /** Las puertas de `revealBegin`: una llave efímera por pregunta, un minuto, un uso. */
+  const revealDoors = new Map()
+  /** Abre la privada y la entrega sellada a la efímera de quien preguntó, firmada y con el acta. */
+  async function deliverReveal ({ owner, ns, pub, key, ek, by, approved }) {
+    // Pudo cerrarse mientras se esperaba el sí.
+    if (isLocked()) throw Object.assign(new Error('the vault is closed: open it to see a private variable'), { code: 'vault-locked' })
+    const value = await secrets.reveal(owner, key, openKey?.() || undefined)
+    if (value == null) throw Object.assign(new Error('there is no such variable there'), { code: 'not-found' })
+    const record = await refreshActa()
+    const body = { op: 'var.reveal', owner, key, value, ek, ts: Date.now() }
+    const sealed = await seal({ ek, payload: { body, seal: await sealOrFail(body), acta: record } })
+    audit('admin.var.reveal', { by, ns, device: pub ? await deviceIdOf(pub).catch(() => null) : null, key, approved })
+    return { enc: sealed }
+  }
+
   async function awaitApproval ({ device, ns, kind, what, op = null, ctx = null, onAnswer, ttlMs = PENDING_TTL_MS }) {
     const deviceId = await deviceIdOf(device).catch(() => null)
     const record = await refreshActa()
@@ -2921,6 +2938,76 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           remoteUnlock: (() => { try { return !!hasSecondary() } catch (_) { return false } })()
         }))
       }
+    },
+    /**
+     * VER UNA PRIVADA DESDE LA CONSOLA (dueño, 2026-10-26: «en el admin no tengo botón para ver
+     * la variable; obviamente necesita aprobación si hay aprobadores»). Hasta aquí el valor de
+     * una privada no salía de la máquina de la bóveda, ni hacia un aparato con `admin`.
+     *
+     * NADA VIAJA EN CLARO (dueño: «selladito, firmado y verificada fuente» y «NADA NUNCA EN
+     * CLARO»). La petición de administración va firmada pero NO cifrada por el proxio, así que
+     * aquí no puede ir ni el nombre de la variable. Dos pasos, como abrir a distancia:
+     *
+     *   1. `revealBegin` da una llave efímera de esta bóveda (una puerta, un minuto, un uso);
+     *   2. `reveal` trae SELLADO a esa llave qué se quiere ver y la efímera de quien pregunta.
+     *      La respuesta va SELLADA a esa efímera, y dentro: el valor y lo pedido, FIRMADOS con
+     *      la llave de sellado de esta bóveda (la que nombra el acta), y el acta al lado para
+     *      que la consola compruebe de dónde viene antes de enseñarlo.
+     *
+     * Por el proxio solo pasan llaves públicas de un uso y el número del pedido.
+     *
+     * APROBACIÓN: si el acta tiene quien apruebe, se pide SIEMPRE, también a un aparato con
+     * `unattended` (ver un valor es más que dejar que un servicio lo use). Sin aprobador no se
+     * pide (la regla de siempre). UNA APROBACIÓN ES POR SOLICITUD: vale para ese valor y una
+     * lectura; el sondeo solo trae el número del pedido, así que no se puede cambiar lo pedido.
+     *
+     * Abrir una privada exige la llave del perfil: la bóveda tiene que estar ABIERTA.
+     */
+    async revealBegin ({ caller }) {
+      if (isLocked()) throw Object.assign(new Error('the vault is closed: open it to see a private variable'), { code: 'vault-locked' })
+      const t = Date.now()
+      for (const [n, v] of revealDoors) if (v.exp <= t) revealDoors.delete(n)
+      const eph = await makeEphemeralKey()
+      const door = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')
+      revealDoors.set(door, { privateKey: eph.privateKey, caller, exp: t + 60_000 })
+      return { door, ek: eph.ek }
+    },
+    async reveal ({ door, enc, request = null, caller, by }) {
+      // SONDEO de un pedido ya hecho: solo el número; lo pedido quedó guardado al pedirlo.
+      if (request) {
+        const g = revealGrants.get(request)
+        if (!g || g.caller !== caller || g.exp < Date.now()) throw Object.assign(new Error('that request does not exist or expired'), { code: 'no-request' })
+        if (g.state === 'waiting') return { pending: request }
+        revealGrants.delete(request)
+        if (g.state !== 'approved') throw Object.assign(new Error('denied by the approver'), { code: 'denied' })
+        return deliverReveal({ ...g, by, approved: true })
+      }
+      const d = revealDoors.get(door)
+      revealDoors.delete(door)
+      if (!d || d.exp <= Date.now() || d.caller !== caller) throw Object.assign(new Error('var.reveal: ask for a key first (var.reveal.begin), and use it within a minute'), { code: 'no-door' })
+      let ask = null
+      try { ask = await openSealed({ privateKey: d.privateKey, enc }) } catch (_) { ask = null }
+      const toScope = typeof ask?.ns === 'string' && !!ask.ns
+      const toDevice = typeof ask?.pub === 'string' && !!ask.pub
+      if (!ask || toScope === toDevice || typeof ask.key !== 'string' || !ask.key || typeof ask.ek !== 'string' || !ask.ek) {
+        throw Object.assign(new Error('var.reveal: the envelope does not check out'), { code: 'bad-request' })
+      }
+      if (isLocked()) throw Object.assign(new Error('the vault is closed: open it to see a private variable'), { code: 'vault-locked' })
+      const owner = toScope ? `ns:${ask.ns}` : `dev:${ask.pub}`
+      const record = await refreshActa()
+      if (!record) throw Object.assign(new Error('no record: cannot decide who may see a private variable'), { code: 'no-record' })
+      const target = { owner, ns: toScope ? ask.ns : null, pub: toDevice ? ask.pub : null, key: ask.key, ek: ask.ek, caller }
+      if (!(record.members || []).some((m) => Acta.memberCan(record, m.pub, 'approve'))) return deliverReveal({ ...target, by, approved: false })
+      let id = null
+      const pend = await awaitApproval({
+        device: caller, ns: target.ns || await deviceIdOf(target.pub).catch(() => null) || '?', kind: 'reveal', what: 'vars',
+        // El nombre va en el contexto, que viaja SELLADO al que aprueba.
+        ctx: { keys: [target.key], op: 'reveal' },
+        onAnswer: async (ok) => { const g = revealGrants.get(id); if (g) g.state = ok ? 'approved' : 'denied' }
+      })
+      id = pend.id
+      revealGrants.set(id, { ...target, state: 'waiting', exp: Date.now() + PENDING_TTL_MS })
+      return { pending: id }
     },
     /**
      * PARA QUIÉN ENVOLVER. Lo contesta la bóveda porque la lista sale del ACTA

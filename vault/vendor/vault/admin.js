@@ -55,16 +55,16 @@ export const ADMIN_OPS = Object.freeze([
   // no debe poder dejar sin configuración a los servicios.
   // `var.setMany` es la MISMA operación con varias variables dentro de un solo sobre: no
   // añade permisos, quita reinicios (ver el enrutado abajo).
-  // Ver un valor, su histórico o volver a una versión NO están, y es a propósito: un
-  // aparato que administra no tiene sobres de lo privado (solo el servicio dueño y la
-  // recuperación). Eso lo hace la bóveda en su máquina (`secret show/history/revert`).
-  // No lo cablees.
+  // `var.reveal`: VER el valor de una privada (dueño, 2026-10-26). Lo abre la bóveda con la
+  // llave del perfil (tiene que estar abierta), pide aprobación si hay quien apruebe y lo
+  // cierra a una llave efímera de quien pregunta (`varsDesk.reveal`). El histórico y volver
+  // a una versión siguen siendo solo de la máquina de la bóveda (`secret history/revert`).
   // `var.recipients` es solo LEER, y hace falta para poder escribir: la consola sella el
   // valor ella misma (§8.1) y para eso necesita saber a quién envolverle la llave. Estaba
   // documentada en `buildSealedVar` y la consola la llamaba, pero no existía — así que
   // crear una variable desde la consola contestaba «admin: invalid operation». No expone
   // nada nuevo: son llaves PÚBLICAS, las mismas que ya viajan en el acta.
-  'vars', 'var.set', 'var.setMany', 'var.recipients',
+  'vars', 'var.set', 'var.setMany', 'var.recipients', 'var.reveal.begin', 'var.reveal',
   // ABRIR LA BÓVEDA A DISTANCIA (`docs/abrir-a-distancia.md`). Dos pasos: `unlock.begin`
   // pide una llave efímera y los parámetros del molino; `unlock` trae la derivada dentro
   // de un sobre que solo esta bóveda puede abrir. No hay una tercera.
@@ -98,7 +98,7 @@ export const ADMIN_OPS = Object.freeze([
  * enterarse de por qué no funciona y parecería rota. Así puede decir «está cerrada».
  */
 export const ADMIN_OPS_WHILE_LOCKED = Object.freeze([
-  'audit', 'vars', 'var.set', 'var.setMany', 'var.recipients',
+  'audit', 'vars', 'var.set', 'var.setMany', 'var.recipients', 'var.reveal.begin', 'var.reveal',
   // Bloquear no sella nada: la lista es de la bóveda, no del acta.
   'blocked', 'block', 'unblock',
   // Las dos de abrir, obviamente: son las únicas que solo tienen sentido con el candado
@@ -228,6 +228,18 @@ export function createAdminDesk ({
       if (data.op === 'audit') {
         const limit = Math.min(Math.max(Number(data.limit) || 100, 1), AUDIT_MAX)
         return { ok: true, result: { entries: readActivity(limit) } }
+      }
+
+      // VER UNA PRIVADA (`varsDesk.reveal`). Antes que las demás de variables porque aquí no
+      // viaja ningún destino en claro: va dentro del sobre, y la política es de la bóveda.
+      if (data.op === 'var.reveal.begin' || data.op === 'var.reveal') {
+        if (!vars || typeof vars.reveal !== 'function') return { ok: false, error: 'admin: this vault cannot show a private variable (update it)' }
+        try {
+          const result = data.op === 'var.reveal.begin'
+            ? await vars.revealBegin({ caller: chk.device, by })
+            : await vars.reveal({ door: data.door, enc: data.enc, request: typeof data.request === 'string' ? data.request : null, caller: chk.device, by })
+          return { ok: true, result }
+        } catch (e) { return { ok: false, error: e.message, code: e.code || null } }
       }
 
       // VARIABLES DE ENTORNO. El módulo solo enruta y audita: qué valor puede salir y con
