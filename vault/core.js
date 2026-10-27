@@ -1395,7 +1395,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * dura 24 h— el aparato se quedaba enseñando para siempre una cuenta de la que ya lo
    * habían echado, aunque la propia acta que acababa de recibir dijera lo contrario.
    */
-  async function adoptActa (candidate) {
+  // EN FILA, UNA DETRÁS DE OTRA. Leer el acta, comprobar la candidata (asíncrono) y guardarla
+  // no puede intercalarse: el 2026-10-26 la bóveda de Lambda recibió la #60 y la #59 a la vez
+  // estando en la #58, las dos se compararon contra la #58, y la #59 se guardó DESPUÉS — el acta
+  // retrocedió y los aparatos con papel de la #60 recibían «stale-record». Con la fila, la
+  // segunda se compara contra lo que dejó la primera, y una más vieja se rechaza.
+  let adoptQueue = Promise.resolve()
+  function adoptActa (candidate) {
+    const run = adoptQueue.then(() => adoptActaNow(candidate))
+    adoptQueue = run.catch(() => {})
+    return run
+  }
+
+  async function adoptActaNow (candidate) {
     const current = loadActa()
     const r = await Acta.canAdopt({ candidate, current })
     if (!r.adopt) return { adopted: false, reason: r.reason, seq: current?.seq ?? null }

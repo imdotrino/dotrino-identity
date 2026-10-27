@@ -101,3 +101,25 @@ test('pastMembers: los que estuvieron en la ventana y ya no están, y nadie más
   assert.deepEqual(members.map((m) => m.pub), [a.publickey], 'solo el que salió')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+// DOS ACTAS A LA VEZ (2026-10-26): la bóveda de Lambda recibió la #60 y la #59 juntas estando
+// en la #58, las dos se compararon contra la #58 y se guardó la #59 la última: el acta retrocedió.
+test('dos actas anunciadas a la vez: gana la más nueva, aunque la vieja llegue detrás', async () => {
+  const dir = tmp()
+  const id = await Identity.connect({ dir })
+  const otra = await makeDeviceKey({ label: 'Nube' })
+  await id.admitMember({ pub: otra.publickey, label: 'Nube', caps: ['sealer', 'sign'] })
+  const tel = await makeDeviceKey({ label: 'Teléfono' })
+  await id.admitMember({ pub: tel.publickey, label: 'Teléfono', caps: ['read'] })
+  const base = (await id.profileActa()).acta
+  // La otra bóveda sella dos seguidas.
+  const a1 = await sealActa({ acta: await applyChanges(base, [{ op: 'label', pub: tel.publickey, label: 'T1' }], { by: otra.publickey }), privateJwk: otra.privateJwk })
+  const a2 = await sealActa({ acta: await applyChanges(a1, [{ op: 'label', pub: tel.publickey, label: 'T2' }], { by: otra.publickey }), privateJwk: otra.privateJwk })
+  // La nueva primero y la vieja detrás, como llegaron a la Lambda. Que la vieja termine de
+  // comprobarse después depende del reloj, así que se repite con cuentas recién hechas.
+  const [r2, r1] = await Promise.all([id.adoptActa(a2), id.adoptActa(a1)])
+  assert.equal(r2.adopted, true)
+  assert.equal(r1.adopted, false, 'la vieja, detrás, se rechaza')
+  assert.equal((await id.profileActa()).acta.seq, a2.seq, 'el acta no retrocede')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
