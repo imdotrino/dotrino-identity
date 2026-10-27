@@ -31,7 +31,7 @@ export const MANIFESTS = Object.freeze({
       "identity": {
         "repo": "imdotrino/dotrino-identity",
         "npm": "@dotrino/identity",
-        "current": "0.130.4",
+        "current": "0.132.0",
         "protocol": 1,
         "requires": {
           "proxy-client": ">=0.13.1"
@@ -160,13 +160,14 @@ export const MANIFESTS = Object.freeze({
       "terminal-agent": {
         "repo": "imdotrino/dotrino-terminal",
         "npm": "@dotrino/terminal-agent",
-        "current": "0.49.3",
+        "current": "0.49.5",
         "protocol": 2,
         "requires": {
           "remote-agent": ">=0.24.0",
-          "identity": ">=0.121.7",
-          "vault": ">=0.93.0",
-          "proxy-client": ">=0.38.4",
+          "identity": ">=0.130.6",
+          "vault": ">=0.109.2",
+          "proxy-client": ">=0.44.1",
+          "update": ">=0.9.2",
           "vaultd": ">=0.142.0"
         }
       },
@@ -188,7 +189,7 @@ export const MANIFESTS = Object.freeze({
       },
       "terminal-desktop": {
         "repo": "imdotrino/dotrino-terminal",
-        "current": "0.2.80",
+        "current": "0.2.81",
         "protocol": 1,
         "requires": {
           "terminal-agent": ">=0.37.0"
@@ -270,12 +271,12 @@ export const MANIFESTS = Object.freeze({
       "vault": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vault",
-        "current": "0.109.0",
+        "current": "0.111.0",
         "protocol": 1,
         "requires": {
           "vaultd": ">=0.105.0",
           "proxy-client": ">=0.44.1",
-          "identity": ">=0.130.4",
+          "identity": ">=0.132.0",
           "opaque": ">=0.1.0",
           "compat": ">=0.5.0",
           "roadmap": ">=0.4.26",
@@ -286,10 +287,10 @@ export const MANIFESTS = Object.freeze({
       "vaultd": {
         "repo": "imdotrino/dotrino-vault",
         "npm": "@dotrino/vaultd",
-        "current": "0.182.0",
+        "current": "0.184.0",
         "protocol": 1,
         "requires": {
-          "identity": ">=0.130.4",
+          "identity": ">=0.132.0",
           "proxy-client": ">=0.44.1",
           "store": ">=0.11.0",
           "passmanager": ">=0.18.6",
@@ -1162,6 +1163,42 @@ export const MANIFESTS = Object.freeze({
         ],
         "why": "la llave de la URL la elegía cualquiera y el relay no pedía prueba: quien la supiera se conectaba como agente, echaba al legítimo y se quedaba con sus peticiones. El relay (2026-10-26) ya no las acepta",
         "fix": "sube a @dotrino/tunnel 0.2.0 y enrola cada túnel en tu bóveda (dotrino-tunnel enroll [--name n]); la dirección cambia"
+      },
+      {
+        "product": "identity",
+        "versions": "0.130.4",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "sube a @dotrino/identity 0.132.0"
+      },
+      {
+        "product": "identity",
+        "versions": "0.130.5",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "sube a @dotrino/identity 0.132.0"
+      },
+      {
+        "product": "identity",
+        "versions": "0.130.6",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "sube a @dotrino/identity 0.132.0"
+      },
+      {
+        "product": "vaultd",
+        "versions": "0.182.0",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "actualiza la bóveda a 0.184.0 (dotrino-vault update)"
+      },
+      {
+        "product": "vaultd",
+        "versions": "0.182.1",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "actualiza la bóveda a 0.184.0 (dotrino-vault update)"
+      },
+      {
+        "product": "vaultd",
+        "versions": "0.182.2",
+        "why": "al adoptar un acta sellada por otra bóveda no guardaba la anterior en el historial: con dos bóvedas, un aparato atrasado no podía ponerse al día y se quedaba en su acta para siempre (2026-10-27, arreglado en identity 0.131.0/0.132.0, vaultd 0.183.1/0.184.0)",
+        "fix": "actualiza la bóveda a 0.184.0 (dotrino-vault update)"
       }
     ]
   }

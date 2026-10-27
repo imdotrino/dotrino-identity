@@ -155,7 +155,7 @@ export class IdentityFacade {
   unpairDevice () { return this._h('vaultUnpair') }
   vaultSign (payload) { return this._h('vaultSign', { payload }) }
   vaultStore (method, args) { return this._h('vaultStore', { method, args }) }
-  listVaultDevices () { return this._h('listVaultDevices') }
+  listVaultDevices (opts) { return this._h('listVaultDevices', opts || {}) }
   getVaultCert () { return this._h('getVaultCert') }
   vaultApprovals (op, args) { return this._h('vaultApprovals', { op, ...(args || {}) }) }
   /** Los pedidos de TODAS las cuentas que aprueban, sin cambiar la activa. */

@@ -3543,14 +3543,24 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     },
 
     // Lista (solo lectura) de dispositivos enrolados en tu vault.
-    async listVaultDevices () {
+    /**
+     * `to`: A UNA BÓVEDA CONCRETA de la cuenta (su llave de comunicación), la que la pantalla
+     * administra. Sin él contesta la que emitió mi papel. Antes la lista iba siempre a esa,
+     * aunque la consola administrara la otra: la cabecera era de la Nube y los aparatos, sus
+     * papeles y sus versiones eran del PC (2026-10-27: «parece que mezcla cosas»).
+     */
+    async listVaultDevices ({ to = null } = {}) {
       const v = loadVaultCert(); const device = loadVaultDevice()
+      if (to && !(loadActa()?.members || []).some((m) => m.pub === to && m.vault)) {
+        throw Object.assign(new Error('listVaultDevices: that key is not a vault of this account'), { code: 'not-a-vault' })
+      }
+      const target = to ? { to, timeoutMs: VAULT_WAKE_MS } : {}
       // ESTE NAVEGADOR ES LA BÓVEDA: la lista sale de ella, por el camino local, con lo mismo
       // que da el binario (qué versión corre cada aparato, dónde corre, si le llegan avisos).
       // El acta es la nuestra: no hay nada que adoptar.
       if ((!v?.cert || !device) && adminLink()?.self) {
         const self = adminLink()
-        const res = await remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0 })
+        const res = await remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0, ...target })
         return { ...res, acta: loadActa() }
       }
       if (!v?.cert || !device) {
@@ -3568,7 +3578,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       maybeRenewVaultCert()
       try {
-        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink })
+        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink, ...target })
         // El acta viaja con la lista: así los cambios de política llegan sin canal aparte.
         // Si estuve apagado, viene la CADENA y se adopta eslabón a eslabón (§1.3).
         // Y si no encaja, SE DICE (2026-10-27): callado, el navegador de Seyacat se quedó en la #74

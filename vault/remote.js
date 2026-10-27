@@ -458,12 +458,13 @@ export async function requestStore ({ master, proxy, device, cert, method, args,
 }
 
 /** Lista (solo lectura) los dispositivos enrolados en tu vault. */
-export async function requestDevices ({ master, proxy, device, cert, sinceSeq, onRevoked } = {}) {
+export async function requestDevices ({ master, to = null, timeoutMs, proxy, device, cert, sinceSeq, onRevoked } = {}) {
   const data = typeof sinceSeq === 'number' ? { op: 'devices', sinceSeq } : { op: 'devices' }
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.devices', okType: 'vault.devices.result', data })
+  const res = await vaultRpc({ master, to, proxy, device, cert, onRevoked, ...(timeoutMs ? { timeoutMs } : {}), sendType: 'vault.devices', okType: 'vault.devices.result', data })
   // `sealerChain`: [génesis, …cambios de sellador…, actual], lo que una firma de este aparato
   // tiene que llevar para que `verifySignedFor` la ate a la cuenta (vaultd ≥ 0.154.0).
-  return { devices: res.devices || [], revoked: res.revoked || [], acta: res.acta || null, chain: res.chain || null, sealerChain: res.sealerChain || null }
+  // `siblingCerts`: los papeles que emitieron las OTRAS bóvedas de la cuenta (vaultd ≥ 0.185.0).
+  return { devices: res.devices || [], siblingCerts: res.siblingCerts || [], revoked: res.revoked || [], acta: res.acta || null, chain: res.chain || null, sealerChain: res.sealerChain || null }
 }
 
 /**

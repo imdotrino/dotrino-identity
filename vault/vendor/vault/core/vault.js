@@ -1537,7 +1537,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // LA SUBACTA VIAJA CON EL ACTA. Es la mitad de «se comparte entre todos los
     // dispositivos»: sin esto, una renuncia sin sellar solo la respeta esta máquina.
     // Cada entrada va firmada por su sujeto, así que quien la recibe la verifica sola.
-    reply(from, fitChain({ type: MSG.DEVICES_RESULT, devices, revoked, blocked: blocked.pubs(), acta: record, chain, sealerChain: await sealerChainOf(), vault: MI_VERSION, subacta: subacta.entries() }))
+    reply(from, fitChain({ type: MSG.DEVICES_RESULT, devices, siblingCerts: await siblingCertsFor(record), revoked, blocked: blocked.pubs(), acta: record, chain, sealerChain: await sealerChainOf(), vault: MI_VERSION, subacta: subacta.entries() }))
   }
 
   /**
@@ -2856,9 +2856,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const mine = await commKey.ensure().catch(() => null)
       if (!mine) return
       const siblings = (acta.members || []).filter((m) => m.cn === COMM_CN && m.vault && m.vault !== master && m.pub !== mine)
+      // Y LOS PAPELES QUE EMITIÓ ESTA (2026-10-27): cada bóveda solo conoce los suyos, y la
+      // otra decía «sin acceso» de un aparato que entraba con el de esta. Solo lo que hace falta
+      // para decirlo (de quién, desde cuándo, con qué acta); nada con lo que entrar.
+      const certs = ((await identity.listDelegations().catch(() => null))?.issued || [])
+        .filter((d) => d.sub).map((d) => ({ nonce: d.nonce, sub: d.sub, iat: d.iat || null, seq: d.seq ?? null }))
       let n = 0
       for (const m of siblings) {
-        const body = { op: 'drawers', by: mine, to: m.pub, seq: acta.seq, state, ts: Date.now() }
+        const body = { op: 'drawers', by: mine, to: m.pub, seq: acta.seq, state, certs, ts: Date.now() }
         const signature = await commKey.sign(body)
         if (!signature) continue
         // SELLADO POR EL PILAR a la llave de cifrado del transporte de la hermana, que ella
@@ -2869,6 +2874,37 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       }
       if (n) log(`[vault] sent the drawers to ${n} sibling vault(s) on ${reason}`)
     } catch (e) { log('[vault] could not send the drawers to the sibling vaults: ' + e.message) }
+  }
+
+  /**
+   * LOS PAPELES DE LAS HERMANAS, por bóveda (su llave). Se guardan en los ajustes para que una
+   * bóveda que duerme (la Lambda) los tenga al despertar, y se enseñan aparte de los propios:
+   * la lista de dispositivos de una bóveda dice lo SUYO, y lo de la otra va marcado como suyo.
+   */
+  const SIBLING_CERTS = 'sibling-certs'
+  function loadSiblingCerts () {
+    const raw = store.getSetting?.(SIBLING_CERTS)
+    if (!raw) return {}
+    try { return JSON.parse(raw) || {} } catch (e) { log('[vault] the certificates of the sibling vaults could not be read: ' + e.message); return {} }
+  }
+  function saveSiblingCerts (vaultPub, certs) {
+    const all = loadSiblingCerts()
+    all[vaultPub] = { at: Date.now(), certs: certs.filter((c) => c && typeof c.sub === 'string').slice(0, 500) }
+    store.setSetting?.(SIBLING_CERTS, JSON.stringify(all))
+  }
+  async function siblingCertsFor (record) {
+    const all = loadSiblingCerts()
+    const out = []
+    for (const [vaultPub, v] of Object.entries(all)) {
+      // Solo de una bóveda que sigue sellando esta cuenta: la que salió no avala a nadie.
+      if (!record || !Acta.memberCan(record, vaultPub, 'sealer')) continue
+      const vaultId = await deviceIdOf(vaultPub).catch(() => null)
+      for (const c of v.certs || []) {
+        if (!(record.members || []).some((m) => m.pub === c.sub)) continue
+        out.push({ sub: c.sub, deviceId: await deviceIdOf(c.sub).catch(() => null), nonce: c.nonce, iat: c.iat, seq: c.seq, by: vaultPub, byId: vaultId, at: v.at })
+      }
+    }
+    return out
   }
 
   /**
@@ -2886,6 +2922,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const who = (acta?.members || []).find((m) => m.pub === body.by)
     const okSibling = acta && who && who.cn === COMM_CN && who.vault && who.vault !== master && Acta.memberCan(acta, who.vault, 'sealer')
     if (!okSibling || body.to !== mine) return log('[vault] drawers from someone who is not a sibling vault, or not for us: ignored')
+    if (Array.isArray(body.certs)) saveSiblingCerts(who.vault, body.certs)
     try {
       const r = await secrets.mergeState(body.state)
       log(`[vault] merged the drawers of a sibling vault (record #${body.seq}): ${r.changed} change(s)`)
@@ -3621,8 +3658,15 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (!record) return []
     // Sin `encPub` no hay a dónde envolver: se queda en deuda y se ve como `sinLlave`,
     // igual que cualquier otro miembro incompleto.
-    return (record.members || []).filter((m) =>
+    const others = (record.members || []).filter((m) =>
       m.pub !== master && m.encPub && Acta.memberCan(record, m.pub, 'sealer'))
+    if (!others.length) return []
+    // Y ESTA MISMA, si hay otras (2026-10-27). Aquí se lee con la copia maestra y no necesita su
+    // sobre, pero lo que se sincroniza es el estado entero, y la hermana veía a esta bóveda sin
+    // sobre en sus cajones: «sin llave todavía 3B48-962A» en la Nube, que no se iba nunca porque
+    // esta no se lo ponía. Un sobre de más para una llave que ya los abre no da nada nuevo.
+    const me = (record.members || []).find((m) => m.pub === master && m.encPub)
+    return me ? [...others, me] : others
   }
 
   /** Sin duplicar: un cosellador puede ser además el dueño del cajón. */
@@ -4100,6 +4144,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     const r = await resealAll(k).catch((e) => { log(`[vault] ${reason}: could not rebuild the keyring: ${e.message}`); return null })
     if (r?.wrapped) log(`[vault] ${reason}: keyring rebuilt (${r.wrapped} wrap(s) in ${r.drawers} drawer(s))`)
+    // Lo rehecho, a las hermanas: si no, su copia sigue con los sobres de antes hasta el próximo
+    // cambio, y su pantalla dice que faltan.
+    if (r?.wrapped || r?.dropped) scheduleDrawerPush()
     // LOS SOBRES CADUCOS SE DICEN. Son envolturas de quien ya no debería poder abrir ese
     // cajón: retirarlas en silencio esconde que alguien las tuvo de más.
     if (r?.dropped) log(`[vault] ${reason}: ${r.dropped} stale wrap(s) dropped (they belonged to members the record no longer names)`)
