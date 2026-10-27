@@ -24,10 +24,14 @@ import { VAULT_CERT_STORAGE } from '../vault/core.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'perfiles-'))
 
+/** La maestra de la bóveda del fixture: una llave pública de verdad (`listProfiles` saca su ID). */
+const MAESTRA = JSON.stringify(await crypto.subtle.exportKey('jwk',
+  (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
+
 /** El cert que la bóveda le dio a este aparato, tal como queda guardado. */
 const certDe = (scope) => JSON.stringify({
-  cert: { v: 1, iss: 'MAESTRA', sub: 'APARATO', scope, iat: Date.now(), seq: 1, nonce: 'n1' },
-  master: 'MAESTRA', proxy: 'wss://proxy.dotrino.com', deviceId: 'AB12-CD34', pairedAt: Date.now()
+  cert: { v: 1, iss: MAESTRA, sub: 'APARATO', scope, iat: Date.now(), seq: 1, nonce: 'n1' },
+  master: MAESTRA, proxy: 'wss://proxy.dotrino.com', deviceId: 'AB12-CD34', pairedAt: Date.now()
 })
 
 test('listProfiles dice cuál está conectado y cuál aprueba, sin tocar el activo', async () => {
@@ -113,5 +117,32 @@ test('listProfiles dice qué bóvedas tiene cada perfil, sin tocar el activo', a
   assert.match(trabajo.vaults[0].id, /^[0-9A-F]{4}-[0-9A-F]{4}/)
   assert.ok(Array.isArray(lista.find((p) => p.id === activo).vaults), 'el activo también lo trae')
   assert.equal((await id.currentProfile()).id, activo, 'y el activo no cambió')
+  id.destroy()
+})
+
+test('listProfiles: la bóveda del CERTIFICADO sale aunque la copia del acta sea vieja', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vaults-cert-'))
+  const archivo = path.join(dir, 'identity.json')
+  let id = await Identity.connect({ dir })
+  const p1 = (await id.currentProfile()).id
+  const p2 = (await id.createProfile('Cepi')).id
+  const activo = (await id.currentProfile()).id
+  const otro = activo === p1 ? p2 : p1
+  id.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const llave = async () => JSON.stringify(await crypto.subtle.exportKey('jwk',
+    (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])).publicKey))
+  const [boveda, comm] = await Promise.all([llave(), llave()])
+  // Copia de antes de que la llave de comunicación llevara `vault`.
+  const acta = { v: 5, seq: 2, profileId: boveda, sealedBy: boveda, members: [{ pub: boveda, label: 'Servidor', caps: ['sealer'] }, { pub: comm, cn: 'vault', caps: ['sign'] }] }
+  const kv = JSON.parse(fs.readFileSync(archivo, 'utf8'))
+  kv[`dotrino.identity.p.${otro}.acta`] = JSON.stringify(acta)
+  kv[`dotrino.identity.p.${otro}.vault.cert`] = JSON.stringify({ master: boveda, cert: { scope: ['vault:sign'] } })
+  fs.writeFileSync(archivo, JSON.stringify(kv))
+
+  id = await Identity.connect({ dir })
+  const cepi = (await id.listProfiles()).find((p) => p.id === otro)
+  assert.deepEqual(cepi.vaults.map((v) => [v.comm, v.master, v.label]), [[null, boveda, 'Servidor']])
   id.destroy()
 })

@@ -2470,16 +2470,30 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // nada, aunque sea de otro perfil (vault.dotrino.com/vault, dueño 2026-10-26). Salen del
       // ACTA de cada uno, que está en claro en el kv igual que el cert de abajo: es un documento
       // firmado y no un secreto. Solo lectura: no se cambia el activo ni se firma nada.
-      const vaultsOf = async (pid) => {
+      //
+      // Y LA DEL CERTIFICADO (2026-10-27: «solo muestra los vaults de la cuenta activa»). El acta de
+      // un perfil que no está activo es la copia de la última vez que lo estuvo, y puede ser de
+      // antes de que su bóveda nombrara su llave de comunicación: ese perfil salía sin ninguna. El
+      // papel de este aparato lo firmó su bóveda y dice cuál es (`master`), así que esa entra
+      // siempre; sin llave de comunicación conocida (`comm: null`), se le habla por la cuenta.
+      const vaultsOf = async (pid, certMaster) => {
+        let members = []
         try {
           const raw = pid === currentPid ? kv.getItem(ACTA_STORAGE) : rawKv.getItem(`dotrino.identity.p.${pid}.acta`)
-          const acta = raw ? JSON.parse(raw) : null
-          const members = acta?.members || []
-          return await Promise.all(members.filter((m) => m.cn === Acta.VAULT_CN && m.vault).map(async (m) => {
-            const owner = members.find((x) => x.pub === m.vault)
-            return { comm: m.pub, master: m.vault, id: await Acta.memberId(m.vault), label: owner?.label || '' }
-          }))
-        } catch (_) { return [] }
+          members = (raw ? JSON.parse(raw) : null)?.members || []
+        } catch (_) { members = [] }
+        const out = await Promise.all(members.filter((m) => m.cn === Acta.VAULT_CN && m.vault).map(async (m) => {
+          const owner = members.find((x) => x.pub === m.vault)
+          return { comm: m.pub, master: m.vault, id: await Acta.memberId(m.vault), label: owner?.label || '' }
+        }))
+        if (certMaster && !out.some((v) => v.master === certMaster)) {
+          // Un papel con una maestra ilegible no puede tumbar la lista entera, que es el menú de
+          // perfiles de todas las apps: esa bóveda no sale, y se dice.
+          let id = null
+          try { id = await Acta.memberId(certMaster) } catch (e) { console.warn(`[identity] profile ${pid}: the vault named by its certificate is not a key (${e.message})`) }
+          if (id) out.push({ comm: null, master: certMaster, id, label: members.find((x) => x.pub === certMaster)?.label || '' })
+        }
+        return out
       }
       return Promise.all(loadProfiles().map(async (p) => {
         let avatar = null
@@ -2498,19 +2512,20 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         // Se lee el CERT de cada perfil, que está en claro en el kv (no es un secreto: dice
         // qué puede hacer este aparato, no cómo). Es solo lectura y no hace falta la llave
         // del otro perfil, así que no se cambia el activo ni se firma nada.
-        let vault = false; let approve = false
+        let vault = false; let approve = false; let certMaster = null
         try {
           const raw = p.id === currentPid ? kv.getItem(VAULT_CERT_STORAGE) : rawKv.getItem(`dotrino.identity.p.${p.id}.vault.cert`)
           const v = raw ? JSON.parse(raw) : null
           vault = !!v?.cert
           approve = vault && (v.cert.scope || []).includes('vault:approve')
+          if (vault && typeof v.master === 'string') certMaster = v.master
         } catch (_) {}
         // Un inicio de sesión con contraseña se enseña como lo que es: el menú del botón de
         // perfil pone su «Salir» al lado, que es lo único que lo cierra desde aquí.
         const login = loginMetaOf(p.id)
         return {
           id: p.id, name: p.name || '', pubkey: p.pubkey || null, avatar, current: p.id === currentPid,
-          pendingJoin: !!p.pendingJoin, vault, approve, vaults: await vaultsOf(p.id),
+          pendingJoin: !!p.pendingJoin, vault, approve, vaults: await vaultsOf(p.id, certMaster),
           ...(login ? { login: { user: login.user, address: login.address, volatile: !!login.volatile } } : {})
         }
       }))

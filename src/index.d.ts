@@ -196,7 +196,7 @@ export class Identity {
   /** El perfil ACTIVO de este aparato (el que usan las apps; `@dotrino/store` se ata a él). */
   currentProfile (): Promise<{ id: string; name?: string; pubkey?: string } | null>
   /** Los perfiles de este aparato. */
-  listProfiles (): Promise<Array<{ id: string; name?: string; pubkey?: string; current?: boolean; avatar?: string; vault?: boolean; approve?: boolean; vaults?: Array<{ comm: string; master: string; id: string; label: string }> }>>
+  listProfiles (): Promise<Array<{ id: string; name?: string; pubkey?: string; current?: boolean; avatar?: string; vault?: boolean; approve?: boolean; vaults?: Array<{ comm: string | null; master: string; id: string; label: string }> }>>
   /** Cambia el perfil activo (la app recarga: no es reactivo). */
   switchProfile (id: string): Promise<any>
   /** Cifra con la llave de la CUENTA: el sobre lleva la marca `t: 'dotrino-cek'` y lo abren todos los aparatos del acta. */
