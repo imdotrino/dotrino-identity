@@ -126,6 +126,8 @@ export class IdentityFacade {
   adoptActa (acta) { return this._h('adoptActa', { acta }) }
   /** Adopta una cadena de actas, eslabón a eslabón (para ponerse al día tras estar apagado). */
   adoptActaChain (chain) { return this._h('adoptActaChain', { chain }) }
+  /** Se pone al día por la cadena de selladoras: sin las actas de en medio, desde la que se tiene. */
+  adoptActaBySealerChain (sealerChain) { return this._h('adoptActaBySealerChain', { sealerChain }) }
   /** Completa el historial con las actas que falten detrás de la vigente, comprobadas por hash. */
   fillActaHistory (actas) { return this._h('fillActaHistory', { actas }) }
   /** Las últimas actas guardadas, con la vigente. */

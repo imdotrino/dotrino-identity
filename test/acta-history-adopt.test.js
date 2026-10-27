@@ -75,3 +75,40 @@ test('un hueco del historial se rellena con las actas de otra bóveda, comprobad
   de.destroy()
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('la bóveda que contesta no guarda mi acta: se sube por la cadena de selladoras, sin las de en medio', async () => {
+  const dir = tmp()
+  const pc = await Identity.connect({ dir })
+  const tel = await makeDeviceKey({ label: 'Navegador' })
+  await pc.admitMember({ pub: tel.publickey, label: 'Navegador', caps: ['read'] })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  // El aparato se queda con el acta de este momento (la #74 de hoy).
+  const dirAparato = tmp()
+  fs.cpSync(dir, dirAparato, { recursive: true })
+
+  const de = pc
+  const nube = await makeDeviceKey({ label: 'Nube' })
+  await de.admitMember({ pub: nube.publickey, label: 'Nube', caps: ['sealer', 'sign'] })
+  const entra = (await de.profileActa()).acta
+  const a1 = await sealActa({ acta: await applyChanges(entra, [{ op: 'label', pub: tel.publickey, label: 'N1' }], { by: nube.publickey }), privateJwk: nube.privateJwk })
+  const a2 = await sealActa({ acta: await applyChanges(a1, [{ op: 'label', pub: tel.publickey, label: 'N2' }], { by: nube.publickey }), privateJwk: nube.privateJwk })
+  de.destroy()
+
+  const aparato = await Identity.connect({ dir: dirAparato })
+  const suya = (await aparato.profileActa()).acta.seq
+  // Lo que pasaba: la #77 sola no entra, y no había otro camino.
+  assert.equal((await aparato.adoptActa(a2)).reason, 'unauthorized-sealer')
+  // Lo que no viene de quien el aparato reconoce, fuera: una sellada por la Nube sin el eslabón
+  // que la deja entrar, o una tocada después de sellar.
+  assert.equal((await aparato.adoptActaBySealerChain([a2])).adopted, false, 'sin el eslabón que la autoriza no entra')
+  const falsa = { ...a2, members: a2.members.slice(0, -1) }
+  assert.equal((await aparato.adoptActaBySealerChain([entra, falsa])).adopted, false, 'ni colgada de un eslabón bueno')
+  // La de verdad, como la manda la Nube: [la que la dejó entrar, la vigente].
+  const r = await aparato.adoptActaBySealerChain([entra, a2])
+  assert.equal(r.adopted, true, r.reason)
+  assert.equal((await aparato.profileActa()).acta.seq, a2.seq)
+  assert.ok(a2.seq > suya + 1, 'saltó las de en medio')
+  aparato.destroy()
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.rmSync(dirAparato, { recursive: true, force: true })
+})

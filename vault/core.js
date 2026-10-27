@@ -1525,15 +1525,64 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // aparato en la #74 ya no podía llegar a la #77: se la mandaba sola, sellada por alguien
     // que la #74 no conoce, y la rechazaba sin decir nada.
     pushHistory(current)
+    return installActa(candidate, r.reason)
+  }
+
+  /** Guarda la que gana y mira si este aparato sigue dentro (común a las dos formas de adoptar). */
+  function installActa (candidate, reason) {
     saveActa(candidate)
-    emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, adopted: r.reason })
+    emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, adopted: reason })
     const sigoDentro = (candidate.members || []).some((m) => m?.pub === publickeyJwkStr)
     if (!sigoDentro) {
       console.warn('[identity] the new record no longer lists this device: removing the account')
       wipeVaultLink()
-      return { adopted: true, expelled: true, reason: r.reason, seq: candidate.seq }
+      return { adopted: true, expelled: true, reason, seq: candidate.seq }
     }
-    return { adopted: true, reason: r.reason, seq: candidate.seq }
+    return { adopted: true, reason, seq: candidate.seq }
+  }
+
+  /**
+   * PONERSE AL DÍA POR LA CADENA DE SELLADORAS (2026-10-27). La cadena corta (las actas de
+   * detrás) solo la puede dar una bóveda que guarde la que tiene el aparato, y una que entró en
+   * la cuenta más tarde no la tiene: la Nube entró en la #75 y al navegador en la #74 solo le
+   * podía mandar la #77, sellada por alguien que la #74 no conoce. Se quedaba atascado para
+   * siempre, y de ahí no salía solo.
+   *
+   * La cadena de selladoras viaja en cada respuesta y basta, sin las actas de en medio:
+   *   · el primer eslabón por encima de la mía se adopta por las reglas de siempre
+   *     (`canAdopt`: lo selló alguien a quien MI acta deja sellar);
+   *   · cada siguiente, si lo selló alguien a quien el eslabón anterior dejaba sellar, y
+   *     anclado a él cuando trae ancla.
+   * Así toda la autoridad nace en el acta que ya tengo: una rama ajena no entra.
+   */
+  async function adoptSealerChainNow (sealerChain) {
+    const current = loadActa()
+    if (!current) return { adopted: false, reason: 'no-current-record', seq: null }
+    const links = (Array.isArray(sealerChain) ? sealerChain : [])
+      .filter((a) => a && a.profileId === current.profileId && typeof a.seq === 'number' && a.seq > current.seq)
+      .sort((a, b) => a.seq - b.seq)
+    if (!links.length) return { adopted: false, reason: 'nothing-to-adopt', seq: current.seq }
+    const first = await Acta.canAdopt({ candidate: links[0], current })
+    if (!first.adopt) return { adopted: false, reason: 'sealer-chain:' + first.reason, seq: current.seq }
+    for (let i = 1; i < links.length; i++) {
+      const prev = links[i - 1]
+      const a = links[i]
+      const v = await Acta.verifyActa({ acta: a, expectedProfileId: current.profileId })
+      if (!v.ok) return { adopted: false, reason: `sealer-chain:link-${i}:${v.reason}`, seq: current.seq }
+      const anchor = a.sealerAnchor
+      if (anchor && (anchor.seq !== prev.seq || anchor.hash !== await Acta.actaHash(prev))) {
+        return { adopted: false, reason: `sealer-chain:link-${i}:not-chained`, seq: current.seq }
+      }
+      if (!Acta.canSeal(prev, a.sealedBy)) return { adopted: false, reason: `sealer-chain:link-${i}:unauthorized-sealer`, seq: current.seq }
+    }
+    pushHistory(current)
+    for (const a of links.slice(0, -1)) pushHistory(a)
+    return installActa(links[links.length - 1], 'sealer-chain')
+  }
+  function adoptSealerChain (sealerChain) {
+    const run = adoptQueue.then(() => adoptSealerChainNow(sealerChain))
+    adoptQueue = run.catch(() => {})
+    return run
   }
 
   // ----- renovación AUTOMÁTICA del cert (sin QR ni aprobación) -----
@@ -3111,6 +3160,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /** Adopta una cadena completa (para ponerse al día tras estar apagado). */
     async adoptActaChain ({ chain } = {}) { return adoptChain(chain) },
 
+    /** Se pone al día por la cadena de selladoras (`adoptSealerChainNow`). */
+    async adoptActaBySealerChain ({ sealerChain } = {}) { return adoptSealerChain(sealerChain) },
+
     /** Completa el historial con las actas que falten detrás de la vigente (`fillHistoryNow`). */
     async fillActaHistory ({ actas } = {}) { return fillHistory(actas) },
 
@@ -3523,9 +3575,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         // con la bóveda en la #77, y la única pista era que no salía la bóveda de la nube.
         try {
           const antes = loadActa()?.seq ?? null
-          const r = res.chain?.length && res.chain[0].profileId === loadActa()?.profileId
+          let r = res.chain?.length && res.chain[0].profileId === loadActa()?.profileId
             ? await adoptChain(res.chain)
             : res.acta ? await (res.acta.profileId === loadActa()?.profileId ? adoptActa(res.acta) : joinProfile(res.acta)) : null
+          // Si la bóveda que contestó no guarda mi acta, la cadena corta no llega: se sube por la
+          // de selladoras, que viaja siempre.
+          if (r && !r.adopted && !r.joined && res.sealerChain?.length) {
+            const s = await adoptSealerChain(res.sealerChain)
+            if (s.adopted) r = s
+            else r = { ...r, reason: `${r.reason}; ${s.reason}` }
+          }
           const llega = res.acta?.seq ?? res.chain?.[res.chain.length - 1]?.seq ?? null
           if (r && !r.adopted && !r.joined && llega != null && antes != null && llega > antes) {
             console.warn(`[identity] the vault is on record #${llega} and this device stays on #${antes}: ${r.reason}`)

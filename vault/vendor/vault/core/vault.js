@@ -70,6 +70,10 @@ const MAX_REPLY_BYTES = 768 * 1024
  *   Solo bloquea EDITAR el perfil (`profileSet`): firmar/leer y el resto del store
  *   siguen sirviendo a los dispositivos enrolados aunque esté bloqueado.
  */
+// Cuántas actas viajan con el aviso a las hermanas: cada una es el acta entera (unos KB), y el
+// frame del proxio corta en 1 MB.
+const SIBLING_ACTAS = 5
+
 /**
  * LA BÓVEDA, la misma en las tres versiones (binario, pestaña y extensión).
  *
@@ -93,6 +97,7 @@ const MAX_REPLY_BYTES = 768 * 1024
  * Una plataforma que no puede algo (el navegador no tiene `/proc` ni sockets de archivo)
  * no lo pone, y el núcleo lo trata como «no se sabe»: nunca como un sí.
  */
+
 export async function startVault ({ platform, proxyUrl, log = console.log, onEnrollChallenge, isLocked = () => false, hasPassword = () => true, deriveAdminKey = null, openKey = null, secondaryParams = null, openWithSecondary = null, hasSecondary = () => false, forAdoption = false, onAdopted } = {}) {
   if (!platform?.disk || typeof platform.openIdentity !== 'function') {
     throw Object.assign(new Error('startVault: a platform with a disk and openIdentity is required'), { code: 'no-platform' })
@@ -1135,9 +1140,6 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * Y el molino lo hace el ADMIN: aquí llega la derivada, nunca la contraseña.
    */
   const EPHEMERAL_TTL_MS = 60 * 1000
-  // Cuántas actas viajan con el aviso a las hermanas: cada una es el acta entera (unos KB), y el
-  // frame del proxio corta en 1 MB.
-  const SIBLING_ACTAS = 5
   /** Los cambios de unos segundos van juntos a las hermanas (`scheduleDrawerPush`). */
   const DRAWER_PUSH_DEBOUNCE_MS = 3000
   const aperturas = new Map()   // nonce -> { privateKey, exp }
@@ -2531,7 +2533,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // Con las actas de detrás, la cadena: es lo que deja llegar a una bóveda atrasada aunque
       // en el hueco haya cambiado quién sella.
       const actas = Array.isArray(payload.actas) && payload.actas.length ? payload.actas : null
-      const r = actas ? await identity.adoptActaChain?.(actas) : await identity.adoptActa?.(acta)
+      let r = actas ? await identity.adoptActaChain?.(actas) : await identity.adoptActa?.(acta)
+      // Si la cadena corta no encaja con la mía (me faltan las de en medio), por la de selladoras.
+      if (!r?.adopted && Array.isArray(payload.sealerChain) && payload.sealerChain.length && typeof own.seq === 'number' && acta.seq > own.seq) {
+        const s = await identity.adoptActaBySealerChain?.(payload.sealerChain)
+        if (s?.adopted) r = s
+        else if (s) r = { ...r, reason: `${r?.reason || 'not adopted'}; ${s.reason}` }
+      }
       if (actas) {
         const f = await identity.fillActaHistory?.(actas)
         if (f?.added) log(`[vault] filled ${f.added} missing record(s) of the history from another vault`)
@@ -2540,7 +2548,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // Y el RECHAZO también se dice. Callarlo dejaría el peor fallo de todos: se concede
       // un permiso en una máquina, la otra no se entera, y no hay una sola línea que lo
       // explique — que es exactamente lo que costó encontrar esto.
-      else log(`[vault] IGNORED the record #${acta.seq} announced by another vault: ${r?.reason || 'no reason given'}`)
+      // «Ya la tengo» no es un rechazo: es lo normal entre dos que están al día, y decirlo como
+      // IGNORED escondía entre ruido los rechazos de verdad.
+      else if (!['same-record', 'nothing-to-adopt'].includes(r?.reason)) log(`[vault] IGNORED the record #${acta.seq} announced by another vault: ${r?.reason || 'no reason given'}`)
       // LA QUE ANUNCIA VA POR DETRÁS: se le devuelve la nuestra. Es lo que pone al día a una
       // bóveda que despierta atrasada (la Lambda en la #59 con el PC en la #61), sin esperar a
       // que la otra vuelva a sellar o a arrancar. No hace bucle: solo con una MÁS vieja.
@@ -2813,8 +2823,10 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // puede poner al día a sus aparatos. Se autentican solas: cada una nombra a la anterior
       // por su hash, y quien las recibe solo acepta las que encajan.
       const actas = (await identity.recentActas?.(SIBLING_ACTAS).catch(() => null))?.actas || null
+      // Y la cadena de selladoras: con ella llega aunque le falten las de en medio.
+      const sealerChain = (await identity.sealerChain?.().catch(() => null)) || null
       for (const m of siblings) {
-        try { client.sendByPubkey(m.pub, { type: MSG.ADMIN_EVENT, body: { ev: 'record', reason, ts: Date.now() }, acta, actas }, { quiet: true, app: 'vault' }) }
+        try { client.sendByPubkey(m.pub, { type: MSG.ADMIN_EVENT, body: { ev: 'record', reason, ts: Date.now() }, acta, actas, sealerChain }, { quiet: true, app: 'vault' }) }
         catch (e) { log(`[vault] could not send the record to a sibling vault: ${e.message}`) }
       }
       if (siblings.length) log(`[vault] sent record #${acta.seq} to ${siblings.length} sibling vault(s) on ${reason}`)
