@@ -1108,6 +1108,44 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     return { removed: muertos, seq }
   }
 
+  /**
+   * LA CLAVE DE CONTENIDO PARA TODOS LOS DE AHORA, al abrir. Regenerar los sobres es uno de
+   * los dos trabajos de la maestra, y abrir es su momento.
+   *
+   * Un miembro podía quedarse sin envoltura para siempre: `admitMember` solo envuelve si el
+   * que entra trae su llave de cifrado y si quien admite tiene la clave, y nada lo
+   * completaba después. Le pasó a la segunda bóveda de una cuenta (2026-10-27): entró sin
+   * envoltura y no podía cifrar ni la lista de variables que pide la consola.
+   *
+   * Dos cosas, en UNA acta:
+   *   · si el acta no tiene MI llave de cifrado (o tiene otra), la nombro: sin ella nadie
+   *     me puede envolver la clave;
+   *   · si tengo la clave vigente, la envuelvo a cada miembro con llave de cifrado que no
+   *     la tenga.
+   */
+  async function completeKeyring () {
+    if (!keypair?.privateKey) return { named: false, wrapped: [], seq: null }
+    const acta = loadActa()
+    if (!acta) return { named: false, wrapped: [], seq: null }
+    const changes = []
+    const self = (acta.members || []).find((m) => m.pub === publickeyJwkStr)
+    const named = !!self && self.encPub !== encPublickeyJwkStr
+    if (named) changes.push({ op: 'encpub', pub: publickeyJwkStr, encPub: encPublickeyJwkStr })
+    const wrapped = []
+    const mine = await myCek()
+    const last = (acta.keyring || []).at(-1)
+    if (mine && last && mine.gen === last.gen) {
+      for (const m of acta.members || []) {
+        if (!m.encPub || m.pub === publickeyJwkStr || last.wraps?.[m.pub]) continue
+        changes.push({ op: 'wrap', gen: mine.gen, pub: m.pub, wrap: await Content.wrapForMember({ cek: mine.cek, memberEncPub: m.encPub }) })
+        wrapped.push(m.pub)
+      }
+    }
+    if (!changes.length) return { named: false, wrapped: [], seq: acta.seq }
+    const sealed = await sealChanges(changes)
+    return { named, wrapped, seq: sealed.seq }
+  }
+
   // ----- ENTRAR CON USUARIO Y CONTRASEÑA (`temporary-access.md` §3.4) -----
   //
   // Lo que llega de `@dotrino/vault/login-client` es un APARATO entero: sus dos llaves
@@ -2007,7 +2045,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       locked = false
       // Abrir es cuando se limpia el acta de aparatos muertos. Por detrás: abrir no puede
       // esperar a sellar, y si falla se dice, no se calla.
-      pruneExpiredDevices().catch((e) => console.warn('[identity] could not remove expired devices:', e.message))
+      pruneExpiredDevices()
+        .catch((e) => console.warn('[identity] could not remove expired devices:', e.message))
+        .then(() => completeKeyring())
+        .catch((e) => console.warn('[identity] could not complete the content key wraps:', e.message))
       return { ok: true, locked: false }
     },
     // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
@@ -3749,6 +3790,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     sealMasterKey,
     /** Quita del acta, en una sola, los aparatos cuyo papel ya no tiene vuelta atrás. */
     pruneExpiredDevices,
+    /** Al abrir: nombra mi llave de cifrado y envuelve la clave de contenido a quien le falte. */
+    completeKeyring,
     /** Recarga el par tras abrir el candado, sin reabrir la identidad entera. */
     async reloadMasterKey () {
       keypair = await loadOrCreateKeypair()

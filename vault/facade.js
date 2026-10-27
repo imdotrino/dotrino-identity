@@ -33,6 +33,8 @@ export class IdentityFacade {
   reloadMasterKey () { return this._core?.reloadMasterKey?.() }
   /** Ver `core.js`: al abrir, los aparatos muertos salen del acta en una sola. */
   pruneExpiredDevices (now) { return this._core?.pruneExpiredDevices?.(now) }
+  /** Ver `core.js`: al abrir, la clave de contenido llega a todos los miembros. */
+  completeKeyring () { return this._core?.completeKeyring?.() }
 
   _h (method, params = {}) {
     if (!this._core) throw new Error('Identity not ready — call ready()/connect() first')

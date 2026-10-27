@@ -85,6 +85,9 @@ export const MSG = Object.freeze({
   // Aviso a TODOS los miembros de que el perfil cambió (alguien entró o salió). Es la
   // contrapartida de administrar a distancia: sin esto, un enrolamiento remoto sería
   // invisible para el resto de tus dispositivos.
+  // bóveda → sus hermanas: los cajones (sellados a la llave de cifrado de la hermana) y las
+  // lápidas, firmados por la llave de comunicación de quien manda (`docs/replicas.md` §11.4).
+  SIBLING_DRAWERS: 'vault.sibling.drawers',
   ADMIN_EVENT: 'vault.admin.event',           // vault → todos: { body:{ev,deviceId,by,ts}, acta } (pedidos: + seal)
   // RÉPLICAS: la principal empuja lo que hay que servir (el acta y los sobres, que van
   // firmados de antes y no se pueden falsificar) y la réplica acusa hasta qué `seq` tiene.

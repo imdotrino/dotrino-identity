@@ -61,6 +61,9 @@ export function claimOf (MSG, p) {
       return { pub: p.cert?.sub, data: p.data, signature: p.signature }
     case MSG.REPLICA_ACK:
       return { pub: p.body?.publickey, data: p.body, signature: p.signature }
+    // Los cajones de una hermana: los firma su llave de comunicación (`body.by`), que es miembro.
+    case MSG.SIBLING_DRAWERS:
+      return { pub: p.body?.by, data: p.body, signature: p.signature }
     // La renuncia la firma el propio miembro dentro del registro; la comprueba el manejador.
     case MSG.RENOUNCE: {
       const r = p.data?.record || p.record

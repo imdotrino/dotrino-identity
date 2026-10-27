@@ -56,6 +56,25 @@ export function openCommKey (disk) {
       return pub
     },
 
+    /**
+     * EL PAR DE CIFRADO DEL TRANSPORTE (ECDH), junto a la llave de comunicación y bajo la misma
+     * llave de la máquina: lo que otra bóveda le sella a ESTA llega aunque el perfil esté cerrado
+     * (los cajones entre hermanas, `docs/replicas.md` §11.4). Su pública la anuncia el pilar al
+     * identificarse, firmada por la llave de comunicación. Se estrena una vez y no cambia.
+     * @returns {Promise<{ privateKey: CryptoKey, encPub: string }>}
+     */
+    async encKeypair () {
+      if (!data?.pub) throw new Error('commKey.encKeypair: the communication key does not exist yet')
+      if (!data.enc?.priv) {
+        const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+        const pub = await crypto.subtle.exportKey('jwk', pair.publicKey)
+        data = { ...data, enc: { pub: JSON.stringify({ kty: pub.kty, crv: pub.crv, x: pub.x, y: pub.y }), priv: await crypto.subtle.exportKey('jwk', pair.privateKey) } }
+        writeJson(disk, file, data)
+      }
+      const privateKey = await crypto.subtle.importKey('jwk', data.enc.priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
+      return { privateKey, encPub: data.enc.pub }
+    },
+
     /** Firma un cuerpo. `null` si aún no hay llave (no se estrena una al vuelo: ver `ensure`). */
     async sign (body) {
       if (!data?.priv) return null

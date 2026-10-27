@@ -176,7 +176,7 @@ function migrateBag (bag) {
  *   `defaultKey`: con qué sellar la privada de recuperación cuando el perfil NO tiene
  *   contraseña. Vive aquí, en un solo sitio, para que dé igual por qué puerta se entre.
  */
-export function openSecretsStore (disk, { sealer = null, recipients = null, signer = null, defaultKey = null } = {}) {
+export function openSecretsStore (disk, { sealer = null, recipients = null, signer = null, defaultKey = null, onChange = null } = {}) {
   const file = 'secrets.json'
   let data = readJson(disk, file, null)
 
@@ -192,6 +192,9 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
   if (!data) data = { schemaVersion: SCHEMA_VERSION, ns: {}, dev: {}, recovery: null, history: [] }
   if (!data.dev) data.dev = {}
   if (!data.history) data.history = []
+  // LÁPIDAS (`docs/replicas.md` §11.4): lo borrado se recuerda, con su generación, para que
+  // una hermana que todavía lo tiene no lo resucite al mezclar. `deleted[owner][key] = { gen, at }`.
+  if (!data.deleted) data.deleted = {}
   // 0.47.0/0.48.0 guardaron una «política» DENTRO del cajón (salía como variable): fuera.
   for (const bag of Object.values(data.ns || {})) if (bag?.policy && typeof bag.policy === 'object' && !('v' in bag.policy)) delete bag.policy
   delete data.policies
@@ -209,7 +212,11 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
   // vale 0 y cada cambio va al disco en el acto, como siempre.
   let held = 0
   let pending = false
-  const flush = () => writeJson(disk, file, data)
+  // `onChange`: que lo guardado cambió POR UNA ESCRITURA de aquí, para empujárselo a las
+  // hermanas. Lo que llega de una hermana (`mergeState`) se guarda sin avisar: si avisara,
+  // las dos se lo devolverían para siempre.
+  let quiet = false
+  const flush = () => { writeJson(disk, file, data); if (!quiet) { try { onChange?.() } catch (_) {} } }
   const save = () => { if (held) { pending = true; return } ; flush() }
 
   const assertNs = (ns) => {
@@ -225,6 +232,22 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
 
   /** Borra la rama si se quedó vacía: un scope (o un aparato) sin variables no existe. */
   const prune = (bag, k) => { if (bag[k] && Object.keys(bag[k]).length === 0) delete bag[k] }
+  /** Etiqueta corta de NUESTRO par de recuperación, para distinguirlo del de una hermana. */
+  const recoveryTag = () => {
+    const pub = String(data.recovery?.pub || '')
+    if (!pub) return 'none'
+    // FNV-1a de 32 bits sobre toda la pública: corto, estable y distinto para cada par.
+    let h = 0x811c9dc5
+    for (let i = 0; i < pub.length; i++) { h ^= pub.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+    return h.toString(16).padStart(8, '0')
+  }
+  /** Cambia el nombre de una envoltura (`from` → `to`; `to = null` devuelve la nuestra a su sitio). */
+  const retag = (wraps, from, tag) => {
+    const out = { ...(wraps || {}) }
+    if (tag && from in out) { out[`${RECOVERY}@${tag}`] = out[from]; delete out[from] }
+    if (!tag && from in out) { out[RECOVERY] = out[from]; delete out[from] }
+    return out
+  }
 
   // --- forma de un cajón -------------------------------------------------------
   // v3: `bag[k]` ES el mapa de variables. v4/v5: `bag[k] = { vars, keyring }`.
@@ -271,7 +294,12 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
     let top = topGen(bag, k)?.gen || 0
     for (const e of Object.values(bag[k]?.vars || {})) if ((e.gen || 0) > top) top = e.gen
     for (const h of data.history) if (h.owner === owner && (h.gen || 0) > top) top = h.gen
-    return top + 1
+    for (const t of Object.values(data.deleted?.[owner] || {})) if ((t.gen || 0) > top) top = t.gen
+    // LA HORA, SI VA POR DELANTE (`docs/replicas.md` §11.4). Dos bóvedas de la cuenta pueden
+    // escribir el mismo cajón sin verse, y con un contador cada una estrenaría la MISMA
+    // generación para cosas distintas. Con la hora no chocan, y ordenarlas es «gana el último
+    // cambio», que es lo decidido. Nunca baja: si el reloj va por detrás, manda el contador.
+    return Math.max(top + 1, Date.now())
   }
 
   /**
@@ -736,6 +764,112 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
     },
 
     /**
+     * LO QUE SE CLONA A LAS HERMANAS (`docs/replicas.md` §11.3): los cajones tal cual —sobres
+     * ya sellados, generaciones con sus envolturas— y las lápidas. Nada se abre: guardarlo no
+     * exige poder leerlo, y por eso una bóveda cerrada también lo recibe. El histórico no
+     * viaja: es la memoria de lo que pasó AQUÍ.
+     *
+     * La envoltura de recuperación es de ESTA bóveda (su par de recuperación): viaja con su
+     * etiqueta (`#recovery@<x>`) para que la hermana la conserve sin confundirla con la suya.
+     */
+    exportState () {
+      if (isLegacy() || needsMigration()) return null
+      const mine = recoveryTag()
+      const bagOut = (bag) => Object.fromEntries(Object.entries(bag || {}).map(([k, b]) => [k, {
+        vars: { ...(b?.vars || {}) },
+        keyring: (b?.keyring || []).map((g) => ({ ...g, wraps: retag(g.wraps, RECOVERY, mine) }))
+      }]))
+      return { v: 1, ns: bagOut(data.ns), dev: bagOut(data.dev), deleted: JSON.parse(JSON.stringify(data.deleted || {})) }
+    },
+
+    /**
+     * ¿TENEMOS ALGO QUE ESA HERMANA NO? Compara su estado con el nuestro: un dato que ella no
+     * tiene, o que tiene en una generación anterior, o una lápida que no ha visto. Es lo que
+     * decide si, después de mezclar lo suyo, hay que devolverle lo nuestro (sin bucle: la
+     * vuelta ya lo trae todo y la siguiente comparación sale que no).
+     */
+    aheadOf (state) {
+      if (!state || isLegacy() || needsMigration()) return false
+      const theirs = (kind, k, key) => state[kind]?.[k]?.vars?.[key]
+      for (const kind of ['ns', 'dev']) {
+        const bag = kind === 'ns' ? data.ns : data.dev
+        for (const [k, b] of Object.entries(bag || {})) {
+          for (const [key, e] of Object.entries(b?.vars || {})) {
+            const t = theirs(kind, k, key)
+            const owner = kind === 'ns' ? `ns:${k}` : `dev:${k}`
+            const tomb = state.deleted?.[owner]?.[key]
+            if (tomb && (tomb.gen || 0) >= (e.gen || 0)) continue
+            if (!t || (t.gen || 0) < (e.gen || 0)) return true
+          }
+        }
+      }
+      for (const [owner, keys] of Object.entries(data.deleted || {})) {
+        for (const [key, t] of Object.entries(keys || {})) {
+          const theirsTomb = state.deleted?.[owner]?.[key]
+          if (!theirsTomb || (theirsTomb.gen || 0) < (t.gen || 0)) return true
+        }
+      }
+      return false
+    },
+
+    /**
+     * MEZCLAR LO DE UNA HERMANA, dato a dato. Gana la generación más alta (que es la hora de
+     * la escritura: «gana el último cambio»); un empate lo rompe el `ct` menor, igual en las
+     * dos, para que acaben idénticas. Una lápida gana a un valor de su generación o anterior.
+     * Las envolturas de una misma generación se SUMAN. Devuelve cuántos datos cambiaron.
+     */
+    async mergeState (state) {
+      return queued(() => {
+        if (isLegacy() || needsMigration()) throw new Error('mergeState: this store is not v5 yet')
+        if (!state || state.v !== 1) throw new Error('mergeState: unknown state')
+        const mine = recoveryTag()
+        let changed = 0
+        const tombOf = (owner, key) => data.deleted?.[owner]?.[key] || null
+        // Las lápidas primero: borran lo que tapan y quedan anotadas.
+        for (const [owner, keys] of Object.entries(state.deleted || {})) {
+          for (const [key, t] of Object.entries(keys || {})) {
+            const here = tombOf(owner, key)
+            if (!here || (t.gen || 0) > (here.gen || 0)) {
+              if (!data.deleted[owner]) data.deleted[owner] = {}
+              data.deleted[owner][key] = { gen: t.gen || 0, at: t.at || null }
+            }
+            const [kind, k] = splitOwner(owner)
+            const bag = kind === 'ns' ? data.ns : data.dev
+            const e = bag[k]?.vars?.[key]
+            if (e && (e.gen || 0) <= (t.gen || 0)) { delete bag[k].vars[key]; changed++ }
+          }
+        }
+        for (const kind of ['ns', 'dev']) {
+          const bag = kind === 'ns' ? data.ns : data.dev
+          for (const [k, b] of Object.entries(state[kind] || {})) {
+            const owner = kind === 'ns' ? `ns:${k}` : `dev:${k}`
+            ensureBag(bag, k)
+            // El llavero: generaciones nuevas enteras; las que ya hay, sumando envolturas.
+            for (const g of b?.keyring || []) {
+              const wraps = retag(g.wraps, `${RECOVERY}@${mine}`, null)
+              const here = bag[k].keyring.find((x) => x.gen === g.gen)
+              if (!here) bag[k].keyring.push({ ...g, wraps })
+              else for (const [who, w] of Object.entries(wraps)) if (!(who in here.wraps)) here.wraps[who] = w
+            }
+            for (const [key, e] of Object.entries(b?.vars || {})) {
+              const t = tombOf(owner, key)
+              if (t && (t.gen || 0) >= (e.gen || 0)) continue
+              const a = bag[k].vars[key]
+              const ga = a?.gen || 0; const gb = e.gen || 0
+              if (!a || gb > ga || (gb === ga && String(e.e?.ct ?? '') < String(a.e?.ct ?? ''))) {
+                if (!a || a.gen !== e.gen || a.e?.ct !== e.e?.ct) { bag[k].vars[key] = e; changed++ }
+              }
+            }
+            gcKeyring(bag, k, owner)
+            if (Object.keys(bag[k].vars).length === 0) prune(bag, k)
+          }
+        }
+        if (changed) { quiet = true; try { flush() } finally { quiet = false } }
+        return { changed }
+      })
+    },
+
+    /**
      * LA ENTRADA TAL CUAL (sobre, generación, visibilidad) — sin abrir nada.
      *
      * Es lo que hace falta para MANDARLE a alguien una variable que sí puede leer: el sobre
@@ -800,6 +934,10 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
       const vars = varsOf(bag, k)
       const existed = key in vars
       if (!existed) return false
+      if (!isLegacy()) {
+        if (!data.deleted[owner]) data.deleted[owner] = {}
+        data.deleted[owner][key] = { gen: nextGen(bag, k, owner), at: Date.now() }
+      }
       delete vars[key]
       data.history = data.history.filter((h) => !(h.owner === owner && h.key === key))
       if (!isLegacy()) gcKeyring(bag, k, owner)
@@ -872,7 +1010,8 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
     recipientsIn (owner) {
       const [kind, k] = splitOwner(owner)
       const bag = kind === 'ns' ? data.ns : data.dev
-      return Object.keys(topGen(bag, k)?.wraps || {})
+      // La recuperación de una HERMANA no es un destinatario de aquí (`exportState`).
+      return Object.keys(topGen(bag, k)?.wraps || {}).filter((w) => !w.startsWith(`${RECOVERY}@`))
     },
 
     /** Los NOMBRES de las públicas de un scope. Ya no hay valor que devolver: van en sobre. */

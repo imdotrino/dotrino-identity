@@ -78,8 +78,15 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     if (!seenActa) return false
     return (seenActa.members || []).some((m) => m?.pub === token)
   }
+  // CON QUÉ SE ABRE LO QUE NOS SELLAN (`commKey.encKeypair`): sin esto la bóveda no podía
+  // recibir nada sellado, y una hermana cerrada no habría podido abrir los cajones que le
+  // manda la otra. El pilar anuncia la pública al identificarse con la llave de comunicación.
+  const enc = commKey?.pub?.() && typeof commKey.encKeypair === 'function'
+    ? await commKey.encKeypair().catch((e) => { log('[vault] no transport encryption key: ' + e.message); return null })
+    : null
   const client = makeClient ? makeClient({ url, acceptDirectFrom: inActa }) : new WebSocketProxyClient({
     url, enableWebRTC: true, acceptDirectFrom: inActa, autoReconnect: true,
+    ...(enc ? { myEncPub: enc.encPub, myEncPrivateKey: enc.privateKey } : {}),
     maxReconnectAttempts: 100000, reconnectDelay: 4000,
     // EL BLUETOOTH (proxy-client docs/bluetooth.md) lo decide la plataforma: el binario en
     // Linux sí; la pestaña y la extensión no pueden. Misma puerta que WebRTC (`inActa`).
@@ -95,13 +102,13 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   // para una bóveda dormida —el acta nueva que sacó la otra bóveda, un pedido— se entregaba
   // a nadie y se perdía. Se guarda aquí hasta que llegue el oyente (`listen`).
   let early = []
-  const offEarly = client.on('message', (from, payload) => { early?.push([from, payload]) })
+  const offEarly = client.on('message', (from, payload, meta) => { early?.push([from, payload, meta]) })
   const listen = (fn) => {
     const off = client.on('message', fn)
     const pending = early || []
     early = null
     try { offEarly?.() } catch (_) {}
-    for (const [from, payload] of pending) { try { fn(from, payload) } catch (_) {} }
+    for (const [from, payload, meta] of pending) { try { fn(from, payload, meta) } catch (_) {} }
     return off
   }
 

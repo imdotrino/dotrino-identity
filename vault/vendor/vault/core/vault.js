@@ -432,6 +432,9 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     for (const g of grants.sweep()) audit('secrets.grant.expired', { id: g.id, ns: g.ns, device: g.deviceId })
   }, 30 * 1000); approvalsSweeper.unref?.()
   const secrets = openSecretsStore(disk, {
+    // Lo que cambió aquí se les empuja a las hermanas (`pushDrawersToSiblings`), juntando
+    // los cambios de unos segundos en un envío.
+    onChange: () => scheduleDrawerPush(),
     sealer: makeSealer(),
     // A QUIÉN se le envuelve la llave de cada cajón: los servicios de ese namespace (o el
     // propio aparato, si el cajón es suyo) MÁS los aparatos que administran. Sale del
@@ -575,7 +578,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   }
   // Lo que se selló aquí se anuncia cuando ya hay transporte (más abajo): sin el aviso, la otra
   // bóveda de la cuenta no se entera y las dos acaban con actas distintas del mismo número.
-  await ensureOwnSealKey()
+  const sealKeyAtStart = await ensureOwnSealKey()
   const commSealedAtStart = await ensureCommKeyInActa()
 
   // `announce`: el canal de ESTA cuenta, para que una máquina prestada —que no tiene
@@ -591,6 +594,16 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // `sealers.js` — es una comodidad para quien lee, nunca una dependencia de la bóveda.
   startSealersPublisher({ identity, client, log })
   if (commSealedAtStart) await notifyMembers('commkey')
+  // Estrenar la llave de sellado ES un acta nueva, y un acta nueva se anuncia: sin esto la
+  // #61 del PC de Seyacat no salió de su máquina y la Lambda siguió en la #59 (2026-10-26).
+  else if (sealKeyAtStart) await notifyMembers('sealkey')
+  // Y AL ARRANCAR, EL ACTA A LAS HERMANAS (`docs/replicas.md` §11.4: «primero se ponen de
+  // acuerdo»). Una bóveda que estuvo apagada no sabe si se perdió un anuncio; mandar la suya
+  // a las demás cuesta un mensaje callado por hermana, y la que va por detrás se pone al día.
+  await announceToSiblings('start')
+  // POR DETRÁS: sellar a la hermana exige averiguar su llave en el proxio, y si no la ha
+  // anunciado esa pregunta tarda. El arranque no espera a eso.
+  pushDrawersToSiblings('start').catch(() => {})
   await syncExNotices()
 
   async function revocationSet () {
@@ -1100,6 +1113,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * Y el molino lo hace el ADMIN: aquí llega la derivada, nunca la contraseña.
    */
   const EPHEMERAL_TTL_MS = 60 * 1000
+  /** Los cambios de unos segundos van juntos a las hermanas (`scheduleDrawerPush`). */
+  const DRAWER_PUSH_DEBOUNCE_MS = 3000
   const aperturas = new Map()   // nonce -> { privateKey, exp }
 
   const unlockDesk = (typeof openWithSecondary === 'function' && typeof secondaryParams === 'function')
@@ -2399,7 +2414,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   })
 
   // `listen` y no `client.on`: entrega también lo que llegó encolado antes de este punto.
-  listen((from, payload) => { onMessage(from, payload) })
+  listen((from, payload, meta) => { onMessage(from, payload, meta) })
 
   // EL MOSTRADOR LOCAL, siempre que se pueda. Si no se puede abrir (un sistema sin sockets
   // de archivo, un directorio de solo lectura) se dice y se sigue: los servicios usan el
@@ -2419,7 +2434,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     })
   }
 
-  async function onMessage (from, payload) {
+  async function onMessage (from, payload, meta = null) {
     if (!payload || typeof payload !== 'object') return
     const pass = await gate.admit(from, payload)
     // HAY TRABAJO solo si la puerta lo deja pasar: quien monta la bóveda lo usa para saber
@@ -2455,6 +2470,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (payload.type === MSG.ADMIN) return await handleAdmin(from, payload)
       if (payload.type === MSG.RENOUNCE) return await handleRenounce(from, payload)
       if (payload.type === MSG.ADMIN_EVENT) return await handleAdminEvent(payload)
+      if (payload.type === MSG.SIBLING_DRAWERS) return await handleSiblingDrawers(payload, meta)
       if (payload.type === MSG.INCIDENT) return await handleIncident(from, payload)
       if (payload.type === MSG.REPLICA_ACK) return await handleReplicaAck(from, payload)
       if (payload.type === MSG.LOGIN_START) return await handleLoginStart(from, payload)
@@ -2492,6 +2508,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // un permiso en una máquina, la otra no se entera, y no hay una sola línea que lo
       // explique — que es exactamente lo que costó encontrar esto.
       else log(`[vault] IGNORED the record #${acta.seq} announced by another vault: ${r?.reason || 'no reason given'}`)
+      // LA QUE ANUNCIA VA POR DETRÁS: se le devuelve la nuestra. Es lo que pone al día a una
+      // bóveda que despierta atrasada (la Lambda en la #59 con el PC en la #61), sin esperar a
+      // que la otra vuelva a sellar o a arrancar. No hace bucle: solo con una MÁS vieja.
+      if (!r?.adopted && typeof acta.seq === 'number' && typeof own.seq === 'number' && own.seq > acta.seq) {
+        await announceToSiblings('a sibling is behind')
+        await pushDrawersToSiblings('a sibling is behind')
+      }
     } catch (e) { log('[vault] could not adopt the announced record:', e.message) }
   }
 
@@ -2740,6 +2763,88 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * y esa visibilidad es lo que hace DETECTABLE a un admin comprometido. Va por
    * `sendByPubkey`, así que al que está apagado le llega cuando encienda (cola 24 h).
    */
+  /**
+   * EL ACTA A LAS OTRAS BÓVEDAS de la cuenta (sus llaves de comunicación: `cn: 'vault'` y el
+   * campo `vault` de otra maestra). Callado: no timbra, se encola. Quien la recibe la adopta
+   * por las reglas de siempre (`handleAdminEvent` → `adoptActa`, en fila desde identity
+   * 0.129.2), así que una vieja se rechaza sola.
+   */
+  async function announceToSiblings (reason) {
+    try {
+      const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+      if (!acta) return
+      const mine = await commKey.ensure().catch(() => null)
+      const siblings = (acta.members || []).filter((m) => m.cn === COMM_CN && m.vault && m.vault !== master && m.pub !== mine)
+      for (const m of siblings) {
+        try { client.sendByPubkey(m.pub, { type: MSG.ADMIN_EVENT, body: { ev: 'record', reason, ts: Date.now() }, acta }, { quiet: true, app: 'vault' }) }
+        catch (e) { log(`[vault] could not send the record to a sibling vault: ${e.message}`) }
+      }
+      if (siblings.length) log(`[vault] sent record #${acta.seq} to ${siblings.length} sibling vault(s) on ${reason}`)
+    } catch (e) { log('[vault] could not send the record to the sibling vaults: ' + e.message) }
+  }
+
+  /**
+   * LOS CAJONES A LAS HERMANAS (`docs/replicas.md` §11.3-§11.4). Van tal cual —sobres ya
+   * sellados y lápidas—, así que una bóveda cerrada los recibe y guarda sin abrir nada.
+   *
+   * NADA EN CLARO: el paquete entero (que lleva los NOMBRES de las variables) va cerrado a la
+   * llave de cifrado de la hermana —la de su maestra, que nombra el acta— y firmado con
+   * nuestra llave de comunicación. Callado: no la despierta; lo recibe al despertar.
+   */
+  let drawerPushTimer = null
+  function scheduleDrawerPush () {
+    clearTimeout(drawerPushTimer)
+    drawerPushTimer = setTimeout(() => { pushDrawersToSiblings('change').catch(() => {}) }, DRAWER_PUSH_DEBOUNCE_MS)
+    drawerPushTimer.unref?.()
+  }
+  async function pushDrawersToSiblings (reason) {
+    try {
+      const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+      if (!acta) return
+      const state = secrets.exportState?.()
+      if (!state) return
+      const mine = await commKey.ensure().catch(() => null)
+      if (!mine) return
+      const siblings = (acta.members || []).filter((m) => m.cn === COMM_CN && m.vault && m.vault !== master && m.pub !== mine)
+      let n = 0
+      for (const m of siblings) {
+        const body = { op: 'drawers', by: mine, to: m.pub, seq: acta.seq, state, ts: Date.now() }
+        const signature = await commKey.sign(body)
+        if (!signature) continue
+        // SELLADO POR EL PILAR a la llave de cifrado del transporte de la hermana, que ella
+        // anunció firmada con su llave de comunicación y el pilar verifica. Si todavía no la
+        // ha anunciado (no ha despertado desde que el proxio arrancó), se dice y se espera.
+        try { await client.sendSealed([m.pub], { type: MSG.SIBLING_DRAWERS, body, signature }, { quiet: true, app: 'vault' }); n++ }
+        catch (e) { log(`[vault] could not send the drawers to a sibling vault (${e.code || 'error'}): ${e.message}`) }
+      }
+      if (n) log(`[vault] sent the drawers to ${n} sibling vault(s) on ${reason}`)
+    } catch (e) { log('[vault] could not send the drawers to the sibling vaults: ' + e.message) }
+  }
+
+  /**
+   * LOS CAJONES DE UNA HERMANA. La puerta ya comprobó que `body.by` es miembro y que la
+   * firma es suya; aquí se mira que sea la llave de comunicación de OTRA bóveda que sella y
+   * que el paquete venga para nosotros, se abre con nuestra llave de cifrado y se mezcla.
+   */
+  async function handleSiblingDrawers (payload, meta) {
+    const body = payload?.body
+    if (!body || body.op !== 'drawers') return
+    // NADA EN CLARO: unos cajones que no llegaron sellados no se tocan (llevan los nombres).
+    if (!meta?.sealed) return log('[vault] drawers from a sibling arrived UNSEALED: ignored')
+    const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+    const mine = await commKey.ensure().catch(() => null)
+    const who = (acta?.members || []).find((m) => m.pub === body.by)
+    const okSibling = acta && who && who.cn === COMM_CN && who.vault && who.vault !== master && Acta.memberCan(acta, who.vault, 'sealer')
+    if (!okSibling || body.to !== mine) return log('[vault] drawers from someone who is not a sibling vault, or not for us: ignored')
+    try {
+      const r = await secrets.mergeState(body.state)
+      log(`[vault] merged the drawers of a sibling vault (record #${body.seq}): ${r.changed} change(s)`)
+      // Y SI TENEMOS ALGO QUE ELLA NO, se lo devolvemos: es lo que pone al día a una que despertó
+      // sin lo nuestro cuando las dos ya iban por la misma acta (la Nube con el PC en la #64).
+      if (secrets.aheadOf?.(body.state)) await pushDrawersToSiblings('a sibling lacks some drawers')
+    } catch (e) { log('[vault] could not merge the drawers of a sibling vault: ' + e.message) }
+  }
+
   async function notifyMembers (ev, info = {}) {
     // El acta pudo cambiar (alguien salió): su aviso tiene que estar listo para cuando pregunte.
     await syncExNotices()
@@ -2914,8 +3019,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       //
       // Se sella la lista ENTERA, no solo los valores: el proxy tampoco tiene por qué
       // aprender cómo se llaman tus variables ni qué servicios corres.
-      return {
-        enc: await identity.sealContent(JSON.stringify({
+      // EL CANDADO VA APARTE DE LA LISTA (dueño, 2026-10-26: «ya tiene password pero no veo botón
+      // para abrirla»). La lista se cierra con la llave de contenido del perfil, y una bóveda
+      // CERRADA puede no tenerla a mano (la alojada: su llave de cifrado va bajo la contraseña).
+      // Entonces no salía nada, y con la lista se iba la tarjeta de abrir: había que abrirla
+      // para poder abrirla. Si está cerrada y si se puede abrir desde aquí es estado de la
+      // bóveda, no algo del usuario — lo mismo que ya dice `unlock.begin` —, así que viaja solo.
+      const status = {
+        locked: (() => { try { return !!isLocked() } catch (_) { return true } })(),
+        remoteUnlock: (() => { try { return !!hasSecondary() } catch (_) { return false } })()
+      }
+      let enc = null
+      try {
+        enc = await identity.sealContent(JSON.stringify({
           ns: withEnvelopes(listSecrets(), 'ns', caller), dev: withEnvelopes(await listDeviceSecrets(), 'dev', caller),
           // Aparatos que están en el acta pero no pueden abrir lo suyo: hay que
           // enseñarlo donde se administra, no solo en el log del servicio.
@@ -2935,9 +3051,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           // «no está cerrada» y «no hay contraseña de admin puesta»— que son cosas
           // distintas y llevan a acciones distintas.
           locked: (() => { try { return !!isLocked() } catch (_) { return true } })(),
-          remoteUnlock: (() => { try { return !!hasSecondary() } catch (_) { return false } })()
+          remoteUnlock: status.remoteUnlock
         }))
+      } catch (e) {
+        return { status, enc: null, error: e.message, code: e.code || 'no-content-key' }
       }
+      return { status, enc }
     },
     /**
      * VER UNA PRIVADA DESDE LA CONSOLA (dueño, 2026-10-26: «en el admin no tengo botón para ver
@@ -4591,7 +4710,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         try {
           if (await ensureCommKeyInActa()) { await reidentify?.(); await notifyMembers('commkey') }
         } catch (_) {}
-        await ensureOwnSealKey()
+        if (await ensureOwnSealKey()) await notifyMembers('sealkey')
         await syncExNotices()
       }
       // Y ABSORBER LO PENDIENTE. La subacta ya lo estaba honrando con el perfil cerrado —de
@@ -4626,6 +4745,16 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
             log(`[vault] WARNING: nobody in the record can approve any more — ${whom} was the last. From now on every device gets its keys WITHOUT approval, until you enrol one and grant it \`dotrino-vault caps <ID> +aprueba\``)
           }
         } catch (e) { log(`[vault] unlock: could not remove expired devices: ${e.message}`) }
+      }
+      // Y LA CLAVE DE CONTENIDO A QUIEN LE FALTE (una bóveda hermana entró sin ella, y sin
+      // ella no cifra ni la lista de variables de la consola). Mismo momento, mismo motivo.
+      if (r?.locked === false) {
+        try {
+          const { named, wrapped = [], seq } = await identity.completeKeyring?.() || {}
+          if (named) log(`[vault] unlock: named this vault's encryption key in record #${seq}`)
+          for (const pub of wrapped) log(`[vault] unlock: wrapped the content key for ${await deviceIdOf(pub).catch(() => '????-????')} · record #${seq}`)
+          if (named || wrapped.length) { await notifyMembers('keyring'); await announceToSiblings('content key wraps') }
+        } catch (e) { log(`[vault] unlock: could not complete the content key wraps: ${e.message}`) }
       }
       // Y DESPUÉS, LOS SOBRES A LA LLAVE VIGENTE: la poda de arriba pudo rotarla.
       if (r?.locked === false) {
