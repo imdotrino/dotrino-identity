@@ -141,13 +141,15 @@ async function askVault (client, qr) {
  * @param {Object} opts
  * @param {{v:number, iss:string, proxy:string, token:string, sn:string}} opts.qr  QR v2 del vault.
  * @param {(c:{deviceId:string, code:string})=>void} [opts.onChallenge]  Para mostrar el código a tipear en el PC.
+ * @param {string[]} [opts.requireCaps]  permisos del acta sin los que este aparato no entra (`sealer`
+ *   para una bóveda): si la invitación no los da, se para antes del código (`missing-caps`).
  * @param {string} [opts.label]
  * @param {number} [opts.approveTimeoutMs]  Espera de la aprobación humana (def 3 min).
  * @param {string} [opts.account]  si viene (`pubkeyId` del perfil, 64 hex), SOLO entra en esa cuenta:
  *   se comprueba al llegar el reto, antes de enseñar el código (`wrong-account`).
  * @returns {Promise<{device, cert, master:string, proxy:string, deviceId:string, account:string}>}
  */
-export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null, machine = undefined, account = null } = {}) {
+export async function enrollDevice ({ qr, device, onChallenge, label = '', continuity = null, encPub = null, approveTimeoutMs = 180000, intent = 'join', profileId = null, onAdopt = null, machine = undefined, account = null, requireCaps = null } = {}) {
   if (!qr?.sn || !(qr.iss || qr.conn)) throw new Error('invalid qr: missing vault or nonce')
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
   const client = new WebSocketProxyClient({ url: qr.proxy || 'wss://proxy.dotrino.com', enableWebRTC: false, autoReconnect: false })
@@ -202,6 +204,20 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
           if (account) {
             const why = await accountMismatch(p.signed?.chain, qr.iss, account)
             if (why) { cleanup(); reject(Object.assign(new Error(why), { code: 'wrong-account' })); return }
+          }
+          // LOS PERMISOS CON LOS QUE VA A ENTRAR, antes de enseñar el código: la bóveda alojada de
+          // Seyacat entró sin `sella` y quedó como un aparato más (2026-10-27). Una bóveda que no
+          // los dice es anterior a vault 0.109.2: no se sabe, así que no se entra.
+          if (requireCaps?.length) {
+            const caps = p.signed?.caps
+            const faltan = Array.isArray(caps) ? requireCaps.filter((c) => !caps.includes(c)) : requireCaps
+            if (faltan.length) {
+              cleanup()
+              reject(Object.assign(new Error(Array.isArray(caps)
+                ? `the invitation does not give this device ${faltan.join(', ')}: make another one with that permission`
+                : 'the vault that invites does not say which permissions this device gets (it may need an update)'), { code: 'missing-caps', missing: faltan }))
+              return
+            }
           }
           try { onChallenge?.({ deviceId, code }) } catch (_) {}
         }

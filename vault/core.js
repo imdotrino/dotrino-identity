@@ -1407,7 +1407,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * cert contra la bóveda y entra a su cuenta. Aparte para que la decisión de CUÁL cuenta y
    * el deshacerla si esto falla vivan juntos arriba, y aquí solo quede el trámite.
    */
-  async function pairWithVault ({ qr, label = '', machine = undefined, account = null }) {
+  async function pairWithVault ({ qr, label = '', machine = undefined, account = null, requireCaps = null }) {
     // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
     // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
     // La privada es la CryptoKey del perfil (no extractable): se pasa como `privateKey`
@@ -1421,7 +1421,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     const continuity = (mine && mine.members.length === 1 && !isPendingJoin())
       ? await Acta.makeContinuity({ member: publickeyJwkStr, from: mine.profileId, privateKey: masterKey() })
       : null
-    const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', machine: machine === undefined && pageMachine ? pageMachine : machine, account, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
+    const res = await remoteEnroll({ qr, device, continuity, encPub: encPublickeyJwkStr, label: label || me?.nickname || '', machine: machine === undefined && pageMachine ? pageMachine : machine, account, requireCaps, onChallenge: (c) => emitVault({ phase: 'challenge', deviceId: c.deviceId, code: c.code }) })
     kv.setItem(VAULT_DEVICE_STORAGE, JSON.stringify({ useIdentityKey: true, publickey: publickeyJwkStr }))
     kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ cert: res.cert, master: res.master, proxy: res.proxy, deviceId: res.deviceId, pairedAt: Date.now() }))
     // Conectarse a una bóveda es ENTRAR A SU CUENTA: el acta viene con el cert.
@@ -3101,7 +3101,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *                   master: si esta cuenta ya la manda otra bóveda, no hay nada que
      *                   regalar y falla en voz alta.
      */
-    async vaultPair ({ qr, label = '', join = 'current', machine = undefined, account = null }) {
+    async vaultPair ({ qr, label = '', join = 'current', machine = undefined, account = null, requireCaps = null }) {
       if (join === 'adopt') return handlers.vaultAdopt({ qr, label, machine })
       // La cuenta abierta AQUÍ y la que se cree para este intento. `born` es la que hay que
       // tirar si el emparejamiento no llega a término: nació para él y no tiene nada dentro.
@@ -3132,7 +3132,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         }
       }
       try {
-        return await pairWithVault({ qr, label, machine, account })
+        return await pairWithVault({ qr, label, machine, account, requireCaps })
       } catch (e) {
         // El intento falló (código vencido, la bóveda dijo que no, se agotó la espera): la
         // cuenta que nació para él se va con él. Si no, cada reintento dejaba una cuenta

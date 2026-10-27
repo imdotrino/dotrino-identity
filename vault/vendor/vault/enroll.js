@@ -414,7 +414,11 @@ export function createEnrollDesk ({
     // ejemplo— en vez de descubrirlo cuando ya lo aprobaron. Quien no la mira, no la necesita.
     let chain = null
     try { chain = (await identity.sealerChain?.()) || null } catch (e) { log('[vault] could not build the sealer chain for the challenge:', e.message) }
-    await tell(from, { type: MSG_ENROLL_CHALLENGE, deviceId, chain }, pend.sn)
+    // Y CON QUÉ PERMISOS VA A ENTRAR (2026-10-27): la bóveda alojada de Seyacat entró con una
+    // invitación sin `sella` y quedó como un aparato más, sin poder ser bóveda. Dentro del reto
+    // firmado, el aparato que necesita uno concreto se niega ANTES de enseñar su código.
+    const caps = [...new Set(pend.caps || scopeToCaps(pend.scope))]
+    await tell(from, { type: MSG_ENROLL_CHALLENGE, deviceId, chain, caps }, pend.sn)
     fire(onChallenge, { deviceId, scope: pend.scope, label: pend.label || '', machine: pend.machine || null, mode: pend.mode || 'join' })
     fire(onPendingChange)
     return { deviceId }
