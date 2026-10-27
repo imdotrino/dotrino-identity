@@ -31,7 +31,7 @@ import { openMachines } from './machines.js'
 import { machineLine } from '@dotrino/identity/machine'
 import { openNotices } from './notices.js'
 import { makeEphemeralKey, openSealed } from '../sealed.js'
-import { declare as compatDeclare, check as compatCheck, annotate as compatAnnotate } from '@dotrino/compat'
+import { declare as compatDeclare, check as compatCheck, annotate as compatAnnotate, missingCaps as compatMissing } from '@dotrino/compat'
 import { loadManifest, brokenOf } from '@dotrino/roadmap'
 // `PENDING_TTL_MS` se usa abajo, al esperar la firma del aprobador: sin importarlo, esa
 // espera reventaba con un ReferenceError y la aprobación del mostrador de contraseñas no
@@ -662,10 +662,32 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const verdict = compatCheck({ mine: MI_VERSION, theirs: v, broken: BROKEN })
     versiones.set(pub, { ...v, at: Date.now(), compatible: verdict.compatible, reason: verdict.reason })
     if (!verdict.compatible) log(`[vault] ${v.product} ${v.version}: ${verdict.reason}`)
+    if (Array.isArray(v.needs)) sayMissing(pub)
     return verdict
   }
   /** El dictamen de un aparato, para enseñarlo o para pegárselo a un error. */
   const versionDe = (pub) => versiones.get(pub) || null
+  /**
+   * LOS PERMISOS QUE LE FALTAN (dueño, 2026-10-27): los que la pieza declaró necesitar
+   * (`needs`, `@dotrino/compat` ≥ 0.5.0) y el acta no le da. Se ENSEÑA en su fila y se dice en
+   * el log cuando cambia; no se concede nada solo. Lo pagó `accounts`: sin `sign`, renovar su
+   * papel le devolvía uno que no le servía, y ninguna pantalla lo decía.
+   */
+  const missingOf = (pub, acta) => {
+    const v = versionDe(pub)
+    return v && acta ? compatMissing(v, Acta.effectiveCaps(acta, pub)) : []
+  }
+  const missingSaid = new Map()
+  const sayMissing = async (pub) => {
+    try {
+      const acta = (await identity.profileActa?.())?.acta || null
+      const falta = missingOf(pub, acta)
+      const key = falta.join(',')
+      if ((missingSaid.get(pub) || '') === key) return
+      missingSaid.set(pub, key)
+      if (falta.length) log(`[vault] ${await deviceIdOf(pub).catch(() => '????-????')} (${versionDe(pub)?.product || '?'}) needs ${falta.join(', ')} and the record does not give it: grant it with \`dotrino-vault caps <ID> +…\``)
+    } catch (e) { log(`[vault] could not compare what a device needs with the record: ${e.message}`) }
+  }
   /** Dónde corre un aparato: lo último que dijo firmado (`machines`) o, si no, lo del acta. */
   const machineOf = (pub, record) => machines.of(pub) || (record?.members || []).find((m) => m.pub === pub)?.machine || null
 
@@ -1503,6 +1525,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const devices = await Promise.all(issued.map(async (x) => ({
       deviceId: x.sub ? await deviceIdOf(x.sub) : null, sub: x.sub || null, label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce,
       running: x.sub ? versionDe(x.sub) : null,
+      missing: x.sub ? missingOf(x.sub, record) : [],
       machine: x.sub ? machineOf(x.sub, record) : null,
       notifiedAt: x.sub ? notifiable.since(x.sub) : null
     })))
@@ -4954,6 +4977,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
      */
     profileMembers: async () => {
       const r = await identity.profileMembers()
+      const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
       return {
         ...r,
         vault: MI_VERSION,
@@ -4963,6 +4987,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         members: (r?.members || []).map((m) => ({
           ...m,
           running: versionDe(m.pub),
+          missing: missingOf(m.pub, acta),
           // Dónde corre: lo último que dijo firmado y, si nunca habló, lo del acta.
           machine: machines.of(m.pub) || m.machine || null,
           // Cuándo dijo que le llegan los avisos (null = no lo ha dicho, o caducó). Solo

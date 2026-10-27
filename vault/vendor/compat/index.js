@@ -54,22 +54,48 @@ export const UNDECLARED = 'undeclared'
  * algún día se decide bloquear, se decide arriba y se escribe allí, no aquí.
  */
 
+const isNeeds = (n) => Array.isArray(n) && n.every((c) => typeof c === 'string' && c.length > 0)
+
 /** ¿Tiene forma de anuncio? No dice si es compatible, solo si se puede juzgar. */
 export function isDeclaration (d) {
   return !!d && typeof d.product === 'string' && d.product.length > 0 &&
     typeof d.version === 'string' && d.version.length > 0 &&
     Number.isInteger(d.protocol) &&
-    Array.isArray(d.speaks) && d.speaks.length > 0 && d.speaks.every(Number.isInteger)
+    Array.isArray(d.speaks) && d.speaks.length > 0 && d.speaks.every(Number.isInteger) &&
+    (d.needs === undefined || isNeeds(d.needs))
 }
 
-/** Lo que se pone en el sobre firmado de `identify`. Corto, porque viaja en cada conexión. */
-export function declare ({ product, version, protocol, speaks }) {
+/**
+ * Lo que se pone en el sobre firmado de `identify`. Corto, porque viaja en cada conexión.
+ *
+ * `needs`: LOS PERMISOS DEL ACTA QUE ESTA PIEZA NECESITA para funcionar (dueño, 2026-10-27:
+ * «cada servicio debe tener requisitos de permisos que necesita del acta y visibilizarlos»).
+ * Son los nombres del acta (`sign`, `secrets`, `admin`…). Quien la atiende los compara con lo
+ * que el acta le da (`missingCaps`) y ENSEÑA lo que falta, igual que una versión incompatible:
+ * informa, no concede ni bloquea. Lo pagó `accounts`: le faltaba `sign`, renovar su papel le
+ * devolvía uno que no le servía, y ninguna pantalla lo decía.
+ */
+export function declare ({ product, version, protocol, speaks, needs }) {
   if (!Number.isInteger(protocol)) throw new Error('compat: protocol must be an integer')
   const habla = speaks && speaks.length ? [...new Set(speaks)].sort((a, b) => a - b) : [protocol]
   if (!habla.includes(protocol)) throw new Error('compat: speaks must include protocol')
+  if (needs !== undefined && !isNeeds(needs)) throw new Error('compat: needs must be a list of record permissions')
   const d = { product: String(product), version: String(version), protocol, speaks: habla }
+  if (needs && needs.length) d.needs = [...new Set(needs)].sort()
   if (!isDeclaration(d)) throw new Error('compat: incomplete declaration')
   return d
+}
+
+/**
+ * Los permisos que la pieza declaró necesitar (`needs`) y el acta no le da (`caps`). Vacío si
+ * no declaró nada o tiene todo. Lo que el acta no conoce también cuenta como falta: si una
+ * pieza pide un permiso que esta bóveda no sabe dar, eso es lo que hay que ver.
+ */
+export function missingCaps (declaration, caps = []) {
+  const needs = declaration?.needs
+  if (!isNeeds(needs)) return []
+  const tiene = new Set(caps)
+  return needs.filter((c) => !tiene.has(c))
 }
 
 /**
