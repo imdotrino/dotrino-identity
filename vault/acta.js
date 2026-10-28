@@ -915,8 +915,8 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
       case 'caps': {
         const m = find(ch.pub)
         if (!m) throw new Error('caps: that member is not in the record')
-        // El CN no cambia por aquí (quitar el cajón es sacar al miembro y volver a admitirlo,
-        // que es un gesto visible); las capacidades sí.
+        // El CN no cambia por aquí: tiene su propio cambio (`cn`), que también saca o pone
+        // las envolturas de la clave de contenido.
         m.caps = cleanCaps(ch.caps)
         // CONCEDER LIMPIA LA RENUNCIA. `effectiveCaps` resta lo renunciado, así que sin
         // esto una renuncia sellada era IRREVERSIBLE: el master le devolvía el permiso en
@@ -944,6 +944,30 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
         const m = find(ch.pub)
         if (!m) throw new Error('label: that member is not in the record')
         m.label = String(ch.label || '').slice(0, 60)
+        break
+      }
+      case 'cn': {
+        // DISPOSITIVO O SERVICIO, y se cambia sin re-enrolar (dueño, 2026-10-28). La única
+        // diferencia entre los dos es llevar `cn`: con él, el miembro abre el cajón de ese
+        // nombre, firma solo dentro de él y no ve lo del usuario; sin él, es un aparato tuyo.
+        // Antes el `cn` solo se ponía al admitir, y cambiarlo era revocar y volver a emparejar.
+        const m = find(ch.pub)
+        if (!m) throw new Error('cn: that member is not in the record')
+        // La llave de comunicación de una bóveda no es ni lo uno ni lo otro: su `cn` es el que
+        // la deja hablar por la bóveda con el perfil cerrado, y quitárselo la haría firmar como tú.
+        if (m.cn === VAULT_CN || m.vault != null) throw new Error('cn: the vault communication key is neither a device nor a service')
+        const cn = ch.cn != null ? String(ch.cn) : null
+        if (cn !== null && !hasDrawer(cn)) throw new Error('cn: invalid CN (lowercase, digits and hyphens, and not "vault")')
+        m.cn = cn
+        // Un servicio no ve lo del usuario: sus envolturas de la clave de contenido se van,
+        // igual que al quitarlo (lo ya leído no vuelve; el contenido futuro se corta rotando).
+        // De servicio a dispositivo, la envoltura la pone quien sella, en la misma acta (`wrap`).
+        if (cn) {
+          next.keyring = next.keyring.map((g) => {
+            const { [m.pub]: _, ...resto } = g.wraps || {}
+            return { ...g, wraps: resto }
+          })
+        }
         break
       }
       case 'remove': {

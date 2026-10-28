@@ -2906,8 +2906,29 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      */
     async setCapsMany ({ changes } = {}) {
       if (!Array.isArray(changes) || !changes.length) throw new Error('setCapsMany: no changes')
-      const acta = await sealChanges(changes.map(({ pub, caps }) => ({ op: 'caps', pub, caps })))
-      return { ok: true, seq: acta.seq }
+      // `cn` (opcional): DISPOSITIVO O SERVICIO. Un texto lo hace servicio de ese cajón;
+      // `null`, dispositivo; sin la clave, no se toca. Va en la misma acta que los permisos.
+      // De servicio a dispositivo se le envuelve la clave de contenido vigente, como al
+      // admitirlo: un aparato tuyo lee lo tuyo.
+      const acta0 = loadActa()
+      const list = []
+      let wrapped = 0
+      for (const { pub, caps, cn } of changes) {
+        if (Array.isArray(caps)) list.push({ op: 'caps', pub, caps })
+        if (cn === undefined) continue
+        list.push({ op: 'cn', pub, cn })
+        const m = (acta0?.members || []).find((x) => x.pub === pub)
+        if (cn === null && m?.cn && m.encPub) {
+          const mine = await myCek()
+          if (mine) {
+            list.push({ op: 'wrap', gen: mine.gen, pub, wrap: await Content.wrapForMember({ cek: mine.cek, memberEncPub: m.encPub }) })
+            wrapped++
+          }
+        }
+      }
+      if (!list.length) throw new Error('setCapsMany: no changes')
+      const acta = await sealChanges(list)
+      return { ok: true, seq: acta.seq, wrapped }
     },
 
     /**
