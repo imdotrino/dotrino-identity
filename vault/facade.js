@@ -154,7 +154,7 @@ export class IdentityFacade {
   vaultStatus () { return this._h('vaultStatus') }
   unpairDevice () { return this._h('vaultUnpair') }
   vaultSign (payload) { return this._h('vaultSign', { payload }) }
-  vaultStore (method, args) { return this._h('vaultStore', { method, args }) }
+  vaultStore (method, args, { wake = true } = {}) { return this._h('vaultStore', { method, args, wake }) }
   listVaultDevices (opts) { return this._h('listVaultDevices', opts || {}) }
   getVaultCert () { return this._h('getVaultCert') }
   vaultApprovals (op, args) { return this._h('vaultApprovals', { op, ...(args || {}) }) }

@@ -22,6 +22,7 @@ import { createTransport, masterPubkeyOf } from './transport.js'
 import { startSealersPublisher } from './sealers.js'
 import { openStore } from './store.js'
 import { openThreadStore, STORE_READ_METHODS, PROFILE_EDIT_METHODS } from './threadStore.js'
+import { createSiblingBackup } from './siblingBackup.js'
 import { openSecretsStore, assertVar, RECOVERY as RECOVERY_WRAP, PROFILE_OWNER } from './secretsStore.js'
 import { openSubacta } from './subacta.js'
 import { openBlocked } from './blocked.js'
@@ -161,6 +162,23 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
 
   const store = openStore(disk)
   const threads = openThreadStore(disk)
+  const siblingBackup = createSiblingBackup({
+    threads,
+    siblings: async () => {
+      const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+      const mine = await commKey.ensure().catch(() => null)
+      if (!acta || !mine) return []
+      return (acta.members || []).filter((m) => m.cn === COMM_CN && m.vault && m.vault !== master && m.pub !== mine).map((m) => m.pub)
+    },
+    send: async (to, part) => {
+      const mine = await commKey.ensure()
+      const body = { ...part, by: mine, to, ts: Date.now() }
+      const signature = await commKey.sign(body)
+      if (!signature) throw new Error('the communication key could not sign')
+      await client.sendSealed([to], { type: MSG.SIBLING_BACKUP, body, signature }, { quiet: true, app: 'vault' })
+    },
+    log
+  })
   /**
    * LO QUE SIRVE LA BÓVEDA VA CON LA LLAVE VIGENTE (dueño, 2026-09-30). Tras una rotación
    * de la llave de la cuenta, los sobres (`t: 'dotrino-cek'`) de generaciones anteriores
@@ -609,6 +627,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
   // POR DETRÁS: sellar a la hermana exige averiguar su llave en el proxio, y si no la ha
   // anunciado esa pregunta tarda. El arranque no espera a eso.
   pushDrawersToSiblings('start').catch(() => {})
+  // Y EL RESPALDO DE LAS APPS: una que estuvo apagada días se pone al día sola.
+  siblingBackup.announce('start').catch((e) => log('[vault] could not announce the app backup: ' + e.message))
   await syncExNotices()
 
   async function revocationSet () {
@@ -1314,6 +1334,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // de seguridad, no una copia de lo que guardas).
       if (!STORE_READ_METHODS.has(d.method)) {
         audit('store', { device: await deviceIdOf(chk.device), method: d.method })
+        siblingBackup.schedule()
       }
       const enc = await identity.sealContent(JSON.stringify(result ?? null))
       reply(from, { type: MSG.STORE_RESULT, method: d.method, result: { __enc: enc } })
@@ -2499,6 +2520,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (payload.type === MSG.RENOUNCE) return await handleRenounce(from, payload)
       if (payload.type === MSG.ADMIN_EVENT) return await handleAdminEvent(payload)
       if (payload.type === MSG.SIBLING_DRAWERS) return await handleSiblingDrawers(payload, meta)
+      if (payload.type === MSG.SIBLING_BACKUP) return await handleSiblingBackup(payload, meta)
       if (payload.type === MSG.INCIDENT) return await handleIncident(from, payload)
       if (payload.type === MSG.REPLICA_ACK) return await handleReplicaAck(from, payload)
       if (payload.type === MSG.LOGIN_START) return await handleLoginStart(from, payload)
@@ -2930,6 +2952,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // sin lo nuestro cuando las dos ya iban por la misma acta (la Nube con el PC en la #64).
       if (secrets.aheadOf?.(body.state)) await pushDrawersToSiblings('a sibling lacks some drawers')
     } catch (e) { log('[vault] could not merge the drawers of a sibling vault: ' + e.message) }
+  }
+
+  async function handleSiblingBackup (payload, meta) {
+    const body = payload?.body
+    if (!body || typeof body.op !== 'string') return
+    // NADA EN CLARO: es lo que guardan las apps del usuario.
+    if (!meta?.sealed) return log('[vault] app backup from a sibling arrived UNSEALED: ignored')
+    const acta = (await identity.profileActa?.().catch(() => null))?.acta || null
+    const mine = await commKey.ensure().catch(() => null)
+    const who = (acta?.members || []).find((m) => m.pub === body.by)
+    const okSibling = acta && who && who.cn === COMM_CN && who.vault && who.vault !== master && Acta.memberCan(acta, who.vault, 'sealer')
+    if (!okSibling || body.to !== mine) return log('[vault] app backup from someone who is not a sibling vault, or not for us: ignored')
+    try { await siblingBackup.handle(body.by, body) } catch (e) { log(`[vault] could not handle the app backup of a sibling vault (${body.op}): ${e.message}`) }
   }
 
   async function notifyMembers (ev, info = {}) {

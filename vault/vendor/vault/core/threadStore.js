@@ -44,7 +44,22 @@ export function openThreadStore (disk) {
   // primer aparato que todavía tenga la entrada.
   if (!data.tombs) data.tombs = {}
   core.pruneTombs(data.tombs, Date.now())
+  // EL TOPE DEL RESPALDO (dueño, 2026-10-28): 25 MB por cuenta. `owners` dice de qué app es
+  // cada hilo (lo anota el almacén del navegador) y `floors`, por hilo, hasta qué `ts` se borró
+  // por el tope: eso sale solo de aquí, el aparato lo conserva y deja de subirlo.
+  if (!data.owners) data.owners = {}
+  if (!data.floors) data.floors = {}
   const save = () => writeJson(disk, file, data)
+  const takeOwners = (incoming) => {
+    let changed = false
+    for (const [k, app] of Object.entries(needMap(incoming, 'owners'))) {
+      if (!core.validKey(k) || typeof app !== 'string' || !app || data.owners[k] === app) continue
+      data.owners[k] = app
+      changed = true
+    }
+    return changed
+  }
+  const fit = () => core.enforceQuota(data.threads, data.owners, data.floors)
   save() // reescribe al abrir: cifra lo que venía en claro
   const budget = (n) => Math.min(Math.max(Number(n) || core.PAGE_BYTES, 1024), core.PAGE_BYTES)
   const needKeys = (keys) => {
@@ -60,6 +75,7 @@ export function openThreadStore (disk) {
   const methods = {
     appendMessage ({ threadKey, entry }) {
       core.writeEntry(data.threads, data.tombs, threadKey, entry, { max: MAX_PER_THREAD, now: Date.now(), newId: () => crypto.randomUUID() })
+      fit()
       save(); return entry
     },
     listThread ({ threadKey, limit, before }) {
@@ -109,22 +125,34 @@ export function openThreadStore (disk) {
     getThreadDigests ({ keys } = {}) {
       return core.digestsOf(data.threads, keys == null ? undefined : needKeys(keys))
     },
+    /** Las huellas y los suelos: el aparato calcula las suyas sin lo que aquí ya no se guarda. */
+    async getBackupState () {
+      return { digests: await core.digestsOf(data.threads), floors: { ...data.floors }, quota: core.VAULT_QUOTA_BYTES }
+    },
     getThreadIndexes ({ keys, cursor, maxBytes }) {
       return core.indexPage(data.threads, data.tombs, needKeys(keys), cursor || null, budget(maxBytes))
     },
     getEntries ({ refs, maxBytes }) {
-      return core.entriesPage(data.threads, needMap(refs, 'refs'), budget(maxBytes))
+      const page = core.entriesPage(data.threads, needMap(refs, 'refs'), budget(maxBytes))
+      const owners = Object.fromEntries(Object.keys(page.threads).filter((k) => Object.hasOwn(data.owners, k)).map((k) => [k, data.owners[k]]))
+      return { ...page, owners }
     },
-    importThreads ({ threads, tombs, mode = 'merge' }) {
+    importThreads ({ threads, tombs, owners, floors, mode = 'merge' }) {
       if (!threads || typeof threads !== 'object') throw new Error('threads required')
       if (mode === 'replace') { data.threads = threads; save(); return { mode, count: Object.keys(threads).length } }
       if (mode !== 'merge' && mode !== 'upsert') throw new Error(`unknown import mode: ${mode}`)
       const now = Date.now()
+      const ownersChanged = takeOwners(owners)
+      // Los suelos de otra bóveda (la copia entre hermanas): el mayor de cada hilo.
+      const floorsChanged = core.mergeFloors(data.floors, needMap(floors, 'floors'))
+      const lowered = floorsChanged ? core.applyFloors(data.threads, data.floors) : new Set()
       const buried = core.applyTombs(data.threads, data.tombs, needMap(tombs, 'tombs'), now)
-      const merged = core.mergeEntries(data.threads, data.tombs, threads, { mode, max: MAX_PER_THREAD })
+      const merged = core.mergeEntries(data.threads, data.tombs, threads, { mode, max: MAX_PER_THREAD, floors: data.floors })
       core.pruneTombs(data.tombs, now)
-      if (buried.tombsChanged || buried.changed.size || merged.size) save()
-      return { mode, count: Object.keys(data.threads).length, changed: [...new Set([...buried.changed, ...merged])] }
+      const fitted = fit()
+      const changed = new Set([...lowered, ...buried.changed, ...merged, ...fitted.changed])
+      if (ownersChanged || floorsChanged || buried.tombsChanged || changed.size || fitted.evicted) save()
+      return { mode, count: Object.keys(data.threads).length, changed: [...changed], evicted: fitted.evicted }
     },
     // ----- PERFIL del usuario (me): el vault es la copia AUTORITATIVA -----
     // Cada dispositivo emparejado lo empuja al editarlo y lo jala al arrancar →
@@ -262,7 +290,7 @@ export function openThreadStore (disk) {
  */
 export const STORE_READ_METHODS = new Set([
   'listThread', 'listThreadKeys', 'getThreadSummaries', 'getOpens', 'exportThreads', 'getStats', 'profileGet',
-  'getThreadDigests', 'getThreadIndexes', 'getEntries'
+  'getThreadDigests', 'getThreadIndexes', 'getEntries', 'getBackupState'
 ])
 
 /**

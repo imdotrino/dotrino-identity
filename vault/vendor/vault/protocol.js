@@ -88,6 +88,8 @@ export const MSG = Object.freeze({
   // bóveda → sus hermanas: los cajones (sellados a la llave de cifrado de la hermana) y las
   // lápidas, firmados por la llave de comunicación de quien manda (`docs/replicas.md` §11.4).
   SIBLING_DRAWERS: 'vault.sibling.drawers',
+  // bóveda → sus hermanas: el respaldo de las apps, por partes (`core/siblingBackup.js`).
+  SIBLING_BACKUP: 'vault.sibling.backup',
   ADMIN_EVENT: 'vault.admin.event',           // vault → todos: { body:{ev,deviceId,by,ts}, acta } (pedidos: + seal)
   // RÉPLICAS: la principal empuja lo que hay que servir (el acta y los sobres, que van
   // firmados de antes y no se pueden falsificar) y la réplica acusa hasta qué `seq` tiene.

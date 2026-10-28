@@ -364,7 +364,7 @@ async function clientFor (proxy, master) {
   return client
 }
 
-async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000 }) {
+async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000, quiet = false }) {
   // `to`: a qué llave se escribe, si no es la maestra. Con dos bóvedas en la cuenta, la
   // maestra del perfil las alcanza a todas; la llave de comunicación de una, solo a ella.
   const dest = to || master
@@ -401,7 +401,8 @@ async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, 
       const t = setTimeout(() => { cleanup(); reject(Object.assign(new Error('the vault did not reply (is it running?)'), { code: 'vault-no-reply' })) }, timeoutMs)
       const cleanup = () => { off(); clearTimeout(t); clearTimeout(graceTimer) }
     })
-    client.sendByPubkey(dest, { type: sendType, data: signed, signature, cert })
+    // `quiet`: no despierta a una bóveda dormida (la Nube); si duerme, lo recibe al despertar.
+    client.sendByPubkey(dest, { type: sendType, data: signed, signature, cert }, quiet ? { quiet: true } : {})
     return await pending
   } finally { try { client.close() } catch (_) {} }
 }
@@ -450,10 +451,10 @@ export async function checkMembership ({ master, proxy, device, onRevoked, timeo
 }
 
 /** Lee/escribe el store de hilos+aperturas EN el vault (con el cert del dispositivo). */
-export async function requestStore ({ master, proxy, device, cert, method, args, enc, onRevoked } = {}) {
+export async function requestStore ({ master, proxy, device, cert, method, args, enc, onRevoked, wake = true } = {}) {
   // `enc`: argumentos cifrados con la clave de contenido del perfil (el proxy no los ve).
   const data = enc ? { op: 'store', method, enc } : { op: 'store', method, args: args || {} }
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.store', okType: 'vault.store.result', data })
+  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, quiet: !wake, sendType: 'vault.store', okType: 'vault.store.result', data })
   return res.result
 }
 

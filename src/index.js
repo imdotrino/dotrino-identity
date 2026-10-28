@@ -464,8 +464,8 @@ export class Identity {
    * listThread, recordOpen, getOpens, getStats, …) EN tu vault, usando el cert de
    * este dispositivo. Reusa el mismo emparejamiento. Requiere el vault encendido.
    */
-  async vaultStore (method, args) {
-    return this._call('vaultStore', { method, args }, 20000)
+  async vaultStore (method, args, { wake = true } = {}) {
+    return this._call('vaultStore', { method, args, wake }, 20000)
   }
 
   /**

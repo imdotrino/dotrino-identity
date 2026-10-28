@@ -3360,7 +3360,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * perfil desde un aparato que ya la tenga — y se ve, en vez de viajar a la vista.
      * Por lo mismo, una respuesta sin cifrar tampoco se acepta.
      */
-    async vaultStore ({ method, args }) {
+    async vaultStore ({ method, args, wake = true }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw Object.assign(new Error('this device is not paired with a vault'), { code: 'not-paired' })
       maybeRenewVaultCert()
@@ -3368,7 +3368,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (!mine) throw Object.assign(new Error('this device does not hold the profile content key yet'), { code: 'no-content-key' })
       const enc = await Content.encryptWithCek({ cek: mine.cek, gen: mine.gen, plaintext: JSON.stringify(args ?? {}) })
       try {
-        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, enc, onRevoked: wipeVaultLink })
+        // `wake: false` (lo decide el almacén, dueño 2026-10-28): no despierta a la Nube por cada
+        // mensaje; solo si lleva más de 24 h sin respaldar, o con el botón de sincronizar.
+        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, enc, wake, onRevoked: wipeVaultLink })
         if (!res || typeof res !== 'object' || !res.__enc) {
           throw Object.assign(new Error('the vault replied to the store without encrypting it'), { code: 'vault-reply-unsealed' })
         }
