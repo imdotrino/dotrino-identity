@@ -3372,6 +3372,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         if (!res || typeof res !== 'object' || !res.__enc) {
           throw Object.assign(new Error('the vault replied to the store without encrypting it'), { code: 'vault-reply-unsealed' })
         }
+        // LA BÓVEDA CONTESTA CON SU GENERACIÓN, que puede ser más nueva que mi acta (2026-10-27:
+        // el navegador del messenger en un acta anterior a la #74 y la bóveda cerrando con la
+        // generación 11, que nació en la #74). Solo la página /vault ponía al día el acta, así
+        // que fuera de ella el almacén fallaba para siempre. Me pongo al día por el camino de
+        // siempre (la lista trae el acta y la cadena de selladoras) y la abro con la que llegue.
+        const hasGen = () => (loadActa()?.keyring || []).some((g) => g.gen === res.__enc?.gen && g.wraps?.[publickeyJwkStr])
+        if (!hasGen()) {
+          const antes = loadActa()?.seq ?? null
+          await handlers.listVaultDevices()
+          if (!hasGen()) {
+            throw Object.assign(new Error(`the vault replied with content key generation ${res.__enc?.gen} and this device, on record #${loadActa()?.seq ?? antes}, does not hold it`), { code: 'content-gen-ahead' })
+          }
+        }
         return JSON.parse(await Content.decryptWithKeyring({
           envelope: res.__enc, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
         }))
