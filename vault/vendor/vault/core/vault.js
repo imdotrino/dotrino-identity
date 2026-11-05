@@ -2285,7 +2285,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // las siguientes veces que lo pida ESE MISMO comando desde ESA MISMA carpeta. Un pedido
     // que no dijo qué corría no deja nada anotado, y se dice por qué: si no, el dueño vería
     // que unos pedidos dejan de timbrar y otros no, sin ninguna explicación a mano.
-    const grant = grants.grant({ ns: pend.ns, device: pend.device, deviceId: pend.deviceId, ctx: pend.ctx, by })
+    const grant = grants.grant({ ns: pend.ns, device: pend.device, deviceId: pend.deviceId, label: pend.label || '', ctx: pend.ctx, by })
     audit('secrets.approved', { device: pend.deviceId, ns: pend.ns, id, by, ...(grant ? { grant: grant.id } : {}) })
     noteAnswered(pend, 'approved', by, chk.device)
     log(`[vault] ${pend.ns}: request of ${pend.deviceId} approved by ${by}`)

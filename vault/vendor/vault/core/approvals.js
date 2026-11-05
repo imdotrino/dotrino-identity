@@ -126,11 +126,12 @@ export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS
  * La llave es cajón + aparato + huella del comando. Nada de esto se escribe en disco.
  */
 export function createGrants ({ now = Date.now, ttlMs = GRANT_TTL_MS } = {}) {
-  /** key → { id, ns, device, deviceId, fp, ctx, by, grantedAt, lastAt, exp, uses } */
+  /** key → { id, ns, device, deviceId, label, fp, ctx, by, grantedAt, lastAt, exp, uses } */
   const grants = new Map()
   const keyOf = (ns, device, fp) => ns + SEP + device + SEP + fp
   const publicOf = (g) => ({
-    id: g.id, ns: g.ns, deviceId: g.deviceId, fp: g.fp, ctx: g.ctx,
+    // El aparato con su ALIAS además del ID (dueño, 2026-11-05: «debe mostrar el ID y el alias, ambos»).
+    id: g.id, ns: g.ns, deviceId: g.deviceId, label: g.label || '', fp: g.fp, ctx: g.ctx,
     by: g.by, grantedAt: g.grantedAt, lastAt: g.lastAt, exp: g.exp, uses: g.uses
   })
 
@@ -140,11 +141,11 @@ export function createGrants ({ now = Date.now, ttlMs = GRANT_TTL_MS } = {}) {
      * traía comando: sin huella no hay nada que recordar, y el próximo pedido volverá a
      * timbrar. Que eso se diga en el log es cosa de quien llama.
      */
-    grant ({ ns, device, deviceId = null, ctx = null, by = null }) {
+    grant ({ ns, device, deviceId = null, label = '', ctx = null, by = null }) {
       const fp = commandFingerprint(ctx)
       if (!fp) return null
       const t = now()
-      const g = { id: rnd(), ns, device, deviceId, fp, ctx, by, grantedAt: t, lastAt: t, exp: t + ttlMs, uses: 0 }
+      const g = { id: rnd(), ns, device, deviceId, label, fp, ctx, by, grantedAt: t, lastAt: t, exp: t + ttlMs, uses: 0 }
       grants.set(keyOf(ns, device, fp), g)
       return publicOf(g)
     },
