@@ -3820,7 +3820,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Mirar es de solo lectura; si el papel de una cuenta está desfasado, se dice y punto.
      *
      * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
-     * @returns {Promise<Array<{ profile: string, name: string, current: boolean, items: any[], error?: string }>>} una entrada por cuenta que
+     * @returns {Promise<Array<{ profile: string, name: string, current: boolean, items: any[], notices?: any[], error?: string }>>} una entrada por cuenta que
      *   aprueba — con sus pedidos, o con el motivo por el que no se pudo preguntar.
      */
     async vaultApprovalsAll ({ notify } = {}) {
@@ -3844,13 +3844,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           // demás no se dice nada, que no es lo mismo que decir que no.
           const r = await remoteApproval({ acta: actaOfProfile(p.id), master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals', ...(p.id === currentPid ? { notify } : {}) })
           const items = Array.isArray(r?.items) ? await abrirContextos(r.items, p.id) : []
-          return { ...base, items }
+          // Y LOS AVISOS de las últimas 24 h (lo actualizado, lo entregado, los pedidos que se
+          // cerraron): se tiraban aquí, y la pantalla de Pedidos no tenía nada que enseñar
+          // junto a un aviso que ya había sonado.
+          return { ...base, items, notices: Array.isArray(r?.notices) ? r.notices : [] }
         } catch (e) {
           const err = /** @type {any} */ (e)
           return { ...base, items: [], error: err?.code || err?.message || 'error' }
         }
       }))
-      return /** @type {Array<{ profile: string, name: string, current: boolean, items: any[], error?: string }>} */ (salida.filter(Boolean))
+      return /** @type {Array<{ profile: string, name: string, current: boolean, items: any[], notices?: any[], error?: string }>} */ (salida.filter(Boolean))
     },
 
     /**

@@ -923,7 +923,7 @@ export function createIdentityCore({ kv: hostKv, peers, makeSync, keyStore: host
          * Mirar es de solo lectura; si el papel de una cuenta está desfasado, se dice y punto.
          *
          * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
-         * @returns {Promise<Array<{ profile: string, name: string, current: boolean, items: any[], error?: string }>>} una entrada por cuenta que
+         * @returns {Promise<Array<{ profile: string, name: string, current: boolean, items: any[], notices?: any[], error?: string }>>} una entrada por cuenta que
          *   aprueba — con sus pedidos, o con el motivo por el que no se pudo preguntar.
          */
         vaultApprovalsAll({ notify }?: HandlerParams): Promise<Array<{
@@ -931,6 +931,7 @@ export function createIdentityCore({ kv: hostKv, peers, makeSync, keyStore: host
             name: string;
             current: boolean;
             items: any[];
+            notices?: any[];
             error?: string;
         }>>;
         /**

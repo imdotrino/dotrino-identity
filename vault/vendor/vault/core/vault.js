@@ -200,7 +200,21 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (r.skipped) log(`[vault] ${why}: ${r.skipped} unmarked envelope(s) that the account key does not open were left as they are`)
     return r
   }
-  const approvals = createApprovals()
+  const approvals = createApprovals({ onExpire: (p) => noteAnswered(p, 'expired') })
+  /**
+   * EL RASTRO DE UN PEDIDO CERRADO, para Pedidos (`notices`, 24 h). El aviso del teléfono ya sonó;
+   * sin esto, al abrir la app el pedido no estaba y no quedaba nada que lo explicara.
+   *
+   * No cambia lo que se decidió: si no se puede apuntar se dice en el log, y la respuesta sigue.
+   */
+  function noteAnswered (pend, outcome, by = null, byPub = null) {
+    try {
+      // Quien contestó, con su ALIAS además del ID (dueño, 2026-11-05: «no solo debe ir el Id
+      // sino también el alias»). El alias sale del acta, como el de quien pidió.
+      const byLabel = byPub ? (actaCache?.members || []).find((m) => m.pub === byPub)?.label || '' : ''
+      notices.add('answered', { outcome, kind: pend.kind || 'read', ns: pend.ns || null, deviceId: pend.deviceId || null, label: pend.label || '', by, byLabel, request: pend.id || null })
+    } catch (e) { log(`[vault] could not note that request ${pend.id} was ${outcome}: ${e.message}`) }
+  }
   /**
    * LO QUE YA SE APROBÓ: comando + carpeta, por una hora desde el último uso.
    *
@@ -2212,6 +2226,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       }
       if (op === 'deny') {
         audit('incident.ignored', { device: pend.deviceId, kind: pend.ctx?.kind || null, id, by })
+        noteAnswered(pend, 'ignored', by, chk.device)
         log(`[vault] incident ${id} about ${pend.deviceId} ignored by ${by}`)
         return answer({ op: 'deny.result', id, ok: true })
       }
@@ -2220,6 +2235,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // le quedaba sería un bloqueo de mentira.
       const cut = grants.revokeAll({ device: pend.device })
       audit('blocked', { device: pend.deviceId, kind: pend.ctx?.kind || null, id, by, grants: cut })
+      noteAnswered(pend, 'blocked', by, chk.device)
       log(`[vault] BLOCKED ${pend.deviceId}${pend.label ? ` (${pend.label})` : ''} by ${by} after incident ${id} · unblock with: dotrino-vault unblock ${pend.deviceId}`)
       // Se avisa a todos: los agentes (la terminal) traen la lista con el acta al recibirlo
       // y le cierran la sesión que tenga abierta. Sin esto el bloqueo esperaba al tic de 5 min.
@@ -2236,6 +2252,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const ok = op === 'approve'
       const what = pend.kind === 'write' ? 'vars' : pend.kind === 'update' ? 'update' : 'passwords'
       audit(ok ? `${what}.approved` : `${what}.denied`, { device: pend.deviceId, ns: pend.ns, id, by })
+      noteAnswered(pend, ok ? 'approved' : 'denied', by, chk.device)
       log(`[vault] ${what}: request ${pend.id} of ${pend.deviceId} ${ok ? 'approved' : 'DENIED'} by ${by}`)
       // Lo aprobado SE HACE AQUÍ (una escritura se aplica ahora), y si falla quien aprobó
       // tiene que enterarse: decirle «hecho» a algo que no se guardó es el peor resultado.
@@ -2248,6 +2265,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     if (op === 'deny') {
       audit('secrets.denied', { device: pend.deviceId, ns: pend.ns, id, by })
+      noteAnswered(pend, 'denied', by, chk.device)
       log(`[vault] ${pend.ns}: request of ${pend.deviceId} DENIED by ${by}`)
       try {
         const plain = { type: MSG.ERROR, error: `unauthorized: denied — the "${pend.ns}" request was denied from ${by}` }
@@ -2269,6 +2287,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // que unos pedidos dejan de timbrar y otros no, sin ninguna explicación a mano.
     const grant = grants.grant({ ns: pend.ns, device: pend.device, deviceId: pend.deviceId, ctx: pend.ctx, by })
     audit('secrets.approved', { device: pend.deviceId, ns: pend.ns, id, by, ...(grant ? { grant: grant.id } : {}) })
+    noteAnswered(pend, 'approved', by, chk.device)
     log(`[vault] ${pend.ns}: request of ${pend.deviceId} approved by ${by}`)
     log(grant
       ? `[vault] ${pend.ns}: "${commandLine(pend.ctx, 80)}" approved for ${Math.round(GRANT_TTL_MS / 60000)} min from its last use (grant ${grant.id})`
@@ -5113,6 +5132,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       const retire = () => {
         if (!pendId || !waiters.delete(pendId)) return
         const pend = approvals.take(pendId)
+        if (pend) noteAnswered(pend, 'withdrawn')
         audit('update.withdrawn', { device: pend?.deviceId || null, ns: 'vault', id: pendId })
         log(`[vault] update: request ${pendId} withdrawn`)
         settle(false)

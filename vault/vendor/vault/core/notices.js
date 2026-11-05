@@ -1,7 +1,9 @@
 /**
  * LO QUE LA BÓVEDA TIENE QUE CONTARLE A QUIEN APRUEBA, y que no es un pedido.
  *
- * Son tres. Dos de la bóveda o de uno de sus aparatos: «me actualicé» y «hay versión nueva y
+ * Lo que se cuenta: «me actualicé», «hay versión nueva y necesita permisos de administrador»,
+ * un incidente de emparejamiento, el ancla de la bitácora, lo entregado sin aprobación y los
+ * pedidos que se cerraron (`answered`). Los dos primeros, de la bóveda o de uno de sus aparatos: «me actualicé» y «hay versión nueva y
  * necesita permisos de administrador: instálala a mano» (`update-needs-root`). (`ev: 'updated'`, dueño 2026-10-08: «las actualizaciones, que se
  * envíe una notificación de que ocurrieron a los aprobadores»). Sale como aviso por el
  * proxio, pero el timbre de una app nativa llega VACÍO —lo leen Google y Apple—, así que la
@@ -22,7 +24,15 @@ export const NOTICE_TTL_MS = 24 * 60 * 60 * 1000
  * (`docs/pairing-protocol.md` §1.7). No pide nada: no hay a quién bloquear, porque ninguno
  * entró. Lo cuenta, con el ID y la máquina de los dos.
  */
-export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested', 'log-anchor', 'delivered']
+export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested', 'log-anchor', 'delivered', 'answered']
+/**
+ * `answered`: un pedido que se cerró —aprobado, denegado, bloqueado, ignorado, retirado o
+ * caducado—, con quién lo contestó (`by`, el ID del aparato) si fue alguien (dueño, 2026-11-05:
+ * «las notificaciones llegan pero al abrirlas en la app no hay restos de nada; el vault debe
+ * mostrarme en la pantalla de aprobaciones el movimiento de las últimas 24 horas»). Un pedido
+ * contestado salía de la lista y no quedaba nada que enseñar junto al aviso que ya había sonado.
+ */
+export const ANSWER_OUTCOMES = ['approved', 'denied', 'blocked', 'ignored', 'withdrawn', 'expired']
 /**
  * `delivered`: un aparato con `unattended` se llevó claves de un cajón (`kind: 'secrets'`) o
  * una contraseña (`kind: 'passwords'`) sin que nadie aprobara, porque no le hacía falta (dueño,
@@ -65,7 +75,7 @@ export function openNotices ({ disk, now = Date.now }) {
      * administrador). `product`: qué (`@dotrino/vaultd` es la propia bóveda);
      * `deviceId`/`label`: el aparato, si fue uno.
      */
-    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null, logSeq = null, head = null, tsa = null, ns = null, kind = null }) {
+    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null, logSeq = null, head = null, tsa = null, ns = null, kind = null, outcome = null, by = null, byLabel = null, request = null }) {
       if (!NOTICE_EVS.includes(ev)) throw fail('bad-notice', `unknown notice: ${ev}`)
       if (ev === 'delivered') {
         if (!DELIVERED_KINDS.includes(kind)) throw fail('bad-notice', `${ev}: kind must be one of ${DELIVERED_KINDS.join(', ')}`)
@@ -84,6 +94,23 @@ export function openNotices ({ disk, now = Date.now }) {
         }
         const n = { id: newId(), ev, logSeq, head, tsa, ts: now() }
         items = [...items.filter(alive).filter((x) => x.ev !== 'log-anchor'), n]
+        save()
+        return n
+      }
+      if (ev === 'answered') {
+        if (!ANSWER_OUTCOMES.includes(outcome)) throw fail('bad-notice', `${ev}: outcome must be one of ${ANSWER_OUTCOMES.join(', ')}`)
+        if (typeof kind !== 'string' || !kind) throw fail('bad-notice', `${ev}: the kind of request is required`)
+        const n = {
+          id: newId(), ev, outcome, kind,
+          ns: typeof ns === 'string' ? ns : null,
+          deviceId: typeof deviceId === 'string' ? deviceId : null,
+          label: typeof label === 'string' ? label : '',
+          by: typeof by === 'string' && by ? by : null,
+          byLabel: typeof byLabel === 'string' ? byLabel : '',
+          request: typeof request === 'string' ? request : null,
+          ts: now()
+        }
+        items = [...items.filter(alive), n]
         save()
         return n
       }

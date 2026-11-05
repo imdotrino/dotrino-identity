@@ -62,7 +62,11 @@ export const UPDATE_TTL_MS = 24 * 60 * 60 * 1000
 /** Lo que dura una concesión SIN USARSE. Cada uso la vuelve a poner en una hora. */
 export const GRANT_TTL_MS = 60 * 60 * 1000
 
-export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS } = {}) {
+/**
+ * `onExpire(pedido)` se llama con CADA pedido que caduca, lo tire quien lo tire: `list` y `take`
+ * también barren, y lo que se iban llevando no lo veía nadie.
+ */
+export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS, onExpire = null } = {}) {
   /** id → { id, ns, device, deviceId, label, ek, ctx, ts, exp, from } */
   const pending = new Map()
   /**
@@ -110,6 +114,7 @@ export function createApprovals ({ now = Date.now, pendingTtlMs = PENDING_TTL_MS
     sweep () {
       const t = now(); const gone = []
       for (const [id, p] of pending) if (p.exp <= t) { pending.delete(id); gone.push(publicOf(p)) }
+      if (onExpire) for (const g of gone) onExpire(g)
       return gone
     }
   }

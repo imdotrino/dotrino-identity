@@ -207,7 +207,7 @@ export class Identity {
    */
   vaultApprovals (op: 'approvals' | 'approve' | 'deny', args?: { id?: string; profile?: string; notify?: boolean }): Promise<any>
   /** Los pedidos de TODAS las cuentas de este dispositivo que aprueban, sin cambiar la activa. */
-  vaultApprovalsAll (args?: { notify?: boolean }): Promise<Array<{ profile: string; name: string; current: boolean; items: ApprovalRequest[]; error?: string }>>
+  vaultApprovalsAll (args?: { notify?: boolean }): Promise<Array<{ profile: string; name: string; current: boolean; items: ApprovalRequest[]; notices?: VaultNotice[]; error?: string }>>
   canApproveVault (): Promise<boolean>
   getVaultCert (): Promise<any>
   onVault (handler: (payload: any) => void): () => void
@@ -512,6 +512,28 @@ export interface ApprovalRequest {
   /** La bóveda no pudo sellarlo para este aparato (`no-enc-key`, `seal-failed`). */
   ctxSealed?: boolean
   ctxReason?: string
+}
+
+/**
+ * Lo que la bóveda cuenta a quien aprueba, de las últimas 24 h (`notices` de `approvals`).
+ * `ev`: `updated`, `update-needs-root`, `pairing-contested`, `log-anchor`, `delivered` o
+ * `answered` (un pedido que se cerró: `outcome` dice cómo y `by` quién lo contestó).
+ */
+export interface VaultNotice {
+  id: string
+  ev: string
+  ts: number
+  kind?: string
+  ns?: string | null
+  deviceId?: string | null
+  label?: string
+  outcome?: 'approved' | 'denied' | 'blocked' | 'ignored' | 'withdrawn' | 'expired'
+  by?: string | null
+  request?: string | null
+  product?: string
+  version?: string
+  from?: string | null
+  [k: string]: unknown
 }
 
 /** Qué proceso pide, y si lo comprobó el kernel (`proc`) o solo lo dice él (`declared`). */
