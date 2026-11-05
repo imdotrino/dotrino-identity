@@ -16,6 +16,7 @@
 import { makeDeviceKey, signWithDevice, verifyDeviceSig, makePairingCode, commitCode, keyLabel } from './capabilities.js'
 import { checkVaultReply, accountMismatch } from './acta.js'
 import { cleanMachine, browserMachine } from './machine.js'
+import { sendToVault, acceptReply } from './vaultSeal.js'
 
 const MSG = {
   HELLO: 'vault.hello',
@@ -282,8 +283,9 @@ export async function enrollDevice ({ qr, device, onChallenge, label = '', conti
  * firma. Requiere que el vault esté online.
  * @returns {Promise<{ signature:string, publickey:string }>}  publickey = la maestra.
  */
-export async function requestSign ({ master, proxy, device, cert, payload, onRevoked, timeoutMs = 15000 } = {}) {
+export async function requestSign ({ master, proxy, device, cert, acta = null, payload, onRevoked, timeoutMs = 15000 } = {}) {
   const res = await vaultRpc({
+    acta,
     master, proxy, device, cert, onRevoked, timeoutMs,
     sendType: 'vault.sign', okType: 'vault.signed', data: { op: 'sign', payload }
   })
@@ -342,12 +344,15 @@ function localClient (open) {
   const handlers = new Set()
   const chan = open((reply) => { for (const h of [...handlers]) { try { h('local', reply) } catch (_) {} } })
   return {
+    // El socket de esta máquina: no toca la red, así que no hay nada que sellar (`vaultSeal.js`).
+    local: true,
     connect: async () => {},
     identifyAs: async () => {},
     on (ev, fn) {
       if (ev !== 'message') return () => {}
-      handlers.add(fn)
-      return () => handlers.delete(fn)
+      const h = (from, payload) => fn(from, payload, { local: true })
+      handlers.add(h)
+      return () => handlers.delete(h)
     },
     sendByPubkey (_to, payload) { chan.send(payload) },
     close () { handlers.clear(); chan.close() }
@@ -355,28 +360,43 @@ function localClient (open) {
 }
 
 /** El cliente para hablar con `master`: el local si esa bóveda corre aquí, y si no el del proxio. */
-async function clientFor (proxy, master) {
+async function clientFor (proxy, master, { myEncPrivateKey = null } = {}) {
   const open = master ? localVaults.get(master) : null
   if (open) return localClient(open)
   const { WebSocketProxyClient } = await import('@dotrino/proxy-client')
-  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false })
+  // `myEncPrivateKey` SIN `myEncPub`: abre la respuesta sellada a la llave de un solo uso de
+  // esta llamada, y no anuncia nada — anunciarla pisaría la llave de cifrado del aparato.
+  const client = new WebSocketProxyClient({ url: proxy, enableWebRTC: false, autoReconnect: false, ...(myEncPrivateKey ? { myEncPrivateKey } : {}) })
   await client.connect()
   return client
 }
+
+/** La llave de un solo uso con la que vuelve sellada la respuesta (`vaultSeal.js`). */
+async function makeReplyKey () {
+  const { makeEncKeypair } = await import('@dotrino/proxy-client')
+  return makeEncKeypair()
+}
+
+const warnOnce = (() => {
+  const told = new Set()
+  return (line) => { if (told.has(line)) return; told.add(line); try { console.warn(line) } catch (_) {} }
+})()
 
 async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, sendType, okType, data, onRevoked, timeoutMs = 15000, quiet = false }) {
   // `to`: a qué llave se escribe, si no es la maestra. Con dos bóvedas en la cuenta, la
   // maestra del perfil las alcanza a todas; la llave de comunicación de una, solo a ella.
   const dest = to || master
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function') || !cert) throw new Error('missing pairing data')
-  const client = await clientFor(proxy, dest)
+  // LA RESPUESTA VUELVE SELLADA a esta llave, que va dentro de lo firmado (`vaultSeal.js`).
+  const rk = await makeReplyKey()
+  const client = await clientFor(proxy, dest, { myEncPrivateKey: rk.privateKey })
   try {
     try { await identifyAsDevice(client, device, { cert, acta }) } catch (_) { /* sin identify seguimos: solo perdemos la cola */ }
-    const signed = { ...data, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
+    const signed = { ...data, rek: rk.encPub, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data: signed })
     const pending = new Promise((resolve, reject) => {
       let graceTimer = null
-      const off = client.on('message', (_f, p) => {
+      const off = client.on('message', (_f, p, meta) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.REVOKED) {
           isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey, currentNonce: cert?.nonce || null })
@@ -384,8 +404,10 @@ async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, 
             .catch(() => {})
           return
         }
-        if (p.type === okType) { cleanup(); resolve(p) }
-        else if (p.type === 'vault.error') {
+        if (p.type === okType) {
+          if (!acceptReply({ meta, local: !!client.local, type: okType, warn: warnOnce })) return
+          cleanup(); resolve(p)
+        } else if (p.type === 'vault.error') {
           // «Te echaron» llega en DOS mensajes: este error (que no va firmado, así que no
           // puede borrar nada — wipe-DoS) y el `vault.revoked` FIRMADO, que es el único que
           // sí. Cerrar el socket al recibir el primero era llegar a cerrar la puerta justo
@@ -402,7 +424,8 @@ async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, 
       const cleanup = () => { off(); clearTimeout(t); clearTimeout(graceTimer) }
     })
     // `quiet`: no despierta a una bóveda dormida (la Nube); si duerme, lo recibe al despertar.
-    client.sendByPubkey(dest, { type: sendType, data: signed, signature, cert }, quiet ? { quiet: true } : {})
+    // SELLADA a cada bóveda de la cuenta: fuera del sobre solo queda a quién va.
+    await sendToVault(client, { dest, to, acta, payload: { type: sendType, data: signed, signature, cert }, quiet, warn: warnOnce })
     return await pending
   } finally { try { client.close() } catch (_) {} }
 }
@@ -419,19 +442,20 @@ async function vaultRpc ({ master, to = null, proxy, device, cert, acta = null, 
  * expulsión, ESE es el que borra la cuenta aquí (`onRevoked`); el «no» pelado no borra
  * nada, como cualquier otro mensaje sin firma.
  */
-export async function checkMembership ({ master, proxy, device, onRevoked, timeoutMs = 12000 } = {}) {
+export async function checkMembership ({ master, proxy, device, acta = null, onRevoked, timeoutMs = 12000 } = {}) {
   if (!master || !proxy || !(device?.privateJwk || device?.privateKey || typeof device?.sign === 'function')) throw new Error('missing device data')
-  const client = await clientFor(proxy, master)
+  const rk = await makeReplyKey()
+  const client = await clientFor(proxy, master, { myEncPrivateKey: rk.privateKey })
   try {
     // Identificarse hace además que el proxy entregue lo ENCOLADO (un aviso de cuando
     // estaba apagado, si todavía está dentro de las 24 h).
     try { await identifyAsDevice(client, device) } catch (_) {}
-    const data = { op: 'check', publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
+    const data = { op: 'check', rek: rk.encPub, publickey: device.publickey, ts: Date.now(), ...(cleanMachine(device.machine) ? { machine: cleanMachine(device.machine) } : {}) }
     const { signature } = await signWithDevice({ privateJwk: device.privateJwk, privateKey: device.privateKey, publickey: device.publickey, sign: device.sign, data })
     const res = await new Promise((resolve) => {
       let settled = false
       const done = (v) => { if (!settled) { settled = true; cleanup(); resolve(v) } }
-      const off = client.on('message', (_f, p) => {
+      const off = client.on('message', (_f, p, meta) => {
         if (!p || typeof p !== 'object') return
         if (p.type === MSG.REVOKED) {
           isAuthenticRevoke({ body: p.body, signature: p.signature, master, devicePubkey: device.publickey, currentNonce: null })
@@ -439,29 +463,30 @@ export async function checkMembership ({ master, proxy, device, onRevoked, timeo
             .catch(() => {})
           return
         }
-        if (p.type === MSG.CHECKED) done({ in: !!p.in })
+        if (p.type === MSG.CHECKED) { if (acceptReply({ meta, local: !!client.local, type: MSG.CHECKED, warn: warnOnce })) done({ in: !!p.in }) }
         else if (p.type === MSG.ERROR) done({ error: p.error })
       })
       const t = setTimeout(() => done({ error: 'the vault did not reply' }), timeoutMs)
       const cleanup = () => { off(); clearTimeout(t) }
-      client.sendByPubkey(master, { type: MSG.CHECK, data, signature })
+      sendToVault(client, { dest: master, acta, payload: { type: MSG.CHECK, data, signature }, warn: warnOnce })
+        .catch((e) => done({ error: e.message, code: e.code }))
     })
     return res
   } finally { try { client.close() } catch (_) {} }
 }
 
 /** Lee/escribe el store de hilos+aperturas EN el vault (con el cert del dispositivo). */
-export async function requestStore ({ master, proxy, device, cert, method, args, enc, onRevoked, wake = true } = {}) {
+export async function requestStore ({ master, proxy, device, cert, acta = null, method, args, enc, onRevoked, wake = true } = {}) {
   // `enc`: argumentos cifrados con la clave de contenido del perfil (el proxy no los ve).
   const data = enc ? { op: 'store', method, enc } : { op: 'store', method, args: args || {} }
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, quiet: !wake, sendType: 'vault.store', okType: 'vault.store.result', data })
+  const res = await vaultRpc({ master, proxy, device, cert, acta, onRevoked, quiet: !wake, sendType: 'vault.store', okType: 'vault.store.result', data })
   return res.result
 }
 
 /** Lista (solo lectura) los dispositivos enrolados en tu vault. */
-export async function requestDevices ({ master, to = null, timeoutMs, proxy, device, cert, sinceSeq, onRevoked } = {}) {
+export async function requestDevices ({ master, to = null, timeoutMs, proxy, device, cert, acta = null, sinceSeq, onRevoked } = {}) {
   const data = typeof sinceSeq === 'number' ? { op: 'devices', sinceSeq } : { op: 'devices' }
-  const res = await vaultRpc({ master, to, proxy, device, cert, onRevoked, ...(timeoutMs ? { timeoutMs } : {}), sendType: 'vault.devices', okType: 'vault.devices.result', data })
+  const res = await vaultRpc({ master, to, proxy, device, cert, acta, onRevoked, ...(timeoutMs ? { timeoutMs } : {}), sendType: 'vault.devices', okType: 'vault.devices.result', data })
   // `sealerChain`: [génesis, …cambios de sellador…, actual], lo que una firma de este aparato
   // tiene que llevar para que `verifySignedFor` la ate a la cuenta (vaultd ≥ 0.154.0).
   // `siblingCerts`: los papeles que emitieron las OTRAS bóvedas de la cuenta (vaultd ≥ 0.185.0).
@@ -473,8 +498,8 @@ export async function requestDevices ({ master, to = null, timeoutMs, proxy, dev
  * el vault firma uno fresco para la misma sub-clave y scope, sin QR ni aprobación.
  * @returns {Promise<{ cert: object }>}
  */
-export async function requestRenew ({ master, proxy, device, cert, onRevoked } = {}) {
-  const res = await vaultRpc({ master, proxy, device, cert, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
+export async function requestRenew ({ master, proxy, device, cert, acta = null, onRevoked } = {}) {
+  const res = await vaultRpc({ master, proxy, device, cert, acta, onRevoked, sendType: 'vault.renew', okType: 'vault.renewed', data: { op: 'renew' } })
   // EL ACTA VIAJA CON EL PAPEL y hay que dejarla pasar: quien lo recibe la necesita para
   // comprobar que lo firmó una SELLADORA de este perfil. Aquí se comparaba `cert.iss` con
   // la maestra y se tiraba el acta, así que arriba no había con qué juzgar y la renovación
@@ -500,9 +525,9 @@ export async function requestRenew ({ master, proxy, device, cert, onRevoked } =
  * El `record` va FIRMADO por el propio miembro y solo puede QUITAR, así que la bóveda no
  * necesita comprobar ningún certificado para honrarlo: le basta la firma.
  */
-export async function requestRenounce ({ master, proxy, device, cert, record, onRevoked } = {}) {
+export async function requestRenounce ({ master, proxy, device, cert, acta = null, record, onRevoked } = {}) {
   const res = await vaultRpc({
-    master, proxy, device, cert, onRevoked,
+    master, proxy, device, cert, acta, onRevoked,
     sendType: MSG.RENOUNCE, okType: MSG.RENOUNCE_RESULT, data: { op: 'renounce', record }
   })
   return { ok: !!res.ok, seq: res.seq ?? null }
@@ -520,7 +545,7 @@ export async function requestRenounce ({ master, proxy, device, cert, record, on
  * El `nonce` de un solo uso va en cada petición porque `approve` y `revoke` cambian
  * estado, y para eso la ventana de frescura de ±5 min no alcanza.
  */
-export async function requestAdmin ({ master, to = null, timeoutMs, proxy, device, cert, op, onRevoked, nonce: dado, ...rest } = {}) {
+export async function requestAdmin ({ master, to = null, timeoutMs, proxy, device, cert, acta = null, op, onRevoked, nonce: dado, ...rest } = {}) {
   // EL NONCE SE PUEDE DAR, y hace falta para abrir la bóveda a distancia: ahí va también
   // DENTRO del sobre sellado, y quien lo sella tiene que conocerlo antes de llamar. Si se
   // generara siempre aquí, el de fuera y el de dentro no podrían coincidir — y el de
@@ -530,7 +555,7 @@ export async function requestAdmin ({ master, to = null, timeoutMs, proxy, devic
     : [...crypto.getRandomValues(new Uint8Array(16))]
       .map((b) => b.toString(16).padStart(2, '0')).join('')
   const res = await vaultRpc({
-    master, to, proxy, device, cert, onRevoked, ...(timeoutMs ? { timeoutMs } : {}),
+    master, to, proxy, device, cert, acta, onRevoked, ...(timeoutMs ? { timeoutMs } : {}),
     sendType: MSG.ADMIN, okType: MSG.ADMIN_RESULT,
     data: { op, ...rest, nonce }
   })
@@ -543,14 +568,14 @@ export async function requestAdmin ({ master, to = null, timeoutMs, proxy, devic
  * `vault:approve` — que, como `admin`, no se recibe al emparejar: se concede a mano.
  * La bóveda contesta un cuerpo firmado por la maestra (`{ op, items | ok }`).
  */
-export async function requestApproval ({ master, proxy, device, cert, op, id, notify, onRevoked } = {}) {
+export async function requestApproval ({ master, proxy, device, cert, acta = null, op, id, notify, onRevoked } = {}) {
   // `notify`: al pedir la lista, este aparato dice si le llegan los avisos. La bóveda lo
   // apunta y es lo que mira para saber si hay a quién pedirle permiso antes de actualizarse.
   // Solo va si quien llama lo SABE (true o false): no decir nada no cambia lo ya dicho.
   const data = id ? { op, id } : { op }
   if (op === 'approvals' && typeof notify === 'boolean') data.notify = notify
   const res = await vaultRpc({
-    master, proxy, device, cert, onRevoked,
+    master, proxy, device, cert, acta, onRevoked,
     sendType: MSG.SECRETS, okType: MSG.SECRETS_RESULT,
     data
   })

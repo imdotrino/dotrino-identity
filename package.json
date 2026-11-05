@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/identity",
-  "version": "0.135.1",
+  "version": "0.136.0",
   "description": "Identidad y rating de usuarios compartidos entre apps de Dotrino (vault iframe + postMessage)",
   "type": "module",
   "main": "src/index.js",
@@ -15,9 +15,11 @@
       "import": "./src/node.js"
     },
     "./capabilities": {
+      "types": "./types/capabilities.d.ts",
       "import": "./vault/capabilities.js"
     },
     "./avatar": {
+      "types": "./types/avatar.d.ts",
       "import": "./vault/avatar.js"
     },
     "./facade": {
@@ -28,7 +30,12 @@
     "./machine": {
       "import": "./vault/machine.js"
     },
+    "./vault-seal": {
+      "types": "./types/vaultSeal.d.ts",
+      "import": "./vault/vaultSeal.js"
+    },
     "./acta": {
+      "types": "./types/acta.d.ts",
       "import": "./vault/acta.js"
     },
     "./content": {
@@ -38,28 +45,34 @@
       "import": "./vault/channel.js"
     },
     "./assertion": {
+      "types": "./types/assertion.d.ts",
       "import": "./vault/assertion.js"
     },
     "./keyid": {
+      "types": "./types/keyid.d.ts",
       "import": "./vault/keyid.js"
     },
     "./session": {
+      "types": "./types/session.d.ts",
       "import": "./vault/session.js"
     },
     "./session-flow": {
+      "types": "./types/sessionFlow.d.ts",
       "import": "./vault/sessionFlow.js"
     }
   },
   "files": [
     "src",
     "vault",
+    "types",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "vendor": "node vendor.mjs",
     "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\"",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "types": "tsc -p tsconfig.types.json"
   },
   "keywords": [
     "identity",
@@ -81,6 +94,6 @@
     "@types/node": "^22.0.0"
   },
   "peerDependencies": {
-    "@dotrino/proxy-client": ">=0.13.1"
+    "@dotrino/proxy-client": ">=0.20.0"
   }
 }

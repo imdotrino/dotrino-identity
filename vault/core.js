@@ -803,7 +803,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     if (!v?.cert) throw Object.assign(new Error('that profile is not paired with a vault'), { code: 'not-paired' })
     if (!(v.cert.scope || []).includes('vault:approve')) throw Object.assign(new Error('that profile does not approve requests'), { code: 'no-approve' })
     const device = await signerForProfile(pid)
-    const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
+    const r = await remoteApproval({ acta: actaOfProfile(pid), master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
     // Y EL COMANDO SE ABRE TAMBIÉN AQUÍ, con la llave de ESA cuenta. Sin esto los pedidos de
     // las demás cuentas se veían sin comando —el dato por el que se mira la pantalla— y el
     // fallo era mudo: llegaban con su sobre cerrado y nadie lo abría.
@@ -909,6 +909,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const grantedTo = (key) => (loadGrants()[key]?.scopes) || []
 
   const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
+  /** El acta guardada de OTRO perfil de este aparato (la del activo es `loadActa`). Dice a qué bóvedas sellarle. */
+  const actaOfProfile = (pid) => {
+    if (pid === currentPid) return loadActa()
+    try { return JSON.parse(rawKv.getItem(`dotrino.identity.p.${pid}.acta`) || 'null') } catch (_) { return null }
+  }
   const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
   // VENTANA DE RETENCIÓN (§1.3): el master conserva las últimas actas para que un miembro
   // que estuvo apagado pueda comprobar el encadenamiento al volver. Un tercero no las
@@ -1635,7 +1640,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     const v = loadVaultCert(); const device = loadVaultDevice()
     if (!v?.cert || !device) return null
     renewLastTry = Date.now()
-    const { cert } = await remoteRenew({ master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
+    const { cert } = await remoteRenew({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, onRevoked: wipeVaultLink })
     kv.setItem(VAULT_CERT_STORAGE, JSON.stringify({ ...v, cert, renewedAt: Date.now() }))
     emitVault({ phase: 'renewed', seq: cert.seq })
     return cert
@@ -1877,7 +1882,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     let destinatarios = null
     if (privados.length) {
       destinatarios = await remoteStore({
-        master: v.master, proxy: v.proxy, device, cert: v.cert,
+        acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert,
         method: 'profileRecipients', args: {}, onRevoked: wipeVaultLink
       })
       if (!destinatarios?.recoveryPub) {
@@ -1900,7 +1905,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         }
         args.sobre = { e, wraps }
       }
-      await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profilePut', args, onRevoked: wipeVaultLink })
+      await remoteStore({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profilePut', args, onRevoked: wipeVaultLink })
       lastPushedFields[c.key] = c.cls + '\u0000' + c.value
     }
   }
@@ -1962,6 +1967,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const v = loadVaultCert()
       if (v?.cert && loadVaultDevice()) return                      // con papel, ya lo comprueba el camino normal
       const r = await remoteCheck({
+        acta,
         master: Acta.sealersOf(acta)[0] || null,
         proxy: v?.proxy || 'wss://proxy.dotrino.com',
         device: { publickey: publickeyJwkStr, privateKey: masterKey() },
@@ -2025,7 +2031,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (!v?.cert || !device) return
       // EL PAQUETE LO ARMA ESTE APARATO (dueño, 2026-09-03). La bóveda entrega los sobres
       // que tiene; aquí se abren los que nos tocan y se compone el perfil.
-      const b = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileBundle', args: {}, onRevoked: wipeVaultLink })
+      const b = await remoteStore({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, method: 'profileBundle', args: {}, onRevoked: wipeVaultLink })
       const entries = b?.entries || {}
       if (!Object.keys(entries).length) {
         // La bóveda aún no tiene perfil: sembrar con el local (si tiene contenido).
@@ -2391,7 +2397,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       maybeRenewVaultCert()
       try {
-        const firmado = await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink })
+        const firmado = await remoteSign({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, payload: data, onRevoked: wipeVaultLink })
         // A NOMBRE DE QUIÉN, TAMBIÉN CUANDO FIRMA LA BÓVEDA. La respuesta del daemon trae
         // `signature` y `publickey` y nada más, así que por este camino la firma salía sin
         // identidad ni cadena: quien la recibía no podía ni verificarla (le falta el acta que
@@ -3003,7 +3009,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // la próxima vez que se renuncie.
       const v = loadVaultCert(); const dev = loadVaultDevice()
       if (v?.cert && dev) {
-        remoteRenounce({ master: v.master, proxy: v.proxy, device: dev, cert: v.cert, record })
+        remoteRenounce({ acta: loadActa(), master: v.master, proxy: v.proxy, device: dev, cert: v.cert, record })
           .catch(() => {})
       }
       // Si además soy el master, la absorbo ya en el acta.
@@ -3364,7 +3370,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
       maybeRenewVaultCert()
-      try { return await remoteSign({ master: v.master, proxy: v.proxy, device, cert: v.cert, payload, onRevoked: wipeVaultLink }) }
+      try { return await remoteSign({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, payload, onRevoked: wipeVaultLink }) }
       catch (e) { return handleVaultError(e) }
     },
 
@@ -3391,7 +3397,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       try {
         // `wake: false` (lo decide el almacén, dueño 2026-10-28): no despierta a la Nube por cada
         // mensaje; solo si lleva más de 24 h sin respaldar, o con el botón de sincronizar.
-        const res = await remoteStore({ master: v.master, proxy: v.proxy, device, cert: v.cert, method, enc, wake, onRevoked: wipeVaultLink })
+        const res = await remoteStore({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, method, enc, wake, onRevoked: wipeVaultLink })
         if (!res || typeof res !== 'object' || !res.__enc) {
           throw Object.assign(new Error('the vault replied to the store without encrypting it'), { code: 'vault-reply-unsealed' })
         }
@@ -3439,9 +3445,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // LAS CONCESIONES (`grants`) traen el comando sellado a este aparato, como los pedidos:
       // se abre aquí, donde está la llave. Lo que no trae nada sellado pasa tal cual.
       const opened = async (r) => (Array.isArray(r?.items) ? { ...r, items: await abrirContextos(r.items, currentPid) } : r)
-      if (link.self) return opened(await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest }))
+      if (link.self) return opened(await remoteAdmin({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest }))
       maybeRenewVaultCert()
-      try { return await opened(await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink })) }
+      try { return await opened(await remoteAdmin({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink })) }
       catch (e) { return handleVaultError(e) }
     },
 
@@ -3459,12 +3465,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (!link) throw new Error('this device is not paired with a vault')
       const { v, device } = link
       if (link.self) {
-        const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, notify })
+        const r = await remoteApproval({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, op, id, notify })
         if (Array.isArray(r?.items)) return { ...r, items: await abrirContextos(r.items, currentPid) }
         return r
       }
       maybeRenewVaultCert()
-      const ask = (cert) => remoteApproval({ master: v.master, proxy: v.proxy, device, cert, op, id, notify, onRevoked: wipeVaultLink })
+      const ask = (cert) => remoteApproval({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert, op, id, notify, onRevoked: wipeVaultLink })
       try {
         let r
         try { r = await ask(v.cert) } catch (e) {
@@ -3525,7 +3531,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         try {
           // `notify` habla de la cuenta ACTIVA: los avisos se suscriben bajo SU llave. De las
           // demás no se dice nada, que no es lo mismo que decir que no.
-          const r = await remoteApproval({ master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals', ...(p.id === currentPid ? { notify } : {}) })
+          const r = await remoteApproval({ acta: actaOfProfile(p.id), master: v.master, proxy: v.proxy, device, cert: v.cert, op: 'approvals', ...(p.id === currentPid ? { notify } : {}) })
           const items = Array.isArray(r?.items) ? await abrirContextos(r.items, p.id) : []
           return { ...base, items }
         } catch (e) {
@@ -3599,7 +3605,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // El acta es la nuestra: no hay nada que adoptar.
       if ((!v?.cert || !device) && adminLink()?.self) {
         const self = adminLink()
-        const res = await remoteDevices({ master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0, ...target })
+        const res = await remoteDevices({ acta: loadActa(), master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0, ...target })
         return { ...res, acta: loadActa() }
       }
       if (!v?.cert || !device) {
@@ -3617,7 +3623,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       maybeRenewVaultCert()
       try {
-        const res = await remoteDevices({ master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink, ...target })
+        const res = await remoteDevices({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, sinceSeq: loadActa()?.seq ?? 0, onRevoked: wipeVaultLink, ...target })
         // El acta viaja con la lista: así los cambios de política llegan sin canal aparte.
         // Si estuve apagado, viene la CADENA y se adopta eslabón a eslabón (§1.3).
         // Y si no encaja, SE DICE (2026-10-27): callado, el navegador de Seyacat se quedó en la #74

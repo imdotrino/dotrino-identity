@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "types",
+    "rootDir": "vault",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": [
+    "vault/capabilities.js",
+    "vault/keyid.js",
+    "vault/session.js",
+    "vault/sessionFlow.js",
+    "vault/avatar.js",
+    "vault/assertion.js",
+    "vault/acta.js",
+    "vault/vaultSeal.js"
+  ]
+}

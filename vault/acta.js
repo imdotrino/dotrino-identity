@@ -228,7 +228,7 @@ const vaultOfComm = (cn, vault) => {
  * ese aparato se le puede envolver un secreto: una `encPub` mal formada no falla al
  * escribir el acta, falla mucho después al intentar sellarle algo.
  */
-const isEncPub = (v) => {
+export const isEncPub = (v) => {
   if (typeof v !== 'string' || !v) return false
   try {
     const j = JSON.parse(v)
@@ -1454,5 +1454,5 @@ export default {
   makeContinuity, verifyContinuity,
   cardBody, makeProfileCard, verifyProfileCard, canAdoptCard, sealersOf, canSeal,
   effectiveCaps, memberCan, memberCanSign, memberCanScope, memberCanReadSecrets, memberScopes, isService, capScope, cnScope, VAULT_CN, isValidCn, canAdopt,
-  samePubkey, memberEncPub
+  samePubkey, memberEncPub, isEncPub
 }

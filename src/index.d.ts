@@ -68,7 +68,18 @@ export interface PeerInfo {
   /** You blocked them (private, never published). */
   blocked?: boolean
   changedAt?: number
+  /** In your contact book (`addContact`). */
+  isContact?: boolean
+  /** Your private notes on the contact. */
+  contactNotes?: string
+  /** The last proxy token they were seen on. */
+  lastToken?: string
+  /** Their verified profile card (`adoptPeerCard`). */
+  card?: ProfileCard | null
 }
+
+/** La tarjeta de perfil de una persona: sus aparatos, sellada por su cuenta. */
+export interface ProfileCard { profileId: string; seq: number; keys: any[]; [k: string]: any }
 
 export interface Challenge {
   nonce: string
@@ -127,7 +138,8 @@ export class Identity {
   ): Promise<PeerInfo | null>
   removeContact (publickey: string): Promise<PeerInfo | null>
   listContacts (): Promise<PeerInfo[]>
-  signData (data: any): Promise<{ signature: string; publickey: string }>
+  /** Firma `data`. `publickey` es la llave de ESTE aparato; `profileId` y `chain` dicen a nombre de quién y lo prueban. */
+  signData (data: any): Promise<{ signature: string; publickey: string; profileId: string; chain: Acta[] }>
   requestAssertion (args: { audience: string; nonce: string; scopes?: AssertionScope[]; ttlMs?: number; onBehalfOf?: string }): Promise<Assertion>
   /** Qué le has concedido a cada aplicación (permiso por origen). */
   listGrants (): Promise<Array<{ origin: string; scopes: AssertionScope[]; at: number; lastUsed: number; onBehalfOf?: string }>>
@@ -147,7 +159,7 @@ export class Identity {
   mergeEndorsements (
     subject: string,
     endorsements: SignedRating[],
-    askerPubkey?: string
+    askerPubkey?: string | null
   ): Promise<{ merged: number; total: number }>
   getRatingsForSubject (
     subject: string
@@ -169,7 +181,12 @@ export class Identity {
   syncNow (): Promise<SyncStatus>
   onSync (handler: (event: SyncEvent) => void): () => void
   // vault (este dispositivo es cliente de un vault externo)
-  enrollDevice (qr: string): Promise<any>
+  /**
+   * Empareja este aparato con la bóveda a partir de la invitación (el QR v2 ya leído, como
+   * objeto). `join`: `'new'` crea una cuenta más, `'current'` sigue con la abierta, `'adopt'`
+   * la lleva a vivir en la bóveda.
+   */
+  enrollDevice (qr: VaultInvitation, opts?: { label?: string; join?: 'new' | 'current' | 'adopt'; account?: string | null }): Promise<{ ok: boolean; deviceId: string; master: string; exp?: number; scope?: string[]; [k: string]: any }>
   vaultStatus (): Promise<any>
   vaultUnpair (): Promise<any>
   vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
@@ -205,6 +222,40 @@ export class Identity {
   openContent (envelope: { gen: number; iv: string; ct: string; t?: string }): Promise<string>
   /** Mi copia de la llave de la cuenta vigente, o null si todavía no me la han envuelto. */
   contentKey (): Promise<{ gen: number; cek: string } | null>
+  /**
+   * El ACTA DE PERFIL vigente de este aparato (quién es de la cuenta y qué puede cada uno),
+   * si me consideran master y mis permisos efectivos. `null` si este perfil aún no tiene acta.
+   */
+  profileActa (): Promise<ProfileActa | null>
+  /** La cadena de selladores para mandar junto a una firma: `[génesis, …cambios de sellador…, acta actual]`. */
+  sealerChain (): Promise<Acta[]>
+  /** El candado del perfil activo. */
+  profileLockStatus (): Promise<{ protected: boolean; locked: boolean }>
+  /** Abre el perfil activo con su contraseña o PIN (la prueba queda por pestaña). */
+  unlockProfile (password: string): Promise<any>
+  /** Protege el perfil ACTIVO con contraseña o PIN (local de este aparato). */
+  setProfilePassword (password: string): Promise<{ ok: true }>
+  /** Quita la protección (requiere el perfil abierto). */
+  removeProfilePassword (): Promise<{ ok: true }>
+  /** Crea un perfil nuevo y lo deja activo (la app recarga). `forVault`: nace para adoptar la cuenta de una bóveda. */
+  createProfile (name?: string, opts?: { forVault?: boolean }): Promise<{ id: string; name?: string; pubkey: string; pendingJoin: boolean }>
+  /**
+   * Entra con `nombre@AB12-CD34-EF56` y contraseña (OPAQUE: la contraseña no sale de aquí).
+   * Errores con `code`: `login-failed`, `too-many-tries` (con `waitMs`), `no-vault`.
+   */
+  loginWithPassword (opts: { address: string; password: string; remember?: boolean; label?: string; proxyUrl?: string | null }): Promise<{ id: string; name: string; address: string; user: string; sid: string; volatile: boolean }>
+  /** Tu `me` completo (incluye lo oculto). */
+  getMe (): Promise<Me>
+  /** Renombra un perfil (o el activo, sin `id`). */
+  renameProfile (id: string | null, name: string): Promise<{ id: string; name: string }>
+  /** Borra un perfil y sus datos (no el único). */
+  deleteProfile (id: string): Promise<{ wasCurrent: boolean; [k: string]: any }>
+  /** La tarjeta de perfil de esta cuenta (sale del acta), o `null`. */
+  profileCard (): Promise<ProfileCard | null>
+  /** Guarda la tarjeta de otra persona en su ficha de contacto, verificándola. */
+  adoptPeerCard (card: ProfileCard): Promise<{ adopted: boolean; reason: string; devices: number }>
+  /** Actualiza tu perfil (merge): no pisa lo que no mandes. */
+  updateMe (patch: Partial<Me> & Record<string, any>): Promise<{ me: Me }>
   // self-vault (este dispositivo ES el vault, daemon dentro del iframe)
   selfVaultStatus (): Promise<{ enabled: boolean; running: boolean }>
   setSelfVault (enabled: boolean): Promise<{ ok: true; enabled: boolean }>
@@ -218,6 +269,35 @@ export class Identity {
   onSelfVault (handler: (payload: any) => void): () => void
   on (event: 'peer_updated' | 'me_updated' | 'sync' | 'vault' | 'selfVault', handler: (payload: any) => void): () => void
 }
+
+/** Un miembro del acta: su llave pública y lo que el acta le deja hacer. */
+export interface ActaMember {
+  pub: string
+  label?: string
+  caps?: string[]
+  /** Servicio o pieza del perfil (p. ej. `'vault'`, la llave de comunicación de una bóveda). */
+  cn?: string
+  /** Con `cn: 'vault'`: la maestra de esa bóveda. */
+  vault?: string
+  encPub?: string
+  [k: string]: any
+}
+
+/** El acta de perfil, sellada por su cuenta (`dotrino-vault/docs/acta-de-perfil.md`). */
+export interface Acta {
+  v: number
+  profileId: string
+  seq: number
+  members: ActaMember[]
+  sealedBy?: string
+  sig?: string
+  [k: string]: any
+}
+
+export interface ProfileActa { acta: Acta; isMaster: boolean; myCaps: string[] }
+
+/** La invitación de una bóveda (el QR v2 de `dotrino-vault pair`, ya leído). */
+export interface VaultInvitation { v?: number; iss?: string; conn?: string; proxy?: string; token?: string; sn: string; m?: string; [k: string]: any }
 
 export interface SyncStatus {
   kind?: 'identity' | 'store'
@@ -260,6 +340,9 @@ export function makeDeviceKey (opts?: { label?: string }): Promise<DeviceKey>
 export function pubkeyId (publicJwkStr: string): Promise<string>
 /** Firma datos con una clave de dispositivo (formato byte-idéntico a signData). */
 export function signWithDevice (args: { privateJwk: JsonWebKey; data: any }): Promise<{ signature: string; publickey: string }>
+
+/** ¿`signature` es la firma de `publickey` sobre `data` (JSON canónico)? */
+export function verifyDeviceSig (args: { publickey: string; data: any; signature: string }): Promise<boolean>
 /** Verifica un certificado de delegación (firma de la maestra + exp + scope + sub + revocación). */
 export function verifyDelegation (args: { cert: CapabilityCert; expectedScope?: string; expectedSub?: string; now?: number; revoked?: ((nonce: string) => boolean) | Set<string> | Record<string, any> }): Promise<{ ok: boolean; reason?: string; iss?: string; sub?: string; scope?: string | string[]; iat?: number; exp?: number; nonce?: string }>
 /** Verifica la cadena de una acción/pin delegado: D firmó + cert prueba D←P + scope/exp/revocación. */
