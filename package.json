@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/identity",
-  "version": "0.136.1",
+  "version": "0.136.2",
   "description": "Identidad y rating de usuarios compartidos entre apps de Dotrino (vault iframe + postMessage)",
   "type": "module",
   "main": "src/index.js",
@@ -39,6 +39,7 @@
       "import": "./vault/acta.js"
     },
     "./content": {
+      "types": "./types/content.d.ts",
       "import": "./vault/content.js"
     },
     "./channel": {
@@ -71,7 +72,7 @@
   "scripts": {
     "vendor": "node vendor.mjs",
     "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\"",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit && tsc --noEmit -p tsconfig.shadowed.json",
     "types": "tsc -p tsconfig.types.json"
   },
   "keywords": [

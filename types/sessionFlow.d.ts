@@ -1,28 +1,29 @@
-/** El código corto que el humano compara. Seis dígitos, como el del emparejamiento. */
-export function sessionCode(sid: any): string;
+/**
+ * El código corto que el humano compara. Seis dígitos, como el del emparejamiento.
+ * @param {unknown} sid
+ * @returns {string}
+ */
+export function sessionCode(sid: unknown): string;
 /**
  * Lo que viaja en el QR. Corto a propósito: un QR más denso se lee peor con poca luz, que
  * es justo cuando alguien intenta entrar desde un aparato prestado.
+ * @param {{ sid: string, s: string, encPub?: string, origin: string, scopes?: unknown, proxy?: string }} args
+ * @returns {SessionInvite}
  */
 export function buildInvite({ sid, s, encPub, origin, scopes, proxy }: {
-    sid: any;
-    s: any;
-    encPub: any;
-    origin: any;
-    scopes: any;
-    proxy: any;
-}): {
-    v: number;
-    t: string;
-    sid: any;
-    s: any;
-    encPub: any;
-    origin: any;
-    scopes: any[];
-    proxy: any;
-};
-/** Lee una invitación, venga del QR o pegada a mano. `null` si no es una. */
-export function parseInvite(raw: any): any;
+    sid: string;
+    s: string;
+    encPub?: string;
+    origin: string;
+    scopes?: unknown;
+    proxy?: string;
+}): SessionInvite;
+/**
+ * Lee una invitación, venga del QR o pegada a mano. `null` si no es una.
+ * @param {unknown} raw
+ * @returns {SessionInvite | null}
+ */
+export function parseInvite(raw: unknown): SessionInvite | null;
 /**
  * LADO DEL QUE ENTRA. Genera la sesión, publica la invitación y espera el papel.
  *
@@ -32,11 +33,30 @@ export function parseInvite(raw: any): any;
  *
  * Devuelve `{ paper, chain, profileId }` cuando alguien concede, o lanza si se deniega o
  * se agota la espera. No guarda nada: dónde vive la sesión lo decide quien llama.
+ * @param {{ transport: SessionTransport, sessionPubkey: string, encPub?: string, origin: string, scopes?: unknown, onInvite?: (i: { invite: SessionInvite, code: string, qr: string }) => void, timeoutMs?: number, sid?: string }} args
+ * @returns {Promise<{ paper: any, chain: any, profileId: string, sid: string, scopes: string[], exp: number }>}
  */
 export function openSession({ transport, sessionPubkey, encPub, origin, scopes, onInvite, timeoutMs, sid }?: {
+    transport: SessionTransport;
+    sessionPubkey: string;
+    encPub?: string;
+    origin: string;
+    scopes?: unknown;
+    onInvite?: (i: {
+        invite: SessionInvite;
+        code: string;
+        qr: string;
+    }) => void;
     timeoutMs?: number;
-    sid?: `${string}-${string}-${string}-${string}-${string}`;
-}): Promise<any>;
+    sid?: string;
+}): Promise<{
+    paper: any;
+    chain: any;
+    profileId: string;
+    sid: string;
+    scopes: string[];
+    exp: number;
+}>;
 /**
  * LADO DEL QUE RESPALDA. Firma el papel y se lo manda al que espera.
  *
@@ -45,29 +65,60 @@ export function openSession({ transport, sessionPubkey, encPub, origin, scopes, 
  *
  * `scopes` acota lo que se concede: por omisión, lo que pidió la invitación. Quien llama
  * puede recortarlo —nunca ampliarlo, que de eso ya se encarga `verifySession`.
+ * @param {{ transport: SessionTransport, invite: unknown, by: string, sign: (body: object) => Promise<string | { signature?: string }>, chain: any[], scopes?: unknown, ttlMs?: number, now?: number }} args
  */
 export function grantSession({ transport, invite, by, sign, chain, scopes, ttlMs, now }?: {
+    transport: SessionTransport;
+    invite: unknown;
+    by: string;
+    sign: (body: object) => Promise<string | {
+        signature?: string;
+    }>;
+    chain: any[];
+    scopes?: unknown;
     ttlMs?: number;
     now?: number;
 }): Promise<{
-    sig: any;
+    sig: string;
     v: number;
     op: string;
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any[];
-    iat: any;
-    exp: any;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes: string[];
+    iat: number;
+    exp: number;
 }>;
-/** Decir que no, en vez de dejar al otro mirando una pantalla que no avanza. */
-export function denySession({ transport, invite }?: {}): Promise<void>;
+/**
+ * Decir que no, en vez de dejar al otro mirando una pantalla que no avanza.
+ * @param {{ transport: SessionTransport, invite: unknown }} args
+ */
+export function denySession({ transport, invite }?: {
+    transport: SessionTransport;
+    invite: unknown;
+}): Promise<void>;
 /**
  * CERRARLA. Se avisa a la sesión para que se borre en el acto; lo que la corta de verdad es
  * que el papel vence y nadie lo renueva —y que quitar el aparato se lleva todos los suyos.
+ * @param {{ transport: SessionTransport, sessionPubkey: string, encPub?: string, sid: string }} args
  */
-export function closeSession({ transport, sessionPubkey, encPub, sid }?: {}): Promise<void>;
+export function closeSession({ transport, sessionPubkey, encPub, sid }?: {
+    transport: SessionTransport;
+    sessionPubkey: string;
+    encPub?: string;
+    sid: string;
+}): Promise<void>;
+/**
+ * Lo que se usa del transporte (`@dotrino/proxy-client`).
+ * @typedef {{ url?: string, on (event: string, handler: (...args: any[]) => void): () => void,
+ *   sendByPubkey (to: string | string[], payload: any): void,
+ *   sendSealed? (to: string[], payload: any, opts: { peerEncPub: string }): Promise<void> }} SessionTransport
+ */
+/**
+ * Una invitación a abrir sesión (lo que va en el QR).
+ * @typedef {{ v: number, t: string, sid: string, s: string, encPub?: string, origin: string, scopes: string[], proxy?: string }} SessionInvite
+ */
 export const SESSION_OP: Readonly<{
     GRANT: "session.grant";
     DENY: "session.deny";
@@ -84,3 +135,27 @@ declare namespace _default {
     export { closeSession };
 }
 export default _default;
+/**
+ * Lo que se usa del transporte (`@dotrino/proxy-client`).
+ */
+export type SessionTransport = {
+    url?: string;
+    on(event: string, handler: (...args: any[]) => void): () => void;
+    sendByPubkey(to: string | string[], payload: any): void;
+    sendSealed?(to: string[], payload: any, opts: {
+        peerEncPub: string;
+    }): Promise<void>;
+};
+/**
+ * Una invitación a abrir sesión (lo que va en el QR).
+ */
+export type SessionInvite = {
+    v: number;
+    t: string;
+    sid: string;
+    s: string;
+    encPub?: string;
+    origin: string;
+    scopes: string[];
+    proxy?: string;
+};

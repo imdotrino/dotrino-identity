@@ -20,12 +20,20 @@ export const PEERS_THREAD = 'identity.peers'
 /** Tope de una tanda de subida (cifrada, con su sobre, queda bajo el 1 MB del proxio). */
 const PUSH_BYTES = 350_000
 
-/** La última vez que la ficha cambió: la vio (`lastSeen`) o la tocaste (`changedAt`). */
+/**
+ * La última vez que la ficha cambió: la vio (`lastSeen`) o la tocaste (`changedAt`).
+ * @param {{ lastSeen?: unknown, changedAt?: unknown } | null | undefined} rec
+ * @returns {number}
+ */
 export function stampOf (rec) {
   return Math.max(Number(rec?.lastSeen) || 0, Number(rec?.changedAt) || 0)
 }
 
-/** El id de la entrada: de su llave, estable y sin comillas (sha-256, 32 hex). */
+/**
+ * El id de la entrada: de su llave, estable y sin comillas (sha-256, 32 hex).
+ * @param {unknown} publickey
+ * @returns {Promise<string>}
+ */
 export async function peerIdOf (publickey) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(publickey)))
   return [...new Uint8Array(d)].slice(0, 16).map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -35,17 +43,24 @@ export async function peerIdOf (publickey) {
  * Reconciliar el libro con la bóveda. `peers` es el libro de aquí (`{ publickey: ficha }`),
  * `call(method, args)` habla con el almacén de la bóveda. Devuelve las fichas que llegaron (para
  * fundirlas aquí) y cuántas subieron.
+ *
+ * @param {{ peers: Record<string, any> | null | undefined, call: (method: string, args: any) => Promise<any> }} args
+ * @returns {Promise<{ incoming: any[], pushed: number }>}
  */
 export async function syncPeers ({ peers, call }) {
+  /** @type {Map<string, number>} */
   const remote = new Map()
+  /** @type {unknown} */
   let cursor = null
   do {
+    /** @type {any} */
     const page = await call('getThreadIndexes', { keys: [PEERS_THREAD], cursor })
     const idx = page?.indexes?.[PEERS_THREAD]
     for (const [id, ts] of idx?.items || []) remote.set(String(id), Number(ts) || 0)
     cursor = page?.next ?? null
   } while (cursor != null)
 
+  /** @type {Map<string, { pk: string, rec: any, ts: number }>} */
   const local = new Map()
   for (const [pk, rec] of Object.entries(peers || {})) {
     if (!rec || typeof rec !== 'object') continue
@@ -53,7 +68,8 @@ export async function syncPeers ({ peers, call }) {
   }
 
   // SUBIR primero lo que aquí es más nuevo, en tandas.
-  const up = [...local.entries()].filter(([id, l]) => !remote.has(id) || l.ts > remote.get(id))
+  const up = [...local.entries()].filter(([id, l]) => !remote.has(id) || l.ts > /** @type {number} */ (remote.get(id)))
+  /** @type {Array<{ id: string, ts: number, peer: any }>} */
   let batch = []; let bytes = 0; let pushed = 0
   const flush = async () => {
     if (!batch.length) return
@@ -69,10 +85,13 @@ export async function syncPeers ({ peers, call }) {
   await flush()
 
   // TRAER lo que allí es más nuevo.
-  const down = [...remote.entries()].filter(([id, ts]) => !local.has(id) || ts > local.get(id).ts).map(([id]) => id)
+  const down = [...remote.entries()].filter(([id, ts]) => !local.has(id) || ts > /** @type {{ ts: number }} */ (local.get(id)).ts).map(([id]) => id)
+  /** @type {any[]} */
   const incoming = []
+  /** @type {Record<string, string[]> | null} */
   let refs = down.length ? { [PEERS_THREAD]: down } : null
   while (refs) {
+    /** @type {any} */
     const page = await call('getEntries', { refs })
     for (const e of page?.threads?.[PEERS_THREAD] || []) if (e?.peer?.publickey) incoming.push(e.peer)
     refs = page?.rest && Object.keys(page.rest).length ? page.rest : null

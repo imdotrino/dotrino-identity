@@ -1,15 +1,29 @@
-/** La última vez que la ficha cambió: la vio (`lastSeen`) o la tocaste (`changedAt`). */
-export function stampOf(rec: any): number;
-/** El id de la entrada: de su llave, estable y sin comillas (sha-256, 32 hex). */
-export function peerIdOf(publickey: any): Promise<string>;
+/**
+ * La última vez que la ficha cambió: la vio (`lastSeen`) o la tocaste (`changedAt`).
+ * @param {{ lastSeen?: unknown, changedAt?: unknown } | null | undefined} rec
+ * @returns {number}
+ */
+export function stampOf(rec: {
+    lastSeen?: unknown;
+    changedAt?: unknown;
+} | null | undefined): number;
+/**
+ * El id de la entrada: de su llave, estable y sin comillas (sha-256, 32 hex).
+ * @param {unknown} publickey
+ * @returns {Promise<string>}
+ */
+export function peerIdOf(publickey: unknown): Promise<string>;
 /**
  * Reconciliar el libro con la bóveda. `peers` es el libro de aquí (`{ publickey: ficha }`),
  * `call(method, args)` habla con el almacén de la bóveda. Devuelve las fichas que llegaron (para
  * fundirlas aquí) y cuántas subieron.
+ *
+ * @param {{ peers: Record<string, any> | null | undefined, call: (method: string, args: any) => Promise<any> }} args
+ * @returns {Promise<{ incoming: any[], pushed: number }>}
  */
 export function syncPeers({ peers, call }: {
-    peers: any;
-    call: any;
+    peers: Record<string, any> | null | undefined;
+    call: (method: string, args: any) => Promise<any>;
 }): Promise<{
     incoming: any[];
     pushed: number;

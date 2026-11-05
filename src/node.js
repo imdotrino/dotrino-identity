@@ -22,13 +22,23 @@ import { createIdentityCore } from '../vault/core.js'
 import { IdentityFacade } from '../vault/facade.js'
 
 /**
+ * Cifrado en reposo del archivo de la identidad (lo pone quien hospeda, p. ej. la bóveda).
+ * @typedef {{ encrypt (text: string): string, decrypt (blob: string): string }} AtRest
+ */
+
+/**
  * kv síncrono respaldado por un archivo JSON (estilo localStorage).
  *
  * `atRest` (opcional) cifra el archivo entero en disco: quien lo provee decide con qué
  * (el vault lo liga a la máquina, ver `dotrino-vault/src/atrest.js`). Si el archivo estaba
  * en claro se lee igual y queda cifrado en la primera escritura, sin pedir nada.
+ *
+ * @param {string} filePath
+ * @param {AtRest | null} [atRest]
+ * @returns {import('../vault/core.js').Kv}
  */
 function fileKv (filePath, atRest = null) {
+  /** @type {Record<string, string>} */
   let data = {}
   try {
     if (fs.existsSync(filePath)) {
@@ -48,10 +58,17 @@ function fileKv (filePath, atRest = null) {
   }
 }
 
-/** Peer book respaldado por un archivo JSON (interfaz de vault/peerStore.js). */
+/**
+ * Peer book respaldado por un archivo JSON (interfaz de vault/peerStore.js).
+ * @param {string} filePath
+ * @returns {import('../vault/core.js').CorePeers}
+ */
 function filePeers (filePath) {
+  /** @type {import('../vault/peerStore.js').PeerBook} */
   let peers = {}
+  /** @type {(() => void) | null} */
   let markDirty = null
+  /** @type {string | null} */
   let pid = null // multi-perfil: el peer book se namespacea por perfil
   const fileFor = () => pid ? path.join(path.dirname(filePath), `peers.${pid}.json`) : filePath
   const flush = () => {
@@ -60,7 +77,9 @@ function filePeers (filePath) {
     fs.writeFileSync(f, JSON.stringify(peers))
   }
   return {
+    /** @param {string | null} p */
     setProfile (p) { pid = p || null },
+    /** @param {string} newPid */
     adoptLegacy (newPid) {
       // Migración: copia el peers.json viejo (sin namespace) al perfil newPid.
       try {
@@ -79,16 +98,16 @@ function filePeers (filePath) {
       return peers
     },
     loadPeers: () => peers,
-    savePeers: (next) => { peers = next; flush(); if (markDirty) markDirty() },
-    setPeersDirect: (next) => { peers = next; flush() },
-    upsertPeer: (publickey, patch) => {
+    savePeers: (/** @type {import('../vault/peerStore.js').PeerBook} */ next) => { peers = next; flush(); if (markDirty) markDirty() },
+    setPeersDirect: (/** @type {import('../vault/peerStore.js').PeerBook} */ next) => { peers = next; flush() },
+    upsertPeer: (/** @type {string} */ publickey, /** @type {Record<string, any>} */ patch) => {
       const existing = peers[publickey] || { publickey, firstSeen: Date.now() }
       peers[publickey] = { ...existing, ...patch, publickey, lastSeen: Date.now() }
       flush()
       if (markDirty) markDirty()
       return peers[publickey]
     },
-    onDirty: (fn) => { markDirty = fn }
+    onDirty: (/** @type {(() => void) | null} */ fn) => { markDirty = fn }
   }
 }
 
@@ -99,6 +118,8 @@ export class Identity extends IdentityFacade {
    * @param {Object} [options]
    * @param {string} [options.dir]  Directorio de persistencia de esta identidad.
    *   Cada directorio = un usuario distinto. Default: ~/.dotrino/identity
+   * @param {AtRest | null} [options.atRest]  cifrado en reposo del archivo de la identidad
+   * @param {import('../vault/core.js').KeyLock | null} [options.keyLock]  candado de la maestra
    */
   constructor (options = {}) {
     super(null)
@@ -114,6 +135,9 @@ export class Identity extends IdentityFacade {
    * Crea/abre una identidad headless. A diferencia del navegador NO es singleton:
    * cada `dir` distinto devuelve una identidad independiente (para correr muchos
    * bots-usuario en el mismo proceso).
+   *
+   * @param {{ dir?: string, atRest?: AtRest | null, keyLock?: import('../vault/core.js').KeyLock | null }} [options]
+   * @returns {Promise<Identity>}
    */
   static async connect (options = {}) {
     const inst = new Identity(options)

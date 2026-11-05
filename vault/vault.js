@@ -25,10 +25,11 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   const bridge = idKeys ? appBridge(idKeys) : null
   // Y si la app GUARDA la identidad (`storage`, la de iOS): todo vive allí, uno para todas
   // las páginas, porque WebKit parte el almacén de este iframe por página (`./nativeStore.js`).
-  const native = bridge && idKeys.storage === true ? await nativeBackends(bridge) : null
+  const native = bridge && /** @type {NonNullable<typeof idKeys>} */ (idKeys).storage === true ? await nativeBackends(bridge) : null
   if (native) usePeerBackend(native.peers)
 
   // kv estilo localStorage (síncrono) para me, nonces, delegaciones, certs.
+  /** @type {import('./core.js').Kv} */
   const kv = native ? native.kv : {
     getItem: (k) => localStorage.getItem(k),
     setItem: (k, v) => localStorage.setItem(k, v),
@@ -39,11 +40,13 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   // IndexedDB (clonado estructurado). Nadie —ni este código, ni un XSS en este
   // origen— puede leer sus bytes; solo firmar/derivar con ellas. Las llaves
   // planas (JWK) viejas de localStorage se migran y se borran (core.js).
-  const baseKeyStore = native ? native.keyStore : await (() => new Promise((resolve) => {
+  /** @type {import('./core.js').KeyStore | null} */
+  const baseKeyStore = native ? native.keyStore : await (() => new Promise(/** @param {(ks: import('./core.js').KeyStore | null) => void} resolve */ (resolve) => {
     const req = indexedDB.open('dotrino-identity-keys', 1)
     req.onupgradeneeded = () => req.result.createObjectStore('keys')
     req.onsuccess = () => {
       const db = req.result
+      /** @param {IDBTransactionMode} mode @param {(st: IDBObjectStore) => IDBRequest} fn @returns {Promise<any>} */
       const op = (mode, fn) => new Promise((res, rej) => {
         const tx = db.transaction('keys', mode)
         const r = fn(tx.objectStore('keys'))
@@ -51,9 +54,9 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         r.onerror = () => rej(r.error)
       })
       resolve({
-        get: (name) => op('readonly', (st) => st.get(name)),
-        set: (name, pair) => op('readwrite', (st) => st.put(pair, name)),
-        remove: (name) => op('readwrite', (st) => st.delete(name))
+        get: (/** @type {string} */ name) => op('readonly', (st) => st.get(name)),
+        set: (/** @type {string} */ name, /** @type {any} */ pair) => op('readwrite', (st) => st.put(pair, name)),
+        remove: (/** @type {string} */ name) => op('readwrite', (st) => st.delete(name))
       })
     }
     req.onerror = () => resolve(null) // sin IDB (raro): cae al modo kv legado
@@ -65,6 +68,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
 
   // sessionKv: la prueba de desbloqueo del candado por contraseña vive en
   // sessionStorage — POR PESTAÑA: sobrevive al refresco, muere al cerrarla.
+  /** @type {import('./core.js').Kv} */
   const sessionKv = {
     getItem: (k) => sessionStorage.getItem(k),
     setItem: (k, v) => sessionStorage.setItem(k, v),
@@ -86,6 +90,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       ? { title: 'wants to see', allow: 'Allow', deny: 'No', who: 'Your Dotrino identity', once: 'Only what you allow leaves here.', via: 'through' }
       : { title: 'quiere ver', allow: 'Permitir', deny: 'No', who: 'Tu identidad de Dotrino', once: 'De aquí solo sale lo que permitas.', via: 'a través de' }
   })()
+  /** @type {Record<string, string>} */
   const SCOPE_TXT = (() => {
     const en = (navigator.language || 'es').startsWith('en')
     return en
@@ -102,8 +107,10 @@ import { useBackend as usePeerBackend } from './peerStore.js'
    * home y habría que subirlo cada vez que nace una app. El subdominio ya es el nombre.
    */
   /** Lo que dice el origen se pinta como texto, nunca como marcado: quien lo escribe es él. */
-  const escaparTexto = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  /** @param {unknown} t @returns {string} */
+  const escaparTexto = (t) => String(t).replace(/[&<>"']/g, (c) => /** @type {Record<string, string>} */ ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
+  /** @param {string} origin @returns {string} */
   function nombreDeOrigen (origin) {
     try {
       const h = new URL(origin).hostname
@@ -114,10 +121,15 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     } catch (_) { return String(origin) }
   }
 
+  /** @type {HTMLElement | null} */
   let consentAbierto = null
+  /**
+   * @param {{ origin: string, scopes: string[], onBehalfOf?: string | null }} q
+   * @returns {Promise<boolean>}
+   */
   function askConsent ({ origin, scopes, onBehalfOf }) {
     if (consentAbierto) return Promise.resolve(false)   // una pregunta a la vez
-    return new Promise((resolve) => {
+    return new Promise(/** @param {(v: boolean) => void} resolve */ (resolve) => {
       const host = document.createElement('div')
       host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(10,8,20,.86);font-family:system-ui,-apple-system,Segoe UI,sans-serif'
       const lista = scopes.map((x) => `<li>${SCOPE_TXT[x] || x}</li>`).join('')
@@ -131,9 +143,10 @@ import { useBackend as usePeerBackend } from './peerStore.js'
           <button data-yes style="flex:1;padding:10px;border-radius:10px;border:0;background:#7c3aed;color:#fff;font:inherit;font-weight:600;cursor:pointer">${T_CONSENT.allow}</button>
           <button data-no style="flex:1;padding:10px;border-radius:10px;border:1px solid #2a2350;background:transparent;color:inherit;font:inherit;cursor:pointer">${T_CONSENT.deny}</button>
         </div></div>`
+      /** @param {boolean} v */
       const cerrar = (v) => { try { host.remove() } catch (_) {} consentAbierto = null; broadcast('consent:close', {}); resolve(v) }
-      host.querySelector('[data-yes]').addEventListener('click', () => cerrar(true))
-      host.querySelector('[data-no]').addEventListener('click', () => cerrar(false))
+      /** @type {HTMLElement} */ (host.querySelector('[data-yes]')).addEventListener('click', () => cerrar(true))
+      ;/** @type {HTMLElement} */ (host.querySelector('[data-no]')).addEventListener('click', () => cerrar(false))
       consentAbierto = host
       document.body.appendChild(host)
       broadcast('consent:open', { origin })
@@ -151,7 +164,8 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     askConsent
   })
 
-  const { handlers } = core
+  // Para el iframe, los manejadores son una tabla que se despacha por nombre (`method`).
+  const handlers = /** @type {Record<string, (params?: any) => Promise<any>>} */ (/** @type {unknown} */ (core.handlers))
   const policy = originPolicy({ selfOrigin: window.location.origin })
 
   // ---- Control de ORIGEN (crítico): la identidad solo habla con el ecosistema. ----
@@ -170,22 +184,26 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     'https?://172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?' +
     ')$'
   )
+  /** @param {unknown} origin @returns {boolean} */
   const isAllowed = (origin) => typeof origin === 'string' && ALLOWED_ORIGIN.test(origin)
 
   // Broadcast de eventos del vault (sync + emparejamiento) SOLO a embebedores que
   // ya hicieron una petición válida (ventana+origen verificados), nunca con '*'.
-  const embedders = [] // [{ win, origin }]
+  /** @type {Array<{ win: MessageEventSource | Window, origin: string }>} */
+  const embedders = []
+  /** @param {MessageEventSource | Window | null} win @param {string} origin */
   const rememberEmbedder = (win, origin) => {
     if (!win || win === window) return
     if (!embedders.some((e) => e.win === win)) embedders.push({ win, origin })
   }
+  /** @param {string} eventName @param {any} payload */
   const broadcast = (eventName, payload) => {
     for (const { win, origin } of embedders) {
-      try { win.postMessage({ _cci: true, type: 'event', event: eventName, payload }, origin) } catch {}
+      try { /** @type {Window} */ (win).postMessage({ _cci: true, type: 'event', event: eventName, payload }, origin) } catch {}
     }
   }
-  core.onSyncStatus((p) => broadcast('sync', p))
-  core.onVaultEvent((p) => broadcast('vault', p))
+  core.onSyncStatus((/** @type {any} */ p) => broadcast('sync', p))
+  core.onVaultEvent((/** @type {any} */ p) => broadcast('vault', p))
 
   // ---- Modo SELF: este navegador actúa como bóveda ----
   // Corre la MISMA bóveda que el binario (`startBrowserVault`): emparejar, firmar, cajones,
@@ -218,9 +236,12 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       return /^wss?:\/\//.test(p || '') ? p : null
     } catch (_) { return null }
   })()
-  let daemon = null           // la bóveda (`startBrowserVault`) cuando ESTE iframe es el activo
-  let daemonError = null      // por qué no arrancó (`{ code, message }`), para enseñarlo
-  let _lockResolver = null    // resolver del callback del lock (libera al resolverlo)
+  /** @type {any} la bóveda (`startBrowserVault`) cuando ESTE iframe es el activo */
+  let daemon = null
+  /** @type {{ code: string | null, message: string } | null} por qué no arrancó, para enseñarlo */
+  let daemonError = null
+  /** @type {(() => void) | null} resolver del callback del lock (libera al resolverlo) */
+  let _lockResolver = null
 
   // La dirección `nombre@AB12-CD34-EF56` sale del acta de la cuenta.
   const selfIdentity = { profileActa: () => handlers.profileActa({}) }
@@ -253,11 +274,12 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         ...(selfProxyUrl ? { proxyUrl: selfProxyUrl } : {}),
         legacyLogins,
         onPendingChange: () => broadcast('selfVault', { pending: daemon ? daemon.listPending() : [] }),
-        onStopped: (e) => { daemon = null; daemonError = { code: e?.code || null, message: e?.message || String(e) }; broadcast('selfVault', { running: false, error: daemonError.message }) },
-        log: (...a) => console.log(...a)
+        onStopped: (/** @type {any} */ e) => { daemon = null; daemonError = { code: e?.code || null, message: e?.message || String(e) }; broadcast('selfVault', { running: false, error: daemonError.message }) },
+        log: (/** @type {any[]} */ ...a) => console.log(...a)
       })
       broadcast('selfVault', { running: true })
-    } catch (e) {
+    } catch (err) {
+      const e = /** @type {any} */ (err)
       daemon = null
       daemonError = { code: e?.code || null, message: e?.message || String(e) }
       broadcast('selfVault', { error: daemonError.message })
@@ -277,7 +299,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     navigator.locks.request(SELF_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
       if (!lock) return // otra pestaña visible lo tiene
       await startSelfDaemon()
-      await new Promise((resolve) => { _lockResolver = resolve }) // mantener el lock
+      await new Promise(/** @param {(v?: void) => void} resolve */ (resolve) => { _lockResolver = resolve }) // mantener el lock
       stopSelfDaemon()
     }).catch(() => {})
   }
@@ -292,14 +314,17 @@ import { useBackend as usePeerBackend } from './peerStore.js'
   // (ra.ping para agentes @dotrino/remote-agent —ia—; terminal.ping para terminal
   // pre-migración) y consideramos online si responde cualquiera. Reusa el cliente
   // del proxy del daemon activo en ESTE iframe; si no hay daemon, devuelve vacío.
+  /** @param {string[]} pubkeys @param {{ timeoutMs?: number }} [opts] @returns {Promise<Set<string>>} */
   function probeOnline (pubkeys, { timeoutMs = 4000 } = {}) {
     return new Promise((resolve) => {
+      /** @type {Set<string>} */
       const online = new Set()
       const client = daemon?.client
       if (!client?.sendByPubkey || !pubkeys.length) return resolve(online)
       let rest = pubkeys.length
+      /** @type {Map<string, string>} */
       const byNonce = new Map()
-      const off = client.on('message', (_f, p) => {
+      const off = client.on('message', (/** @type {string} */ _f, /** @type {any} */ p) => {
         if (!p || typeof p !== 'object') return
         if (p.type === 'ra.pong' || p.type === 'terminal.pong') {
           const pk = byNonce.get(p.n)
@@ -330,6 +355,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       if (daemon) return handlers.listVaultDevices({})
       const { issued, revoked } = await handlers.listDelegations({})
       const now = Date.now()
+      /** @type {Map<string, any>} */
       const bySub = new Map()
       for (const x of (issued || [])) {
         if (!x.sub || x.revokedAt || (x.exp && x.exp <= now)) continue
@@ -340,17 +366,17 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         deviceId: await keyLabel(x.sub),
         sub: x.sub, label: x.label || '', scope: x.scope, exp: x.exp, nonce: x.nonce
       })))
-      return { devices, revoked: (revoked || []).map((r) => r.nonce || r) }
+      return { devices, revoked: (revoked || []).map((/** @type {any} */ r) => r.nonce || r) }
     },
     selfVaultStatus: async () => ({ enabled: await selfEnabled(), running: !!daemon, error: daemon ? null : daemonError }),
-    setSelfVault: async ({ enabled }) => {
+    setSelfVault: async (/** @type {{ enabled?: boolean }} */ { enabled }) => {
       const { id } = await handlers.currentProfile()
       if (enabled && !id) throw Object.assign(new Error('no profile: the vault belongs to an account'), { code: 'no-profile' })
-      if (enabled) kv.setItem(SELF_FLAG, id); else kv.removeItem(SELF_FLAG)
+      if (enabled) kv.setItem(SELF_FLAG, /** @type {string} */ (id)); else kv.removeItem(SELF_FLAG)
       if (enabled) holdSelfLock(); else releaseSelfLock()
       return { ok: true, enabled: !!enabled }
     },
-    selfVaultPairing: async (opts) => {
+    selfVaultPairing: async (/** @type {any} */ opts) => {
       if (!daemon) throw new Error('this tab is not the active vault; open it as a visible tab')
       return daemon.startPairing(opts)
     },
@@ -360,11 +386,11 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       const { issued } = await handlers.listDelegations({})
       return issued || []
     },
-    selfVaultApprove: async ({ deviceId, code }) => {
+    selfVaultApprove: async (/** @type {{ deviceId: string, code: string }} */ { deviceId, code }) => {
       if (!daemon) throw new Error('this tab is not the active vault')
       return daemon.approve(deviceId, code)
     },
-    selfVaultReject: async ({ deviceId }) => {
+    selfVaultReject: async (/** @type {{ deviceId: string }} */ { deviceId }) => {
       if (!daemon) throw new Error('this tab is not the active vault')
       daemon.reject(deviceId)
       return { ok: true }
@@ -378,7 +404,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
      * mientras siga en el acta un papel retirado significa «renueva», no «estás fuera».
      * Se conserva para quien de verdad quiera retirar un certificado suelto.
      */
-    selfVaultRevoke: async ({ sub, nonce }) => {
+    selfVaultRevoke: async (/** @type {{ sub?: string, nonce?: string }} */ { sub, nonce }) => {
       if (sub) {
         if (daemon?.revokeDevice) return daemon.revokeDevice(sub)
         return handlers.revokeDevice({ sub })
@@ -388,7 +414,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     },
     // Presencia online (ping/pong) de las máquinas enroladas. Requiere que ESTE
     // iframe sea el daemon activo (tiene el cliente del proxy); si no, devuelve [].
-    selfVaultProbe: async ({ pubkeys }) => ({ online: [...(await probeOnline(pubkeys || []))] }),
+    selfVaultProbe: async (/** @type {{ pubkeys?: string[] }} */ { pubkeys }) => ({ online: [...(await probeOnline(pubkeys || []))] }),
 
     // ----- ENTRAR CON USUARIO Y CONTRASEÑA, desde la PESTAÑA -----
     //
@@ -410,7 +436,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
      * la bóveda guarda un paquete que no puede abrir. Es el mismo camino que `logins add`
      * del binario, con la misma pieza compartida.
      */
-    selfVaultLoginAdd: async ({ user, password, label = '', caps } = {}) => {
+    selfVaultLoginAdd: async (/** @type {{ user?: string, password?: string, label?: string, caps?: string[] }} */ { user, password, label = '', caps } = {}) => {
       const d = pidaDaemon()
       const { client: opaque } = await import('@dotrino/opaque')
       const { makeDeviceKey, makeDeviceEncKey } = await import('@dotrino/identity/capabilities')
@@ -430,7 +456,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
         // Los PERMISOS del acta, cualquiera de ellos: los traduce a scopes el pilar del vault.
         label: nombre, blob, ...(caps ? { caps } : {})
       })
-      return { ...r, address: loginAddress(user, await accountFingerprint(selfIdentity)) }
+      return { ...r, address: loginAddress(/** @type {string} */ (user), await accountFingerprint(selfIdentity)) }
     },
 
     /**
@@ -438,17 +464,17 @@ import { useBackend as usePeerBackend } from './peerStore.js'
      * siguen siendo los mismos. Por eso hace falta la vieja — sin ella no hay nada que
      * volver a cerrar — y por eso lo que estuviera abierto se cierra.
      */
-    selfVaultLoginPasswd: async ({ user, oldPassword, newPassword } = {}) => {
+    selfVaultLoginPasswd: async (/** @type {{ user?: string, oldPassword?: string, newPassword?: string }} */ { user, oldPassword, newPassword } = {}) => {
       const d = pidaDaemon()
       const { client: opaque } = await import('@dotrino/opaque')
       const { sealDeviceKeys, openDeviceKeys } = await import('@dotrino/vault/password-logins')
       if (typeof newPassword !== 'string' || newPassword.length < 12) {
         throw Object.assign(new Error('the password must be at least 12 characters'), { code: 'weak-password' })
       }
-      const start = opaque.loginStart({ password: oldPassword })
+      const start = opaque.loginStart({ password: /** @type {string} */ (oldPassword) })
       const begun = await d.loginBegin({ user, request: start.request })
       let fin
-      try { fin = opaque.loginFinish({ state: start.state, response: begun.response, password: oldPassword }) }
+      try { fin = opaque.loginFinish({ state: start.state, response: begun.response, password: /** @type {string} */ (oldPassword) }) }
       catch (_) { throw Object.assign(new Error('wrong password'), { code: 'login-failed' }) }
       const entered = await d.loginEnd({ lid: begun.lid, finalization: fin.finalization, label: 'consola' })
       const keys = await openDeviceKeys(fin.exportKey, entered.blob)
@@ -463,28 +489,28 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     },
 
     /** Cerrar un inicio de sesión abierto (sin `sid`, todos los de ese usuario). */
-    selfVaultLoginClose: async ({ user, sid = null } = {}) => {
+    selfVaultLoginClose: async (/** @type {{ user?: string, sid?: string | null }} */ { user, sid = null } = {}) => {
       const d = pidaDaemon()
       if (sid) return d.closeLogin({ user, sid })
-      const fila = d.listLogins().find((x) => x.user === user)
-      for (const s of fila?.sessions || []) d.closeLogin({ user, sid: s.sid })
+      const fila = d.listLogins().find((/** @type {any} */ x) => x.user === user)
+      for (const s of /** @type {any[]} */ (fila?.sessions || [])) d.closeLogin({ user, sid: s.sid })
       return { ok: true, closed: (fila?.sessions || []).length }
     },
 
     /** Quitar la espera de los intentos fallidos, desde la máquina de la bóveda. */
-    selfVaultLoginUnblock: async ({ user } = {}) => pidaDaemon().clearLoginBlock({ user }),
+    selfVaultLoginUnblock: async (/** @type {{ user?: string }} */ { user } = {}) => pidaDaemon().clearLoginBlock({ user }),
 
     /**
      * QUITARLO. Se va de aquí **y su llave sale del acta**: borrar solo el inicio de sesión
      * dejaba un miembro que ya no puede entrar y sigue siendo de la cuenta.
      */
-    selfVaultLoginRemove: async ({ user } = {}) => {
+    selfVaultLoginRemove: async (/** @type {{ user?: string }} */ { user } = {}) => {
       const d = pidaDaemon()
-      const fila = d.listLogins().find((x) => x.user === user)
+      const fila = d.listLogins().find((/** @type {any} */ x) => x.user === user)
       const r = await d.removeLogin({ user })
       if (r?.ok && fila?.pub) {
         try { await handlers.revokeDevice({ sub: fila.pub }) } catch (e) {
-          throw Object.assign(new Error(`the login is gone but its key is still in the record: ${e.message}`), { code: 'revoke-failed' })
+          throw Object.assign(new Error(`the login is gone but its key is still in the record: ${/** @type {any} */ (e).message}`), { code: 'revoke-failed' })
         }
       }
       return { ...r, deviceId: fila?.deviceId || null }
@@ -497,22 +523,22 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     // elige la contraseña del respaldo — o sea, puede leerlo todo. Un fallo en cualquiera de
     // las apps no puede convertirse en sacar los secretos de la cuenta.
     // El archivo se cierra AQUÍ: a la consola le llega ya cifrado.
-    selfVaultBackupDrawers: async ({ __origin } = {}) => {
+    selfVaultBackupDrawers: async (/** @type {{ __origin?: string }} */ { __origin } = {}) => {
       soloConsola(__origin)
       return pidaDaemon().backupDrawers()
     },
-    selfVaultBackupExport: async ({ drawers = null, password, __origin } = {}) => {
+    selfVaultBackupExport: async (/** @type {{ drawers?: string[] | null, password?: any, __origin?: string }} */ { drawers = null, password, __origin } = {}) => {
       soloConsola(__origin)
       const { sealBackup } = await import('@dotrino/vault/backup')
       const { payload, summary } = await pidaDaemon().exportBackup({ drawers })
       return { file: await sealBackup(payload, password), summary }
     },
-    selfVaultBackupPlan: async ({ file, password, drawers = null, map = {}, __origin } = {}) => {
+    selfVaultBackupPlan: async (/** @type {{ file?: any, password?: any, drawers?: string[] | null, map?: Record<string, string>, __origin?: string }} */ { file, password, drawers = null, map = {}, __origin } = {}) => {
       soloConsola(__origin)
       const { openBackup } = await import('@dotrino/vault/backup')
       return pidaDaemon().planBackupImport(await openBackup(file, password), { drawers, map })
     },
-    selfVaultBackupImport: async ({ file, password, drawers = null, map = {}, onConflict = null, decisions = {}, __origin } = {}) => {
+    selfVaultBackupImport: async (/** @type {{ file?: any, password?: any, drawers?: string[] | null, map?: Record<string, string>, onConflict?: string | null, decisions?: Record<string, any>, __origin?: string }} */ { file, password, drawers = null, map = {}, onConflict = null, decisions = {}, __origin } = {}) => {
       soloConsola(__origin)
       const { openBackup } = await import('@dotrino/vault/backup')
       return pidaDaemon().importBackup(await openBackup(file, password), { drawers, map, onConflict, decisions })
@@ -524,6 +550,7 @@ import { useBackend as usePeerBackend } from './peerStore.js'
    * que es donde se prueba. Lo demás del ecosistema no puede pedir un respaldo.
    */
   const CONSOLE_ORIGIN = /^(https:\/\/vault\.dotrino\.com|https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?)$/
+  /** @param {unknown} origin */
   function soloConsola (origin) {
     if (!CONSOLE_ORIGIN.test(String(origin || ''))) {
       throw Object.assign(new Error('only the vault console (vault.dotrino.com) can back up or restore'), { code: 'not-the-console' })
@@ -549,11 +576,12 @@ import { useBackend as usePeerBackend } from './peerStore.js'
     if (!isAllowed(event.origin)) return // origen ajeno: silencio total
     rememberEmbedder(event.source, event.origin)
     const { id, method, params } = msg
-    const reply = (payload) => event.source?.postMessage(
+    /** @param {Record<string, any>} payload */
+    const reply = (payload) => /** @type {Window | null} */ (event.source)?.postMessage(
       { _cci: true, type: 'response', id, ...payload },
       event.origin
     )
-    const handler = selfHandlers[method] || handlers[method]
+    const handler = /** @type {Record<string, (params: any) => any>} */ (selfHandlers)[method] || /** @type {Record<string, (params: any) => any>} */ (handlers)[method]
     if (!handler) return reply({ error: `Unknown method: ${method}` })
     try {
       // LO QUE DECIDE QUIÉN ES DE LA CUENTA solo lo pide la consola (`originPolicy.js`): una app
@@ -569,7 +597,8 @@ import { useBackend as usePeerBackend } from './peerStore.js'
       // medias: la cuenta quedaba en Pedidos y no en la lista de perfiles (2026-10-12).
       if (native) await native.flush()
       reply({ result })
-    } catch (e) {
+    } catch (err) {
+      const e = /** @type {any} */ (err)
       if (native) await native.flush()
       // `code` (y su `detail`) CRUZAN. Sin ellos, al otro lado solo llegaba la frase, y una
       // app que quiere reaccionar a un rechazo concreto —«esa bóveda ya está en otra cuenta

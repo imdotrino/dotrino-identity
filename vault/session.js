@@ -62,19 +62,28 @@ export const SESSION_FORBIDDEN = Object.freeze(['secrets', 'admin', 'approve', '
 /** Qué capacidad del acta hace falta para conceder cada alcance de sesión. */
 const SCOPE_NEEDS = Object.freeze({ 'id:whoami': null, 'vault:store': 'store' })
 
+/** @param {string} s */
 const enc = (s) => new TextEncoder().encode(s)
+/** @param {unknown} v @returns {v is string} */
 const isStr = (v) => typeof v === 'string' && !!v
 
 /** Un identificador de sesión: lo que se enseña al usuario para que pueda cerrarla. */
 export const newSessionId = () => crypto.randomUUID()
 
-/** Normaliza los alcances pedidos: solo los del catálogo, sin repetidos y en orden estable. */
+/**
+ * Normaliza los alcances pedidos: solo los del catálogo, sin repetidos y en orden estable.
+ * @param {unknown} scopes
+ * @returns {string[]}
+ */
 export function cleanSessionScopes (scopes) {
-  const list = [...new Set((Array.isArray(scopes) ? scopes : []).filter((s) => SESSION_SCOPES.includes(s)))].sort()
+  const list = [...new Set((Array.isArray(scopes) ? scopes : []).filter((/** @type {any} */ s) => SESSION_SCOPES.includes(s)))].sort()
   return list.length ? list : ['id:whoami']
 }
 
-/** El cuerpo que firma el aparato que respalda. Un solo sitio: quien firma y quien verifica miran lo mismo. */
+/**
+ * El cuerpo que firma el aparato que respalda. Un solo sitio: quien firma y quien verifica miran lo mismo.
+ * @param {{ sid: string, s: string, by: string, origin: string, scopes?: unknown, iat: number, exp: number }} args
+ */
 export function sessionBody ({ sid, s, by, origin, scopes, iat, exp }) {
   if (!isStr(sid)) throw new Error('session: sid required')
   if (!isStr(s)) throw new Error('session: s (session pubkey) required')
@@ -91,6 +100,8 @@ export function sessionBody ({ sid, s, by, origin, scopes, iat, exp }) {
  *
  * `sign` recibe el cuerpo y devuelve la firma (o el paquete del vault). No se le pasa la
  * privada: este módulo no toca llaves.
+ * @param {{ sid: string, s: string, by: string, origin: string, scopes?: unknown, ttlMs?: number, now?: number }} args
+ * @param {(body: object) => Promise<string | { signature?: string }>} sign
  */
 export async function signSession ({ sid, s, by, origin, scopes, ttlMs, now = Date.now() }, sign) {
   if (typeof sign !== 'function') throw new Error('session: sign(body) required')
@@ -109,6 +120,9 @@ export async function signSession ({ sid, s, by, origin, scopes, ttlMs, now = Da
  * el aparato que respalda sigue siendo de la casa —que es lo que hace que quitar un aparato
  * se lleve por delante sus sesiones—. Devuelve `{ ok, profileId, scopes, sid, exp }` o
  * `{ ok:false, reason }`.
+ * @param {any} paper
+ * @param {{ chain?: any, expectedProfileId?: string | null, origin?: string | null, now?: number, maxSkewMs?: number }} [opts]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, seq: number, sid: string, s: string, by: string, origin: string, scopes: string[], exp: number }>}
  */
 export async function verifySession (paper, { chain, expectedProfileId = null, origin = null, now = Date.now(), maxSkewMs = SESSION_MAX_SKEW_MS } = {}) {
   const p = paper
@@ -125,14 +139,15 @@ export async function verifySession (paper, { chain, expectedProfileId = null, o
   // DÓNDE vale. Un papel para una aplicación no vale en otra: el origen va firmado dentro.
   if (origin != null && p.origin !== String(origin).trim()) return { ok: false, reason: 'other-origin' }
 
-  if (p.scopes.some((s) => !SESSION_SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
-  if (p.scopes.some((s) => SESSION_FORBIDDEN.includes(s))) return { ok: false, reason: 'forbidden-scope' }
+  if (p.scopes.some((/** @type {any} */ s) => !SESSION_SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
+  if (p.scopes.some((/** @type {any} */ s) => SESSION_FORBIDDEN.includes(s))) return { ok: false, reason: 'forbidden-scope' }
 
   // EL ACTA MANDA, y por eso hace falta: dice si el aparato que respalda sigue siendo del
   // perfil y qué puede. Sin ella no se juzga, en vez de dar por bueno lo que diga el papel.
   const c = await verifySealerChain(chain, { expectedProfileId })
   if (!c.ok) return { ok: false, reason: 'chain:' + c.reason }
-  const acta = chain[chain.length - 1]
+  const cadena = /** @type {import('./acta.js').Acta[]} */ (chain)  // `verifySealerChain` ya comprobó que es una lista
+  const acta = cadena[cadena.length - 1]
 
   // PRIMERO, ¿ES DE LA CASA? Y en este orden a propósito: si al aparato lo quitaron, el
   // motivo tiene que decir eso y no «le falta un permiso», que manda a mirar al sitio
@@ -144,7 +159,7 @@ export async function verifySession (paper, { chain, expectedProfileId = null, o
   // comprueba aquí y no solo al emitir, porque quien emite es precisamente quien podría
   // mentir — y porque el acta de hoy puede haberle quitado lo que tenía ayer.
   for (const s of p.scopes) {
-    const cap = SCOPE_NEEDS[s]
+    const cap = /** @type {Record<string, string | null | undefined>} */ (SCOPE_NEEDS)[s]
     if (cap && !memberCan(acta, p.by, cap)) return { ok: false, reason: 'device-lacks-' + cap }
   }
 
@@ -159,6 +174,8 @@ export async function verifySession (paper, { chain, expectedProfileId = null, o
  *
  * Es lo que llama quien recibe algo de una sesión: comprueba la firma de la llave de
  * sesión, el papel que la respalda y —si se pide— que el alcance cubra lo que se pretende.
+ * @param {{ data?: unknown, signature?: unknown, session?: any, chain?: any, scope?: string | null, origin?: string | null, expectedProfileId?: string | null, now?: number }} [args]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, sid: string, scopes: string[], exp: number }>}
  */
 export async function verifySessionSigned ({ data, signature, session, chain, scope = null, origin = null, expectedProfileId = null, now = Date.now() } = {}) {
   if (!data || !isStr(signature)) return { ok: false, reason: 'shape' }

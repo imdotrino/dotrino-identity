@@ -26,11 +26,26 @@ const IDB_PEERS_KEY = 'peers.v1'
 // perdiendo contactos que SIGUEN intactos en el localStorage viejo.
 const IDB_MIGRATED_KEY = 'peers.migrated.v1'
 
+/**
+ * La ficha de un contacto: `publickey` y lo que sus pantallas apunten (apodo, avatar, fechas).
+ * @typedef {{ publickey: string, firstSeen?: number, lastSeen?: number, changedAt?: number } & Record<string, any>} PeerRecord
+ */
+/** El libro de contactos: pubkey → ficha. @typedef {Record<string, PeerRecord>} PeerBook */
+/**
+ * Dónde guarda la app el libro (el almacén de la app nativa).
+ * @typedef {{ get (key: string): Promise<any>, put (key: string, val: any): Promise<void> }} PeerBackend
+ */
+
+/** @type {PeerBook} */
 let _peers = {}
 let _fallback = false
+/** @type {IDBDatabase | null} */
 let _idb = null
+/** @type {Promise<void>} */
 let _writeChain = Promise.resolve()
+/** @type {(() => void) | null} */
 let _markDirty = null
+/** @type {string | null} */
 let _pid = null
 /**
  * La cuenta abierta es VOLÁTIL (se entró con usuario y contraseña sin «Recordar»): sus
@@ -45,13 +60,22 @@ let _volatile = false
  * (`nativeStore.js`), que es uno para todas las páginas. `{ get(key), put(key, val) }`.
  * Se pone antes de `initPeerStorage`.
  */
+/** @type {PeerBackend | null} */
 let _backend = null
+/** @param {PeerBackend | null | undefined} b */
 export function useBackend (b) { _backend = b || null }
 
-/** Registra el callback que marca el estado como "sucio" para el sync. */
+/**
+ * Registra el callback que marca el estado como "sucio" para el sync.
+ * @param {(() => void) | null} fn
+ */
 export function onDirty (fn) { _markDirty = fn }
 
-/** Multi-perfil: namespacea el peer book por perfil. El core lo llama antes de initPeerStorage. */
+/**
+ * Multi-perfil: namespacea el peer book por perfil. El core lo llama antes de initPeerStorage.
+ * @param {string | null | undefined} pid
+ * @param {{ volatile?: boolean }} [opts]
+ */
 export function setProfile (pid, { volatile: esVolatil = false } = {}) {
   _pid = pid || null
   _volatile = !!esVolatil
@@ -59,7 +83,10 @@ export function setProfile (pid, { volatile: esVolatil = false } = {}) {
 }
 function peersKey () { return _pid ? `peers.${_pid}.v1` : IDB_PEERS_KEY }
 
-/** Migración: copia el peer book VIEJO (pre-multi-perfil, sin namespace) al perfil `pid`. */
+/**
+ * Migración: copia el peer book VIEJO (pre-multi-perfil, sin namespace) al perfil `pid`.
+ * @param {string} pid
+ */
 export async function adoptLegacy (pid) {
   if (_backend) return   // el almacén de la app nació después: no hay libro viejo que adoptar
   try {
@@ -74,8 +101,10 @@ export async function adoptLegacy (pid) {
   } catch (_) { /* sin peers viejos que adoptar */ }
 }
 
+/** @returns {Promise<IDBDatabase>} */
 function openIdb () {
   return new Promise((resolve, reject) => {
+    /** @type {IDBOpenDBRequest} */
     let req
     try { req = indexedDB.open(IDB_NAME, 1) } catch (e) { reject(e); return }
     req.onupgradeneeded = () => {
@@ -86,6 +115,7 @@ function openIdb () {
     req.onerror = () => reject(req.error)
   })
 }
+/** @param {IDBDatabase} db @param {string} key @returns {Promise<any>} */
 function idbGet (db, key) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readonly')
@@ -94,8 +124,9 @@ function idbGet (db, key) {
     r.onerror = () => reject(r.error)
   })
 }
+/** @param {IDBDatabase} db @param {string} key @param {any} val @returns {Promise<void>} */
 function idbPut (db, key, val) {
-  return new Promise((resolve, reject) => {
+  return new Promise(/** @param {(v?: void) => void} resolve @param {(e: unknown) => void} reject */ (resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite')
     tx.objectStore(IDB_STORE).put(val, key)
     tx.oncomplete = () => resolve()
@@ -103,11 +134,13 @@ function idbPut (db, key, val) {
   })
 }
 
+/** @returns {PeerBook} */
 function readLocalPeers () {
   try { const raw = localStorage.getItem(PEERS_STORAGE); return raw ? (JSON.parse(raw) || {}) : {} }
   catch (_) { return {} }
 }
 
+/** @returns {Promise<PeerBook>} */
 export async function initPeerStorage () {
   try { if (typeof navigator !== 'undefined' && navigator.storage?.persist) await navigator.storage.persist() }
   catch (_) { /* best-effort */ }
@@ -122,7 +155,7 @@ export async function initPeerStorage () {
     const stored = await idbGet(_idb, peersKey()) // peer book DEL perfil activo (namespaceado)
     _peers = (stored && typeof stored === 'object') ? stored : {}
   } catch (e) {
-    console.warn('[cc-identity] IndexedDB unavailable, falling back to localStorage:', e?.message)
+    console.warn('[cc-identity] IndexedDB unavailable, falling back to localStorage:', /** @type {{ message?: string } | null} */ (e)?.message)
     _fallback = true
     _idb = null
     try { const raw = localStorage.getItem(peersKey()); _peers = raw ? (JSON.parse(raw) || {}) : {} }
@@ -131,45 +164,59 @@ export async function initPeerStorage () {
   return _peers
 }
 
+/** @returns {Promise<void>} */
 function persistPeers () {
   if (_volatile) return _writeChain   // cuenta volátil: en memoria y en ningún disco
   const key = peersKey()
   if (_backend) {
     const snapshot = _peers
     _writeChain = _writeChain
-      .then(() => _backend.put(key, snapshot))
+      .then(() => /** @type {PeerBackend} */ (_backend).put(key, snapshot))
       .catch(e => console.warn('[cc-identity] persist (app) failed:', e?.message))
     return _writeChain
   }
   if (_fallback || !_idb) {
     try { localStorage.setItem(key, JSON.stringify(_peers)) }
-    catch (e) { console.warn('[cc-identity] persist (ls) failed:', e?.message) }
+    catch (e) { console.warn('[cc-identity] persist (ls) failed:', /** @type {{ message?: string } | null} */ (e)?.message) }
     return _writeChain
   }
   const snapshot = _peers
   _writeChain = _writeChain
-    .then(() => idbPut(_idb, key, snapshot))
+    .then(() => idbPut(/** @type {IDBDatabase} */ (_idb), key, snapshot))
     .catch(e => console.warn('[cc-identity] persist (idb) failed:', e?.message))
   return _writeChain
 }
 
-/** Promesa que resuelve cuando se completaron los write-through pendientes (tests). */
+/**
+ * Promesa que resuelve cuando se completaron los write-through pendientes (tests).
+ * @returns {Promise<void>}
+ */
 export function flushPeers () { return _writeChain }
 
+/** @returns {PeerBook} */
 export function loadPeers () { return _peers }
 
+/** @param {PeerBook} peers */
 export function savePeers (peers) {
   _peers = peers
   persistPeers()
   if (_markDirty) _markDirty()
 }
 
-/** Escritura directa (merge del sync): persiste sin marcar dirty. */
+/**
+ * Escritura directa (merge del sync): persiste sin marcar dirty.
+ * @param {PeerBook} peers
+ */
 export function setPeersDirect (peers) {
   _peers = peers
   persistPeers()
 }
 
+/**
+ * @param {string} publickey
+ * @param {Record<string, any>} patch
+ * @returns {PeerRecord}
+ */
 export function upsertPeer (publickey, patch) {
   const peers = loadPeers()
   const existing = peers[publickey] || { publickey, firstSeen: Date.now() }

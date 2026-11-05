@@ -1,50 +1,61 @@
-/** Normaliza los alcances pedidos: solo los del catálogo, sin repetidos y en orden estable. */
-export function cleanSessionScopes(scopes: any): any[];
-/** El cuerpo que firma el aparato que respalda. Un solo sitio: quien firma y quien verifica miran lo mismo. */
+/**
+ * Normaliza los alcances pedidos: solo los del catálogo, sin repetidos y en orden estable.
+ * @param {unknown} scopes
+ * @returns {string[]}
+ */
+export function cleanSessionScopes(scopes: unknown): string[];
+/**
+ * El cuerpo que firma el aparato que respalda. Un solo sitio: quien firma y quien verifica miran lo mismo.
+ * @param {{ sid: string, s: string, by: string, origin: string, scopes?: unknown, iat: number, exp: number }} args
+ */
 export function sessionBody({ sid, s, by, origin, scopes, iat, exp }: {
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any;
-    iat: any;
-    exp: any;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes?: unknown;
+    iat: number;
+    exp: number;
 }): {
     v: number;
     op: string;
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any[];
-    iat: any;
-    exp: any;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes: string[];
+    iat: number;
+    exp: number;
 };
 /**
  * Firma un papel de sesión. Lo llama el APARATO que respalda, con su propia llave.
  *
  * `sign` recibe el cuerpo y devuelve la firma (o el paquete del vault). No se le pasa la
  * privada: este módulo no toca llaves.
+ * @param {{ sid: string, s: string, by: string, origin: string, scopes?: unknown, ttlMs?: number, now?: number }} args
+ * @param {(body: object) => Promise<string | { signature?: string }>} sign
  */
 export function signSession({ sid, s, by, origin, scopes, ttlMs, now }: {
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any;
-    ttlMs: any;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes?: unknown;
+    ttlMs?: number;
     now?: number;
-}, sign: any): Promise<{
-    sig: any;
+}, sign: (body: object) => Promise<string | {
+    signature?: string;
+}>): Promise<{
+    sig: string;
     v: number;
     op: string;
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any[];
-    iat: any;
-    exp: any;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes: string[];
+    iat: number;
+    exp: number;
 }>;
 /**
  * ¿Vale este papel de sesión, AHORA?
@@ -53,74 +64,56 @@ export function signSession({ sid, s, by, origin, scopes, ttlMs, now }: {
  * el aparato que respalda sigue siendo de la casa —que es lo que hace que quitar un aparato
  * se lleve por delante sus sesiones—. Devuelve `{ ok, profileId, scopes, sid, exp }` o
  * `{ ok:false, reason }`.
+ * @param {any} paper
+ * @param {{ chain?: any, expectedProfileId?: string | null, origin?: string | null, now?: number, maxSkewMs?: number }} [opts]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, seq: number, sid: string, s: string, by: string, origin: string, scopes: string[], exp: number }>}
  */
 export function verifySession(paper: any, { chain, expectedProfileId, origin, now, maxSkewMs }?: {
-    expectedProfileId?: any;
-    origin?: any;
+    chain?: any;
+    expectedProfileId?: string | null;
+    origin?: string | null;
     now?: number;
     maxSkewMs?: number;
 }): Promise<{
-    ok: boolean;
+    ok: false;
     reason: string;
-    profileId?: undefined;
-    seq?: undefined;
-    sid?: undefined;
-    s?: undefined;
-    by?: undefined;
-    origin?: undefined;
-    scopes?: undefined;
-    exp?: undefined;
 } | {
-    ok: boolean;
-    profileId: any;
-    seq: any;
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any[];
-    exp: any;
-    reason?: undefined;
+    ok: true;
+    profileId: string;
+    seq: number;
+    sid: string;
+    s: string;
+    by: string;
+    origin: string;
+    scopes: string[];
+    exp: number;
 }>;
 /**
  * ¿Firmó ESTA SESIÓN esto, y podía?
  *
  * Es lo que llama quien recibe algo de una sesión: comprueba la firma de la llave de
  * sesión, el papel que la respalda y —si se pide— que el alcance cubra lo que se pretende.
+ * @param {{ data?: unknown, signature?: unknown, session?: any, chain?: any, scope?: string | null, origin?: string | null, expectedProfileId?: string | null, now?: number }} [args]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, sid: string, scopes: string[], exp: number }>}
  */
 export function verifySessionSigned({ data, signature, session, chain, scope, origin, expectedProfileId, now }?: {
-    scope?: any;
-    origin?: any;
-    expectedProfileId?: any;
+    data?: unknown;
+    signature?: unknown;
+    session?: any;
+    chain?: any;
+    scope?: string | null;
+    origin?: string | null;
+    expectedProfileId?: string | null;
     now?: number;
 }): Promise<{
-    ok: boolean;
+    ok: false;
     reason: string;
-    profileId?: undefined;
-    seq?: undefined;
-    sid?: undefined;
-    s?: undefined;
-    by?: undefined;
-    origin?: undefined;
-    scopes?: undefined;
-    exp?: undefined;
 } | {
-    ok: boolean;
-    profileId: any;
-    seq: any;
-    sid: any;
-    s: any;
-    by: any;
-    origin: any;
-    scopes: any[];
-    exp: any;
-    reason?: undefined;
-} | {
-    ok: boolean;
-    profileId: any;
-    sid: any;
-    scopes: any[];
-    exp: any;
+    ok: true;
+    profileId: string;
+    sid: string;
+    scopes: string[];
+    exp: number;
 }>;
 export const SESSION_V: 1;
 /** Cuánto dura una sesión. Horas, no meses: es un rato en un aparato que no es tuyo. */

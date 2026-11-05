@@ -29,13 +29,28 @@
  */
 import { signSession, verifySession, newSessionId, cleanSessionScopes, SESSION_DEFAULT_TTL_MS } from './session.js'
 
+/**
+ * Lo que se usa del transporte (`@dotrino/proxy-client`).
+ * @typedef {{ url?: string, on (event: string, handler: (...args: any[]) => void): () => void,
+ *   sendByPubkey (to: string | string[], payload: any): void,
+ *   sendSealed? (to: string[], payload: any, opts: { peerEncPub: string }): Promise<void> }} SessionTransport
+ */
+/**
+ * Una invitación a abrir sesión (lo que va en el QR).
+ * @typedef {{ v: number, t: string, sid: string, s: string, encPub?: string, origin: string, scopes: string[], proxy?: string }} SessionInvite
+ */
+
 export const SESSION_OP = Object.freeze({
   GRANT: 'session.grant',   // aparato → navegador: aquí tienes tu papel
   DENY: 'session.deny',     // aparato → navegador: no
   CLOSE: 'session.close'    // aparato → navegador: se acabó, bórrala
 })
 
-/** El código corto que el humano compara. Seis dígitos, como el del emparejamiento. */
+/**
+ * El código corto que el humano compara. Seis dígitos, como el del emparejamiento.
+ * @param {unknown} sid
+ * @returns {string}
+ */
 export function sessionCode (sid) {
   let h = 0
   for (const c of String(sid)) h = (h * 31 + c.charCodeAt(0)) >>> 0
@@ -45,12 +60,18 @@ export function sessionCode (sid) {
 /**
  * Lo que viaja en el QR. Corto a propósito: un QR más denso se lee peor con poca luz, que
  * es justo cuando alguien intenta entrar desde un aparato prestado.
+ * @param {{ sid: string, s: string, encPub?: string, origin: string, scopes?: unknown, proxy?: string }} args
+ * @returns {SessionInvite}
  */
 export function buildInvite ({ sid, s, encPub, origin, scopes, proxy }) {
   return { v: 1, t: 'session', sid, s, encPub, origin, scopes: cleanSessionScopes(scopes), proxy }
 }
 
-/** Lee una invitación, venga del QR o pegada a mano. `null` si no es una. */
+/**
+ * Lee una invitación, venga del QR o pegada a mano. `null` si no es una.
+ * @param {unknown} raw
+ * @returns {SessionInvite | null}
+ */
 export function parseInvite (raw) {
   try {
     const o = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -69,8 +90,10 @@ export function parseInvite (raw) {
  *
  * Devuelve `{ paper, chain, profileId }` cuando alguien concede, o lanza si se deniega o
  * se agota la espera. No guarda nada: dónde vive la sesión lo decide quien llama.
+ * @param {{ transport: SessionTransport, sessionPubkey: string, encPub?: string, origin: string, scopes?: unknown, onInvite?: (i: { invite: SessionInvite, code: string, qr: string }) => void, timeoutMs?: number, sid?: string }} args
+ * @returns {Promise<{ paper: any, chain: any, profileId: string, sid: string, scopes: string[], exp: number }>}
  */
-export async function openSession ({ transport, sessionPubkey, encPub, origin, scopes, onInvite, timeoutMs = 5 * 60 * 1000, sid = newSessionId() } = {}) {
+export async function openSession ({ transport, sessionPubkey, encPub, origin, scopes, onInvite, timeoutMs = 5 * 60 * 1000, sid = newSessionId() } = /** @type {any} */ ({})) {
   if (!transport || typeof transport.on !== 'function') throw new Error('openSession: transport required')
   if (typeof sessionPubkey !== 'string' || !sessionPubkey) throw new Error('openSession: sessionPubkey required')
   if (typeof origin !== 'string' || !origin.trim()) throw new Error('openSession: origin required')
@@ -80,9 +103,10 @@ export async function openSession ({ transport, sessionPubkey, encPub, origin, s
 
   return await new Promise((resolve, reject) => {
     let listo = false
+    /** @param {(v: any) => void} fn @param {any} arg */
     const fin = (fn, arg) => { if (!listo) { listo = true; clearTimeout(reloj); off?.(); fn(arg) } }
     const reloj = setTimeout(() => fin(reject, Object.assign(new Error('openSession: nobody granted the session in time'), { code: 'session-timeout' })), timeoutMs)
-    const off = transport.on('message', async (_from, payload, meta) => {
+    const off = transport.on('message', async (/** @type {string} */ _from, /** @type {any} */ payload, /** @type {any} */ meta) => {
       const p = typeof payload === 'string' ? (() => { try { return JSON.parse(payload) } catch (_) { return null } })() : payload
       if (!p || p.sid !== sid) return
       if (p.op === SESSION_OP.DENY) return fin(reject, Object.assign(new Error('openSession: the session was denied'), { code: 'session-denied' }))
@@ -106,8 +130,9 @@ export async function openSession ({ transport, sessionPubkey, encPub, origin, s
  *
  * `scopes` acota lo que se concede: por omisión, lo que pidió la invitación. Quien llama
  * puede recortarlo —nunca ampliarlo, que de eso ya se encarga `verifySession`.
+ * @param {{ transport: SessionTransport, invite: unknown, by: string, sign: (body: object) => Promise<string | { signature?: string }>, chain: any[], scopes?: unknown, ttlMs?: number, now?: number }} args
  */
-export async function grantSession ({ transport, invite, by, sign, chain, scopes, ttlMs = SESSION_DEFAULT_TTL_MS, now = Date.now() } = {}) {
+export async function grantSession ({ transport, invite, by, sign, chain, scopes, ttlMs = SESSION_DEFAULT_TTL_MS, now = Date.now() } = /** @type {any} */ ({})) {
   const inv = parseInvite(invite)
   if (!inv) throw Object.assign(new Error('grantSession: unreadable invite'), { code: 'bad-invite' })
   if (typeof by !== 'string' || !by) throw new Error('grantSession: by (this device pubkey) required')
@@ -120,8 +145,11 @@ export async function grantSession ({ transport, invite, by, sign, chain, scopes
   return paper
 }
 
-/** Decir que no, en vez de dejar al otro mirando una pantalla que no avanza. */
-export async function denySession ({ transport, invite } = {}) {
+/**
+ * Decir que no, en vez de dejar al otro mirando una pantalla que no avanza.
+ * @param {{ transport: SessionTransport, invite: unknown }} args
+ */
+export async function denySession ({ transport, invite } = /** @type {any} */ ({})) {
   const inv = parseInvite(invite)
   if (!inv) throw Object.assign(new Error('denySession: unreadable invite'), { code: 'bad-invite' })
   await enviar(transport, inv, { op: SESSION_OP.DENY, sid: inv.sid })
@@ -130,13 +158,19 @@ export async function denySession ({ transport, invite } = {}) {
 /**
  * CERRARLA. Se avisa a la sesión para que se borre en el acto; lo que la corta de verdad es
  * que el papel vence y nadie lo renueva —y que quitar el aparato se lleva todos los suyos.
+ * @param {{ transport: SessionTransport, sessionPubkey: string, encPub?: string, sid: string }} args
  */
-export async function closeSession ({ transport, sessionPubkey, encPub, sid } = {}) {
+export async function closeSession ({ transport, sessionPubkey, encPub, sid } = /** @type {any} */ ({})) {
   if (typeof sessionPubkey !== 'string' || !sessionPubkey) throw new Error('closeSession: sessionPubkey required')
   await enviar(transport, { s: sessionPubkey, encPub }, { op: SESSION_OP.CLOSE, sid })
 }
 
-/** Sellado siempre que se pueda: el proxio no cifra (CONVENCIONES §4.1). */
+/**
+ * Sellado siempre que se pueda: el proxio no cifra (CONVENCIONES §4.1).
+ * @param {SessionTransport} transport
+ * @param {{ s: string, encPub?: string }} inv
+ * @param {object} payload
+ */
 async function enviar (transport, inv, payload) {
   if (!transport || typeof transport.sendByPubkey !== 'function') throw new Error('sessionFlow: transport required')
   if (inv.encPub && typeof transport.sendSealed === 'function') {

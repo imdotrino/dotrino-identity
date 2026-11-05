@@ -23,7 +23,11 @@ const KV = 'kv:'
 const KEY = 'key:'
 const PEERS = 'peers:'
 
-/** El asa de una llave no se puede guardar en la app: solo su registro, que no tiene nada secreto. */
+/**
+ * El asa de una llave no se puede guardar en la app: solo su registro, que no tiene nada secreto.
+ * @param {any} rec
+ * @returns {{ external: string, kind: 'sign' | 'enc', publicJwk: JsonWebKey }}
+ */
 function plainKeyRecord (rec) {
   if (rec && typeof rec.external === 'string' && rec.publicJwk && (rec.kind === 'sign' || rec.kind === 'enc')) {
     return { external: rec.external, kind: rec.kind, publicJwk: rec.publicJwk }
@@ -34,6 +38,10 @@ function plainKeyRecord (rec) {
   throw Object.assign(new Error('this app keeps keys in the phone chip only: a software key cannot be stored here'), { code: 'native-no-import' })
 }
 
+/**
+ * @param {{ call (method: string, params: any): Promise<any> }} bridge
+ * @returns {Promise<{ kv: import('./core.js').Kv, keyStore: import('./core.js').KeyStore, peers: import('./peerStore.js').PeerBackend, flush: () => Promise<void> }>}
+ */
 export async function nativeBackends (bridge) {
   const { items } = await bridge.call('storeLoad', {})
   if (!items || typeof items !== 'object') {
@@ -43,37 +51,46 @@ export async function nativeBackends (bridge) {
 
   // Escrituras EN ORDEN: un `remove` que adelantara a su `set` resucitaría el dato. Una que
   // falla se dice en la consola con su código (sin tragársela) y no frena a las siguientes.
+  /** @type {Promise<void>} */
   let chain = Promise.resolve()
+  /** @param {string} method @param {any} params */
   const write = (method, params) => {
     chain = chain.then(() => bridge.call(method, params)).catch((e) => {
       console.error(`[cc-identity] native store ${method} failed (${e?.code || 'error'}): ${e?.message}`)
     })
     return chain
   }
+  /** @param {string} k @param {string} v */
   const set = (k, v) => { mem.set(k, v); return write('storeSet', { k, v }) }
+  /** @param {string} k */
   const del = (k) => { mem.delete(k); return write('storeRemove', { k }) }
 
   const kv = {
-    getItem: (k) => (mem.has(KV + k) ? mem.get(KV + k) : null),
-    setItem: (k, v) => { set(KV + k, String(v)) },
-    removeItem: (k) => { del(KV + k) }
+    getItem: (/** @type {string} */ k) => (mem.has(KV + k) ? /** @type {string} */ (mem.get(KV + k)) : null),
+    setItem: (/** @type {string} */ k, /** @type {string} */ v) => { set(KV + k, String(v)) },
+    removeItem: (/** @type {string} */ k) => { del(KV + k) }
   }
 
   const keyStore = {
+    /** @param {string} name */
     async get (name) {
       const raw = mem.get(KEY + name)
       return raw ? JSON.parse(raw) : null
     },
+    /** @param {string} name @param {any} rec */
     async set (name, rec) { await set(KEY + name, JSON.stringify(plainKeyRecord(rec))) },
+    /** @param {string} name */
     async remove (name) { await del(KEY + name) }
   }
 
   // El libro de contactos por perfil (`peerStore.useBackend`).
   const peers = {
+    /** @param {string} key */
     async get (key) {
       const raw = mem.get(PEERS + key)
       return raw ? JSON.parse(raw) : null
     },
+    /** @param {string} key @param {any} val */
     async put (key, val) { await set(PEERS + key, JSON.stringify(val)) }
   }
 

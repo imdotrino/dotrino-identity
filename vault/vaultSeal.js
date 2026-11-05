@@ -38,15 +38,21 @@ export const PLAIN_UNTIL = Date.UTC(2026, 11, 15)
 export const PLAIN_UNTIL_TEXT = '2026-12-15'
 
 /** ¿Todavía se tolera el claro de la migración? */
+/** @param {number} [now] @returns {boolean} */
 export function plainAllowed (now = Date.now()) { return now < PLAIN_UNTIL }
 
+/** @param {string} message @param {string} code */
 const withCode = (message, code) => Object.assign(new Error(message), { code })
 
-/** Las llaves de comunicación de las bóvedas de la cuenta, según el acta. */
+/**
+ * Las llaves de comunicación de las bóvedas de la cuenta, según el acta.
+ * @param {import('./acta.js').MaybeActa} acta
+ * @returns {string[]}
+ */
 export function vaultKeysOf (acta) {
   return [...new Set((acta?.members || [])
     .filter((m) => m && m.cn === VAULT_CN && typeof m.pub === 'string' && m.pub)
-    .map((m) => m.pub))]
+    .map((m) => /** @type {string} */ (m.pub)))]
 }
 
 /**
@@ -58,12 +64,15 @@ export function vaultKeysOf (acta) {
  * No se fía del proxio: cada acta tiene que verificarse y encadenar con la anterior aceptada
  * (`canAdopt`, la regla de siempre). Un proxio que no guarda actas (`no-acta-cache`) no es un
  * fallo: se sigue con la que ya se tenía, que es la verificada. Cualquier otro error se dice.
+ * @param {any} client  un cliente de `@dotrino/proxy-client`
+ * @param {import('./acta.js').MaybeActa} acta
+ * @returns {Promise<import('./acta.js').MaybeActa>}
  */
 export async function latestActa (client, acta) {
   if (!acta?.profileId || typeof acta.seq !== 'number' || typeof client?.getActas !== 'function') return acta
   let newer
   try { newer = await client.getActas(acta.profileId, { sinceSeq: acta.seq }) } catch (e) {
-    if (e?.code === 'no-acta-cache') return acta
+    if (/** @type {{ code?: string } | null | undefined} */ (e)?.code === 'no-acta-cache') return acta
     throw e
   }
   let current = acta
@@ -80,11 +89,11 @@ export async function latestActa (client, acta) {
  * @param {object} o
  * @param {string} o.dest  a qué llave se enruta (la cuenta, o `to`)
  * @param {string|null} [o.to]  una bóveda concreta (su llave de comunicación): solo a ella
- * @param {object|null} [o.acta]  el acta de la cuenta que este aparato ya aceptó: de ella (o de una
+ * @param {import('./acta.js').MaybeActa} [o.acta]  el acta de la cuenta que este aparato ya aceptó: de ella (o de una
  *   más nueva que encadene con ella, `latestActa`) salen las bóvedas
  * @param {object} o.payload  `{ type, data, signature, cert }`
  * @param {boolean} [o.quiet]  no timbra a una bóveda dormida
- * @param {(line:string)=>void} [o.warn]  dónde se dice que salió en claro (migración)
+ * @param {((line:string)=>void) | null} [o.warn]  dónde se dice que salió en claro (migración)
  * @param {number} [o.now]
  * @returns {Promise<{ sealed:number, why?:string }>}
  */
@@ -103,12 +112,12 @@ export async function sendToVault (client, { dest, to = null, acta = null, paylo
     for (const peerEncPub of encPubs) await client.sendSealed([dest], payload, { peerEncPub, ...opts })
     return { sealed: encPubs.length }
   }
-  const why = keys.length ? (lastError?.code || 'no-encpub') : 'no-vault-key'
+  const why = keys.length ? (/** @type {{ code?: string } | null} */ (lastError)?.code || 'no-encpub') : 'no-vault-key'
   if (!plainAllowed(now)) {
     throw withCode(`cannot seal the request to the vault (${why}): update the vault, or let this device see the current record`, 'vault-unsealable')
   }
   // MIGRACIÓN (caduca 2026-12-15): ver la cabecera.
-  try { warn?.(`[vault] request ${payload?.type || ''} sent UNSEALED (${why}): tolerated only until ${PLAIN_UNTIL_TEXT} — update the vault`) } catch (_) {}
+  try { warn?.(`[vault] request ${/** @type {{ type?: string } | null | undefined} */ (payload)?.type || ''} sent UNSEALED (${why}): tolerated only until ${PLAIN_UNTIL_TEXT} — update the vault`) } catch (_) {}
   client.sendByPubkey(dest, payload, opts)
   return { sealed: 0, why }
 }
@@ -116,6 +125,8 @@ export async function sendToVault (client, { dest, to = null, acta = null, paylo
 /**
  * ¿Se acepta esta respuesta? Sellada, siempre. Por el socket local, siempre. En claro, solo
  * durante la migración, y se dice. Devuelve `false` para ignorarla.
+ * @param {{ meta?: { sealed?: boolean } | null, local?: boolean, type?: string, warn?: ((line: string) => void) | null, now?: number }} args
+ * @returns {boolean}
  */
 export function acceptReply ({ meta, local = false, type = '', warn = null, now = Date.now() }) {
   if (local || meta?.sealed) return true

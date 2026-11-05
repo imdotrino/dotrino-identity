@@ -23,6 +23,22 @@
 import { canonicalStringify, bufToBase64, base64ToBuf } from './core.js'
 import { pubkeyId, keyLabel } from './keyid.js'
 
+/**
+ * Una llave que firma: una CryptoKey, o una llave que vive fuera (el chip del teléfono) y
+ * firma por su cuenta.
+ * @typedef {CryptoKey | { external: true, sign: (bytes: Uint8Array) => Promise<string> }} SigningKey
+ */
+/**
+ * Un certificado de delegación: `iss` autoriza a `sub` para `scope`, válido mientras el acta
+ * no lo deje atrás (`seq`). Los viejos llevaban `exp` en vez de `seq`.
+ * @typedef {{ v: number, iss: string, sub: string, scope: string | string[], iat: number,
+ *   seq?: number, exp?: number, nonce?: string, sig: string }} Delegation
+ */
+/**
+ * Qué nonces están revocados: una función, un Set o un objeto `{ nonce: true }`.
+ * @typedef {((nonce: string) => boolean) | Set<string> | Record<string, unknown>} RevokedSet
+ */
+
 const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' }
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
@@ -34,14 +50,23 @@ const SIGN = { name: 'ECDSA', hash: { name: 'SHA-256' } }
  * el mismo código que daba el repliegue al caducar, así que quien lo comprueba no cambia.
  */
 
+/** @param {string} s */
 const enc = (s) => new TextEncoder().encode(s)
 
+/**
+ * @param {SigningKey | null | undefined} k
+ * @returns {k is { external: true, sign: (bytes: Uint8Array) => Promise<string> }}
+ */
+const isExternal = (k) => !!(/** @type {{ external?: unknown } | null | undefined} */ (k))?.external
+
+/** @param {SigningKey} privateKey @param {Uint8Array<ArrayBuffer>} bytes @returns {Promise<string>} */
 async function rawSign (privateKey, bytes) {
   // Una llave EXTERNA (el chip del teléfono, `vault/vault.js`) firma ella misma: aquí no
   // hay CryptoKey que pasarle a WebCrypto. Devuelve la misma firma P1363 en base64.
-  if (privateKey?.external) return privateKey.sign(bytes)
-  return bufToBase64(await crypto.subtle.sign(SIGN, privateKey, bytes))
+  if (isExternal(privateKey)) return privateKey.sign(bytes)
+  return bufToBase64(await crypto.subtle.sign(SIGN, /** @type {CryptoKey} */ (privateKey), bytes))
 }
+/** @param {string} publicJwkStr @param {Uint8Array<ArrayBuffer>} bytes @param {string} sigB64 @returns {Promise<boolean>} */
 async function rawVerify (publicJwkStr, bytes, sigB64) {
   let pub
   try { pub = await crypto.subtle.importKey('jwk', JSON.parse(publicJwkStr), ECDSA, true, ['verify']) }
@@ -50,7 +75,9 @@ async function rawVerify (publicJwkStr, bytes, sigB64) {
   catch (_) { return false }
 }
 
+/** @param {JsonWebKey} privateJwk */
 const publicOf = (privateJwk) => ({ kty: privateJwk.kty, crv: privateJwk.crv, x: privateJwk.x, y: privateJwk.y })
+/** @param {string | string[]} scope @param {string} expected */
 const scopeAllows = (scope, expected) => Array.isArray(scope) ? scope.includes(expected) : scope === expected
 
 // El id de una llave y su huella legible viven en `./keyid.js`, que no tiene dependencias:
@@ -62,6 +89,8 @@ export { pubkeyId, keyLabel }
  * `publickey` (JWK string). Prueba de POSESION de una sub-clave de dispositivo (no
  * es cadena de delegacion): la usa el vault para confirmar que quien pide enrolar
  * `dpub` realmente tiene su privada (un token robado ya no alcanza para enrolar).
+ * @param {{ publickey: unknown, data: unknown, signature: unknown }} args
+ * @returns {Promise<boolean>}
  */
 export async function verifyDeviceSig ({ publickey, data, signature }) {
   if (typeof publickey !== 'string' || typeof signature !== 'string') return false
@@ -74,6 +103,10 @@ export async function verifyDeviceSig ({ publickey, data, signature }) {
  * visualmente entre las dos pantallas (PC del vault y dispositivo) al emparejar —
  * eso mata el relay/phishing (un atacante remoto no puede mostrar el SAS correcto
  * en el dispositivo fisico de la victima).
+ * @param {string} master
+ * @param {string} dpub
+ * @param {unknown} sn
+ * @returns {Promise<string>}
  */
 export async function deriveSAS (master, dpub, sn) {
   const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc(canonicalStringify({ iss: master, sub: dpub, sn }))))
@@ -86,6 +119,7 @@ export async function deriveSAS (master, dpub, sn) {
  * el usuario lo tipea en el vault. El vault NO lo conoce: el dispositivo solo manda un
  * COMPROMISO (`commitCode`), no el código → el vault lo aprende únicamente cuando vos se lo
  * das, tipeándolo. Así, aprobar exige TENER el dispositivo (de ahí sale el código).
+ * @returns {string}
  */
 export function makePairingCode () {
   const b = crypto.getRandomValues(new Uint8Array(4))
@@ -97,6 +131,8 @@ export function makePairingCode () {
  * Compromiso del código: `SHA-256(code ‖ dpub ‖ sn)` en hex. Va en el ENROLL (no el código).
  * Liga el código a ESTE dispositivo y sesión (no reusable para otro). El vault lo guarda y,
  * cuando tipeás el código, recomputa y compara → verifica posesión sin conocer el código antes.
+ * @param {{ code: unknown, dpub: string, sn: unknown }} args
+ * @returns {Promise<string>}
  */
 export async function commitCode ({ code, dpub, sn }) {
   const h = await crypto.subtle.digest('SHA-256', enc(canonicalStringify({ code: String(code), sub: dpub, sn })))
@@ -121,6 +157,7 @@ export { avatarSvg, avatarDataUri } from './avatar.js'
  * Atarlo al `seq` hace las dos cosas de golpe: quitarle un permiso a un aparato surte
  * efecto AL INSTANTE (el acta sube de `seq` y su papel deja de valer, sin esperar a
  * ninguna renovación), y nadie tiene que abrir nada por calendario.
+ * @param {Delegation} cert
  */
 export function delegationBody (cert) {
   // LA FORMA DEL CUERPO ES LA DEL PAPEL, no la del código que lo lee. Un papel del modelo
@@ -136,6 +173,7 @@ export function delegationBody (cert) {
 /**
  * Genera una sub-clave de DISPOSITIVO `D`. Corre EN el dispositivo / bridge; la
  * clave maestra nunca ve la privada. Solo `publickey` (JWK string) sale del device.
+ * @param {{ label?: string }} [opts]
  */
 export async function makeDeviceKey ({ label = '' } = {}) {
   const pair = await crypto.subtle.generateKey(ECDSA, true, ['sign', 'verify'])
@@ -177,6 +215,8 @@ export async function makeDeviceEncKey () {
  * Existe para que nadie la importe a mano: `deriveBits` es el ÚNICO uso correcto, y
  * pedir otro (`deriveKey`) hace fallar la importación en Node con un error que no
  * dice nada útil.
+ * @param {JsonWebKey} encPrivateJwk
+ * @returns {Promise<CryptoKey>}
  */
 export async function importDeviceEncKey (encPrivateJwk) {
   if (!encPrivateJwk || typeof encPrivateJwk !== 'object') throw new Error('importDeviceEncKey: missing private JWK')
@@ -187,6 +227,10 @@ export async function importDeviceEncKey (encPrivateJwk) {
  * Firma un certificado de delegación con una `privateKey` (CryptoKey) cuyo pubkey
  * es `iss`. Lo usa el handler del vault (con la clave maestra). Devuelve el cert
  * completo `{ v, iss, sub, scope, iat, seq, nonce, sig }`.
+ * @param {SigningKey} privateKey
+ * @param {string} iss
+ * @param {{ sub: string, scope: string | string[], iat: number, seq: number, nonce?: string }} body
+ * @returns {Promise<Delegation>}
  */
 export async function signDelegationWith (privateKey, iss, { sub, scope, iat, seq, nonce }) {
   const body = { v: 1, iss, sub, scope, iat, seq, nonce }
@@ -197,6 +241,8 @@ export async function signDelegationWith (privateKey, iss, { sub, scope, iat, se
 /**
  * Firma datos con la clave de DISPOSITIVO (formato byte-idéntico a `signData` del
  * vault → lo que el dispositivo/bridge usa para firmar cada pin/acción).
+ * @param {{ privateJwk?: JsonWebKey, privateKey?: SigningKey | null, publickey?: string, data: unknown, sign?: ((text: string) => Promise<string>) | null }} args
+ * @returns {Promise<{ signature: string, publickey: string }>}
  */
 export async function signWithDevice ({ privateJwk, privateKey, publickey, data, sign }) {
   // UNA LLAVE QUE NO VIVE AQUÍ (la del chip del teléfono, en la app nativa): se le pasa el
@@ -217,9 +263,11 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data,
     const signature = await rawSign(privateKey, enc(canonicalStringify(data)))
     return { signature, publickey }
   }
-  const priv = await crypto.subtle.importKey('jwk', privateJwk, ECDSA, true, ['sign'])
+  // Sin llave ni firmador, el JWK es lo que queda; si tampoco está, `importKey` lanza.
+  const jwk = /** @type {JsonWebKey} */ (privateJwk)
+  const priv = await crypto.subtle.importKey('jwk', jwk, ECDSA, true, ['sign'])
   const signature = await rawSign(priv, enc(canonicalStringify(data)))
-  return { signature, publickey: publickey || JSON.stringify(publicOf(privateJwk)) }
+  return { signature, publickey: publickey || JSON.stringify(publicOf(jwk)) }
 }
 
 /**
@@ -229,7 +277,8 @@ export async function signWithDevice ({ privateJwk, privateKey, publickey, data,
  *   3) `scope` incluye `expectedScope` (si se pide),
  *   4) `sub` === `expectedSub` (si se pide),
  *   5) `nonce` no revocado (`revoked`: fn(nonce)→bool, Set o mapa).
- * @returns {{ok:boolean, reason?:string, iss?, sub?, scope?, iat?, seq?, nonce?}}
+ * @param {{ cert?: any, expectedScope?: string | null, expectedSub?: string | null, actaSeq?: number | null, sealers?: string[] | null, revoked?: RevokedSet | null }} [args]
+ * @returns {Promise<{ok:boolean, reason?:string, iss?: string, sub?: string, scope?: string | string[], iat?: number, seq?: number, nonce?: string}>}
  */
 
 export async function verifyDelegation ({ cert, expectedScope, expectedSub, actaSeq = null, sealers = null, revoked } = {}) {
@@ -285,7 +334,8 @@ export async function verifyDelegation ({ cert, expectedScope, expectedSub, acta
  *   2) el cert delega a ESTE dispositivo (`cert.sub === data.publickey`),
  *   3) el cert es válido (firma de una selladora, scope, revocación),
  *   4) opcional: `cert.iss === trustedIssuer` (fija la identidad maestra esperada).
- * @returns {{ok:boolean, reason?:string, issuer?:string, device?:string}}
+ * @param {{ data?: any, signature?: unknown, cert?: any, expectedScope?: string | null, actaSeq?: number | null, sealers?: string[] | null, revoked?: RevokedSet | null }} [args]
+ * @returns {Promise<{ok:boolean, reason?:string, issuer?:string, device?:string, scope?: string | string[]}>}
  */
 export async function verifyChain ({ data, signature, cert, expectedScope, actaSeq = null, sealers = null, revoked } = {}) {
   if (!data || typeof data !== 'object' || typeof signature !== 'string') return { ok: false, reason: 'shape' }

@@ -1,19 +1,27 @@
-/** Genera una clave de contenido nueva (AES-256-GCM). Devuelve los bytes en base64. */
+/**
+ * Genera una clave de contenido nueva (AES-256-GCM). Devuelve los bytes en base64.
+ * @returns {Promise<string>}
+ */
 export function makeContentKey(): Promise<string>;
 /**
  * Envuelve la CEK hacia la llave de cifrado de un miembro. La envoltura es pública: solo
  * la abre quien tenga la privada de `memberEncPub`, así que puede viajar en el acta.
+ * @param {{ cek: string, memberEncPub: string }} args
  * @returns {Promise<{epk:string, iv:string, ct:string}>}
  */
 export function wrapForMember({ cek, memberEncPub }: {
-    cek: any;
-    memberEncPub: any;
+    cek: string;
+    memberEncPub: string;
 }): Promise<{
     epk: string;
     iv: string;
     ct: string;
 }>;
-/** Abre la envoltura con la llave de cifrado privada de ESTE miembro. */
+/**
+ * Abre la envoltura con la llave de cifrado privada de ESTE miembro.
+ * @param {{ wrap: any, myEncPrivateKey: any }} args
+ * @returns {Promise<string>}
+ */
 export function openWrap({ wrap, myEncPrivateKey }: {
     wrap: any;
     myEncPrivateKey: any;
@@ -22,30 +30,35 @@ export function openWrap({ wrap, myEncPrivateKey }: {
  * Genera la CEK de una generación y la envuelve a TODOS los miembros que tengan llave de
  * cifrado. Un miembro sin `encPub` simplemente no recibe envoltura (y por tanto no lee el
  * contenido): se devuelve la lista para que la consola lo diga en vez de fallar en silencio.
+ * @param {{ members?: Array<{ pub: string, encPub?: string | null }> | null, gen?: number, cek?: string | null, now?: number }} args
+ * @returns {Promise<{ generation: KeyringGeneration, cek: string, sinLlave: Array<string | undefined> }>}
  */
 export function makeGeneration({ members, gen, cek, now }: {
-    members: any;
+    members?: Array<{
+        pub: string;
+        encPub?: string | null;
+    }> | null;
     gen?: number;
-    cek?: any;
+    cek?: string | null;
     now?: number;
 }): Promise<{
-    generation: {
-        gen: number;
-        createdAt: number;
-        wraps: {};
-    };
-    cek: any;
-    sinLlave: any[];
+    generation: KeyringGeneration;
+    cek: string;
+    sinLlave: Array<string | undefined>;
 }>;
-/** La CEK vigente para mí, sacada del llavero del acta. `null` si no tengo envoltura. */
+/**
+ * La CEK vigente para mí, sacada del llavero del acta. `null` si no tengo envoltura.
+ * @param {{ keyring?: KeyringGeneration[] | null, myPub: string, myEncPrivateKey: any }} args
+ * @returns {Promise<{ gen: number, cek: string } | null>}
+ */
 export function myContentKey({ keyring, myPub, myEncPrivateKey }: {
-    keyring: any;
-    myPub: any;
+    keyring?: KeyringGeneration[] | null;
+    myPub: string;
     myEncPrivateKey: any;
 }): Promise<{
-    gen: any;
+    gen: number;
     cek: string;
-}>;
+} | null>;
 /**
  * Cifra con una clave simétrica. Devuelve `{ gen, iv, ct }` (el `gen` dice con cuál).
  *
@@ -53,13 +66,15 @@ export function myContentKey({ keyring, myPub, myEncPrivateKey }: {
  * cajones de secretos, cada entrada del gestor de contraseñas, el transporte). Por eso NO
  * lleva la marca: la marca dice «esto es de la cuenta» y solo la pone `sealAccount`. En
  * 0.107.0 la ponía aquí, y marcaba como de la cuenta sobres que la cuenta no abre.
+ * @param {{ cek: string, gen: number, plaintext: string }} args
+ * @returns {Promise<{ gen: number, iv: string, ct: string }>}
  */
 export function encryptWithCek({ cek, gen, plaintext }: {
-    cek: any;
-    gen: any;
-    plaintext: any;
+    cek: string;
+    gen: number;
+    plaintext: string;
 }): Promise<{
-    gen: any;
+    gen: number;
     iv: string;
     ct: string;
 }>;
@@ -72,53 +87,63 @@ export function encryptWithCek({ cek, gen, plaintext }: {
  * archivos: el archivo se cifra con una CEK nueva y solo la CEK pasa por el sellado de
  * siempre (`wrapForMember`, o la bóveda).
  *
- * @param {{ cek: string, bytes: Uint8Array }} o
+ * @param {{ cek: string, bytes: Uint8Array<ArrayBuffer> }} o
  * @returns {Promise<{ iv: Uint8Array, ct: Uint8Array }>}
  */
 export function encryptBytesWithCek({ cek, bytes }: {
     cek: string;
-    bytes: Uint8Array;
+    bytes: Uint8Array<ArrayBuffer>;
 }): Promise<{
     iv: Uint8Array;
     ct: Uint8Array;
 }>;
-/** El inverso de `encryptBytesWithCek`. Lanza si los bytes no son de esa clave o se tocaron. */
+/**
+ * El inverso de `encryptBytesWithCek`. Lanza si los bytes no son de esa clave o se tocaron.
+ * @param {{ cek: string, iv: Uint8Array<ArrayBuffer>, ct: Uint8Array<ArrayBuffer> }} args
+ * @returns {Promise<Uint8Array>}
+ */
 export function decryptBytesWithCek({ cek, iv, ct }: {
-    cek: any;
-    iv: any;
-    ct: any;
-}): Promise<Uint8Array<ArrayBuffer>>;
-/** Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca. */
+    cek: string;
+    iv: Uint8Array<ArrayBuffer>;
+    ct: Uint8Array<ArrayBuffer>;
+}): Promise<Uint8Array>;
+/**
+ * Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca.
+ * @param {{ cek: string, gen: number, plaintext: string }} args
+ * @returns {Promise<CekEnvelope>}
+ */
 export function sealAccount({ cek, gen, plaintext }: {
-    cek: any;
-    gen: any;
-    plaintext: any;
-}): Promise<{
-    gen: any;
-    iv: string;
-    ct: string;
-    t: string;
-}>;
+    cek: string;
+    gen: number;
+    plaintext: string;
+}): Promise<CekEnvelope>;
 /**
  * Descifra un sobre teniendo YA la CEK. Es el inverso exacto de `encryptWithCek`.
  *
  * Existe para quien administra: tiene la clave a mano (la sacó de donde la guarde) y no
  * necesita el llavero ni ser miembro. El camino normal —el del aparato que solo tiene su
  * propia llave— es `decryptWithKeyring`.
+ * @param {{ cek: string, envelope: { iv: string, ct: string } }} args
+ * @returns {Promise<string>}
  */
 export function decryptWithCek({ cek, envelope }: {
-    cek: any;
-    envelope: any;
+    cek: string;
+    envelope: {
+        iv: string;
+        ct: string;
+    };
 }): Promise<string>;
 /**
  * Descifra un sobre. Hay que darle el llavero porque el contenido viejo está cifrado con
  * generaciones anteriores: por eso las CEK antiguas se conservan (32 bytes cada una) en vez
  * de re-cifrarlo todo de golpe al rotar.
+ * @param {{ envelope: any, keyring?: KeyringGeneration[] | null, myPub: string, myEncPrivateKey: any }} args
+ * @returns {Promise<string>}
  */
 export function decryptWithKeyring({ envelope, keyring, myPub, myEncPrivateKey }: {
     envelope: any;
-    keyring: any;
-    myPub: any;
+    keyring?: KeyringGeneration[] | null;
+    myPub: string;
     myEncPrivateKey: any;
 }): Promise<string>;
 /**
@@ -160,7 +185,7 @@ export function resealStale(value: any, { gen, reseal, now }: {
  * generación vigente cuando la llave rota (`resealStale`).
  */
 export const CEK_ENVELOPE: "dotrino-cek";
-export function isCekEnvelope(v: any): boolean;
+export function isCekEnvelope(v: any): v is CekEnvelope;
 /**
  * MIGRACIÓN, con fecha de caducidad: hasta 0.107.0 los sobres de la cuenta salían SIN marca,
  * como `{ gen, iv, ct }` a secas. Hasta esta fecha, `resealStale` también prueba esos: si
@@ -169,7 +194,7 @@ export function isCekEnvelope(v: any): boolean;
  * quita el código cuando pase (y su prueba con él).
  */
 export const LEGACY_UNMARKED_UNTIL: number;
-export function isLegacyCekEnvelope(v: any): boolean;
+export function isLegacyCekEnvelope(v: any): v is CekEnvelope;
 declare namespace _default {
     export { makeContentKey };
     export { wrapForMember };
@@ -189,3 +214,21 @@ declare namespace _default {
     export { resealStale };
 }
 export default _default;
+/**
+ * La envoltura de la clave de contenido para un miembro: ECDH efímero + AES-GCM.
+ */
+export type Wrap = {
+    epk: string;
+    iv: string;
+    ct: string;
+};
+/**
+ * Un sobre cerrado con la clave de la cuenta (`gen` dice con cuál).
+ */
+export type CekEnvelope = {
+    t?: string;
+    gen: number;
+    iv: string;
+    ct: string;
+};
+export type KeyringGeneration = import("./acta.js").KeyringGeneration;

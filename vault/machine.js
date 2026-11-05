@@ -21,6 +21,7 @@
 
 export const MACHINE_KINDS = ['node', 'browser', 'extension', 'ios', 'android']
 
+/** @param {unknown} s @param {number} n @returns {string} */
 const clip = (s, n) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, n) : '')
 
 /**
@@ -38,13 +39,18 @@ export function cleanMachine (raw) {
   return { kind, os, name }
 }
 
-/** Una línea para enseñarlo: `node · Linux 7.0.0 · mi-pc`. Vacía si no hay nada. */
+/**
+ * Una línea para enseñarlo: `node · Linux 7.0.0 · mi-pc`. Vacía si no hay nada.
+ * @param {any} m
+ * @returns {string}
+ */
 export function machineLine (m) {
   const c = cleanMachine(m)
   return c ? [c.kind, c.os, c.name].filter(Boolean).join(' · ') : ''
 }
 
 /** ¿Dicen lo mismo? Para no reescribir un archivo cada vez que un aparato repite lo de siempre. */
+/** @param {any} a @param {any} b @returns {boolean} */
 export const sameMachine = (a, b) => machineLine(a) === machineLine(b)
 
 /** @type {Array<[RegExp, (v: string) => string]>} */

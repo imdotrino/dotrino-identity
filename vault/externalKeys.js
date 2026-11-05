@@ -18,12 +18,14 @@
  * `save`, `remove`. La app solo le enseña el puente a `https://id.dotrino.com`.
  */
 
+/** @param {ArrayBuffer | Uint8Array} buf @returns {string} */
 const b64 = (buf) => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
   let s = ''
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
   return btoa(s)
 }
+/** @param {string} str @returns {Uint8Array<ArrayBuffer>} */
 const fromB64 = (str) => {
   const bin = atob(str)
   const out = new Uint8Array(bin.length)
@@ -35,6 +37,7 @@ const SIGN_SUFFIX = '.keypair'
 const ENC_SUFFIX = '.enc-keypair'
 
 /** El nombre de la OTRA mitad del mismo perfil: firma y cifrado comparten llave en el chip. */
+/** @param {string} name @returns {string | null} */
 function siblingName (name) {
   if (name.endsWith(ENC_SUFFIX)) return name.slice(0, -ENC_SUFFIX.length) + SIGN_SUFFIX
   if (name.endsWith(SIGN_SUFFIX)) return name.slice(0, -SIGN_SUFFIX.length) + ENC_SUFFIX
@@ -42,19 +45,30 @@ function siblingName (name) {
 }
 
 /** El asa de una llave del chip. Lo que la app no pueda hacer sale con su `code`, sin plan B. */
+/**
+ * @typedef {{ call (method: string, params?: any): Promise<any> }} AppBridge
+ */
+
+/**
+ * @param {AppBridge} bridge
+ * @param {string} kid
+ */
 export function externalHandle (bridge, kid) {
   return {
-    external: true,
+    external: /** @type {true} */ (true),
     kid,
+    /** @param {Uint8Array} bytes @returns {Promise<string>} */
     async sign (bytes) {
       const { signature } = await bridge.call('sign', { kid, data: b64(bytes) })
       return signature
     },
+    /** @param {string} peerPubJwkStr @returns {Promise<ArrayBuffer>} */
     async deriveBits (peerPubJwkStr) {
       const { bits } = await bridge.call('deriveBits', { kid, peer: peerPubJwkStr })
       return fromB64(bits).buffer
     },
     /** Tras emparejar: la app guarda la cuenta para su pantalla de Pedidos. */
+    /** @param {Record<string, any>} account */
     async paired (account) { return bridge.call('save', { kid, ...account }) }
   }
 }
@@ -63,13 +77,21 @@ export function externalHandle (bridge, kid) {
  * Envuelve `keyStore` para que las llaves NUEVAS nazcan en el chip. Las que ya existían
  * (CryptoKey de IndexedDB) siguen igual: una llave no extraíble no se puede mover.
  */
+/**
+ * @param {import('./core.js').KeyStore} keyStore
+ * @param {AppBridge} bridge
+ * @returns {import('./core.js').KeyStore}
+ */
 export function withExternalKeys (keyStore, bridge) {
+  /** @param {any} rec */
   const toHandle = (rec) => (rec && rec.external
     ? { privateKey: externalHandle(bridge, rec.external), publicJwk: rec.publicJwk }
     : rec)
   return {
+    /** @param {string} name */
     async get (name) { return toHandle(await keyStore.get(name)) },
-    set: (name, pair) => keyStore.set(name, pair),
+    set: (/** @type {string} */ name, /** @type {any} */ pair) => keyStore.set(name, pair),
+    /** @param {string} name */
     async remove (name) {
       const rec = await keyStore.get(name)
       await keyStore.remove(name)
@@ -86,7 +108,9 @@ export function withExternalKeys (keyStore, bridge) {
      * acta (es la cadena con la que esa llave es miembro). Si la bóveda no entrega la de
      * cifrado (`enc.privateJwk` nulo), la app estrena una y devuelve su pública.
      */
+    /** @param {{ sign: { name: string, privateJwk: JsonWebKey, publickey: string }, enc: { name: string, privateJwk: JsonWebKey | null, publickey: string | null } }} pair */
     async importPair ({ sign, enc }) {
+      /** @type {{ sign: JsonWebKey, publickey: string, enc?: JsonWebKey, encPub?: string | null }} */
       const params = { sign: sign.privateJwk, publickey: sign.publickey }
       if (enc.privateJwk) { params.enc = enc.privateJwk; params.encPub = enc.publickey }
       const k = await bridge.call('import', params)
@@ -94,6 +118,7 @@ export function withExternalKeys (keyStore, bridge) {
       await keyStore.set(sign.name, { external: k.kid, kind: 'sign', publicJwk: JSON.parse(sign.publickey) })
       await keyStore.set(enc.name, { external: k.kid, kind: 'enc', publicJwk: JSON.parse(enc.publickey || k.encPub) })
     },
+    /** @param {'sign' | 'enc'} kind @param {string} name */
     async create (kind, name) {
       // Las dos mitades del perfil van bajo la MISMA llave del chip: si la otra ya nació
       // allí, se reutiliza; si no, se crea una nueva.
@@ -116,8 +141,14 @@ export function withExternalKeys (keyStore, bridge) {
  * `addWebMessageListener` de Android). Mensajes `{ id, method, params }` → `{ id, result }`
  * o `{ id, error, code }`.
  */
+/**
+ * @param {{ onmessage: ((ev: { data: string }) => void) | null, postMessage (data: string): void }} port
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {AppBridge}
+ */
 export function appBridge (port, { timeoutMs = 20000 } = {}) {
   let seq = 0
+  /** @type {Map<string, { resolve: (v: any) => void, reject: (e: Error) => void, t: ReturnType<typeof setTimeout> }>} */
   const waiting = new Map()
   port.onmessage = (ev) => {
     let m
@@ -130,6 +161,7 @@ export function appBridge (port, { timeoutMs = 20000 } = {}) {
     else w.resolve(m.result)
   }
   return {
+    /** @param {string} method @param {any} [params] @returns {Promise<any>} */
     call (method, params = {}) {
       const id = 'k' + (++seq)
       return new Promise((resolve, reject) => {

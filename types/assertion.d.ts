@@ -6,10 +6,16 @@
  * Pedir alcances desconocidos NO es un aviso que se pueda ignorar: se descartan, y si no
  * queda ninguno se emite el mínimo (`id:whoami`), que es lo que significa «solo quiero
  * saber quién eres».
+ * @param {unknown} scopes
+ * @returns {string[]}
  */
-export function cleanScopes(scopes: any): any[];
-/** Las claves de datos que esos alcances permiten llevar. */
-export function claimsAllowed(scopes: any): Set<any>;
+export function cleanScopes(scopes: unknown): string[];
+/**
+ * Las claves de datos que esos alcances permiten llevar.
+ * @param {unknown} scopes
+ * @returns {Set<string>}
+ */
+export function claimsAllowed(scopes: unknown): Set<string>;
 /**
  * El cuerpo que se firma. Se construye AQUÍ y en un solo sitio, porque quien firma y quien
  * verifica tienen que estar mirando exactamente los mismos campos: si el emisor añadiera
@@ -18,25 +24,26 @@ export function claimsAllowed(scopes: any): Set<any>;
  *
  * Lanza si le falta algo: es un error de programación de quien emite, no un dato del otro
  * lado que pueda venir mal.
+ * @param {{ sub: string, aud: string, nonce: string, scopes?: unknown, claims?: Record<string, unknown> | null, iat: number, exp: number }} args
  */
 export function assertionBody({ sub, aud, nonce, scopes, claims, iat, exp }: {
-    sub: any;
-    aud: any;
-    nonce: any;
-    scopes: any;
-    claims: any;
-    iat: any;
-    exp: any;
+    sub: string;
+    aud: string;
+    nonce: string;
+    scopes?: unknown;
+    claims?: Record<string, unknown> | null;
+    iat: number;
+    exp: number;
 }): {
     v: number;
     op: string;
     sub: string;
     aud: string;
     nonce: string;
-    iat: any;
-    exp: any;
-    scopes: any[];
-    claims: {};
+    iat: number;
+    exp: number;
+    scopes: string[];
+    claims: Record<string, unknown>;
 };
 /**
  * ¿Vale esta prueba, PARA MÍ y AHORA?
@@ -70,9 +77,9 @@ export function verifyAssertion(assertion: any, opts?: {
     exp?: undefined;
 } | {
     ok: boolean;
-    profileId: any;
+    profileId: string;
     signer: string;
-    seq: any;
+    seq: number;
     scopes: any[];
     claims: any;
     aud: any;
@@ -120,9 +127,9 @@ export function verifySignedFor(args?: {
     aud?: undefined;
 } | {
     ok: boolean;
-    profileId: any;
+    profileId: string;
     signer: string;
-    seq: any;
+    seq: number;
     aud: any;
     reason?: undefined;
 }>;

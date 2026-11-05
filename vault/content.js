@@ -23,12 +23,24 @@
 const subtle = globalThis.crypto.subtle
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 
+/**
+ * La envoltura de la clave de contenido para un miembro: ECDH efímero + AES-GCM.
+ * @typedef {{ epk: string, iv: string, ct: string }} Wrap
+ */
+/**
+ * Un sobre cerrado con la clave de la cuenta (`gen` dice con cuál).
+ * @typedef {{ t?: string, gen: number, iv: string, ct: string }} CekEnvelope
+ */
+/** @typedef {import('./acta.js').KeyringGeneration} KeyringGeneration */
+
+/** @param {ArrayBuffer | Uint8Array} buf @returns {string} */
 const b64 = (buf) => {
   const bytes = new Uint8Array(buf)
   let s = ''
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
   return btoa(s)
 }
+/** @param {string} str @returns {Uint8Array<ArrayBuffer>} */
 const fromB64 = (str) => {
   const bin = atob(str)
   const out = new Uint8Array(bin.length)
@@ -36,16 +48,25 @@ const fromB64 = (str) => {
   return out
 }
 
+/**
+ * @param {any} privateKey  una CryptoKey ECDH, o el asa de una llave del chip (`deriveBits`)
+ * @param {string} peerPubJwkStr
+ * @returns {Promise<CryptoKey>}
+ */
 async function sharedKey (privateKey, peerPubJwkStr) {
   // Llave EXTERNA: el acuerdo ECDH lo hace el chip y devuelve los 32 bytes del secreto
   // (lo mismo que `deriveBits(…, 256)`); la privada no sale de allí.
+  /** @type {ArrayBuffer} */
   const bits = privateKey?.external
     ? await privateKey.deriveBits(peerPubJwkStr)
     : await subtle.deriveBits({ name: 'ECDH', public: await subtle.importKey('jwk', JSON.parse(peerPubJwkStr), ECDH, false, []) }, privateKey, 256)
   return subtle.importKey('raw', bits, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 
-/** Genera una clave de contenido nueva (AES-256-GCM). Devuelve los bytes en base64. */
+/**
+ * Genera una clave de contenido nueva (AES-256-GCM). Devuelve los bytes en base64.
+ * @returns {Promise<string>}
+ */
 export async function makeContentKey () {
   const k = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
   return b64(await subtle.exportKey('raw', k))
@@ -54,6 +75,7 @@ export async function makeContentKey () {
 /**
  * Envuelve la CEK hacia la llave de cifrado de un miembro. La envoltura es pública: solo
  * la abre quien tenga la privada de `memberEncPub`, así que puede viajar en el acta.
+ * @param {{ cek: string, memberEncPub: string }} args
  * @returns {Promise<{epk:string, iv:string, ct:string}>}
  */
 export async function wrapForMember ({ cek, memberEncPub }) {
@@ -71,7 +93,11 @@ export async function wrapForMember ({ cek, memberEncPub }) {
   }
 }
 
-/** Abre la envoltura con la llave de cifrado privada de ESTE miembro. */
+/**
+ * Abre la envoltura con la llave de cifrado privada de ESTE miembro.
+ * @param {{ wrap: any, myEncPrivateKey: any }} args
+ * @returns {Promise<string>}
+ */
 export async function openWrap ({ wrap, myEncPrivateKey }) {
   if (!wrap?.epk || !wrap?.iv || !wrap?.ct) throw new Error('invalid wrap')
   const key = await sharedKey(myEncPrivateKey, wrap.epk)
@@ -83,10 +109,14 @@ export async function openWrap ({ wrap, myEncPrivateKey }) {
  * Genera la CEK de una generación y la envuelve a TODOS los miembros que tengan llave de
  * cifrado. Un miembro sin `encPub` simplemente no recibe envoltura (y por tanto no lee el
  * contenido): se devuelve la lista para que la consola lo diga en vez de fallar en silencio.
+ * @param {{ members?: Array<{ pub: string, encPub?: string | null }> | null, gen?: number, cek?: string | null, now?: number }} args
+ * @returns {Promise<{ generation: KeyringGeneration, cek: string, sinLlave: Array<string | undefined> }>}
  */
 export async function makeGeneration ({ members, gen = 1, cek = null, now = Date.now() }) {
   const key = cek || await makeContentKey()
+  /** @type {Record<string, Wrap>} */
   const wraps = {}
+  /** @type {Array<string | undefined>} */
   const sinLlave = []
   for (const m of members || []) {
     if (!m?.encPub) { sinLlave.push(m?.pub); continue }
@@ -95,7 +125,11 @@ export async function makeGeneration ({ members, gen = 1, cek = null, now = Date
   return { generation: { gen, createdAt: now, wraps }, cek: key, sinLlave }
 }
 
-/** La CEK vigente para mí, sacada del llavero del acta. `null` si no tengo envoltura. */
+/**
+ * La CEK vigente para mí, sacada del llavero del acta. `null` si no tengo envoltura.
+ * @param {{ keyring?: KeyringGeneration[] | null, myPub: string, myEncPrivateKey: any }} args
+ * @returns {Promise<{ gen: number, cek: string } | null>}
+ */
 export async function myContentKey ({ keyring, myPub, myEncPrivateKey }) {
   const gens = [...(keyring || [])].sort((a, b) => (b.gen || 0) - (a.gen || 0))
   for (const g of gens) {
@@ -115,6 +149,7 @@ export async function myContentKey ({ keyring, myPub, myEncPrivateKey }) {
 export const CEK_ENVELOPE = 'dotrino-cek'
 
 /** ¿Es un sobre de la llave de la cuenta? */
+/** @param {any} v @returns {v is CekEnvelope} */
 export const isCekEnvelope = (v) => !!v && typeof v === 'object' && v.t === CEK_ENVELOPE &&
   Number.isInteger(v.gen) && typeof v.iv === 'string' && typeof v.ct === 'string'
 
@@ -125,6 +160,8 @@ export const isCekEnvelope = (v) => !!v && typeof v === 'object' && v.t === CEK_
  * cajones de secretos, cada entrada del gestor de contraseñas, el transporte). Por eso NO
  * lleva la marca: la marca dice «esto es de la cuenta» y solo la pone `sealAccount`. En
  * 0.107.0 la ponía aquí, y marcaba como de la cuenta sobres que la cuenta no abre.
+ * @param {{ cek: string, gen: number, plaintext: string }} args
+ * @returns {Promise<{ gen: number, iv: string, ct: string }>}
  */
 export async function encryptWithCek ({ cek, gen, plaintext }) {
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['encrypt'])
@@ -142,7 +179,7 @@ export async function encryptWithCek ({ cek, gen, plaintext }) {
  * archivos: el archivo se cifra con una CEK nueva y solo la CEK pasa por el sellado de
  * siempre (`wrapForMember`, o la bóveda).
  *
- * @param {{ cek: string, bytes: Uint8Array }} o
+ * @param {{ cek: string, bytes: Uint8Array<ArrayBuffer> }} o
  * @returns {Promise<{ iv: Uint8Array, ct: Uint8Array }>}
  */
 export async function encryptBytesWithCek ({ cek, bytes }) {
@@ -153,14 +190,22 @@ export async function encryptBytesWithCek ({ cek, bytes }) {
   return { iv, ct }
 }
 
-/** El inverso de `encryptBytesWithCek`. Lanza si los bytes no son de esa clave o se tocaron. */
+/**
+ * El inverso de `encryptBytesWithCek`. Lanza si los bytes no son de esa clave o se tocaron.
+ * @param {{ cek: string, iv: Uint8Array<ArrayBuffer>, ct: Uint8Array<ArrayBuffer> }} args
+ * @returns {Promise<Uint8Array>}
+ */
 export async function decryptBytesWithCek ({ cek, iv, ct }) {
   if (!(iv instanceof Uint8Array) || !(ct instanceof Uint8Array)) throw new Error('decryptBytesWithCek: iv and ct must be Uint8Array')
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['decrypt'])
   return new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv }, k, ct))
 }
 
-/** Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca. */
+/**
+ * Cierra con la LLAVE DE LA CUENTA (generación `gen`): el sobre lleva la marca.
+ * @param {{ cek: string, gen: number, plaintext: string }} args
+ * @returns {Promise<CekEnvelope>}
+ */
 export async function sealAccount ({ cek, gen, plaintext }) {
   if (!Number.isInteger(gen) || gen < 1) throw new Error('sealAccount: the account key generation starts at 1')
   return { t: CEK_ENVELOPE, ...(await encryptWithCek({ cek, gen, plaintext })) }
@@ -172,6 +217,8 @@ export async function sealAccount ({ cek, gen, plaintext }) {
  * Existe para quien administra: tiene la clave a mano (la sacó de donde la guarde) y no
  * necesita el llavero ni ser miembro. El camino normal —el del aparato que solo tiene su
  * propia llave— es `decryptWithKeyring`.
+ * @param {{ cek: string, envelope: { iv: string, ct: string } }} args
+ * @returns {Promise<string>}
  */
 export async function decryptWithCek ({ cek, envelope }) {
   const k = await subtle.importKey('raw', fromB64(cek), { name: 'AES-GCM' }, false, ['decrypt'])
@@ -183,6 +230,8 @@ export async function decryptWithCek ({ cek, envelope }) {
  * Descifra un sobre. Hay que darle el llavero porque el contenido viejo está cifrado con
  * generaciones anteriores: por eso las CEK antiguas se conservan (32 bytes cada una) en vez
  * de re-cifrarlo todo de golpe al rotar.
+ * @param {{ envelope: any, keyring?: KeyringGeneration[] | null, myPub: string, myEncPrivateKey: any }} args
+ * @returns {Promise<string>}
  */
 export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPrivateKey }) {
   const g = (keyring || []).find((x) => x.gen === envelope?.gen)
@@ -204,6 +253,7 @@ export async function decryptWithKeyring ({ envelope, keyring, myPub, myEncPriva
 export const LEGACY_UNMARKED_UNTIL = Date.parse('2027-06-30T00:00:00Z')
 
 /** ¿Tiene la forma EXACTA de un sobre de la cuenta anterior a la marca? */
+/** @param {any} v @returns {v is CekEnvelope} */
 export const isLegacyCekEnvelope = (v) => !!v && typeof v === 'object' && !Array.isArray(v) &&
   Object.keys(v).length === 3 && Number.isInteger(v.gen) && v.gen >= 1 &&
   typeof v.iv === 'string' && typeof v.ct === 'string'
@@ -235,10 +285,12 @@ export async function resealStale (value, { gen, reseal, now = Date.now() }) {
   if (!Number.isInteger(gen)) throw new Error('resealStale: the current generation is required')
   const migrar = now < LEGACY_UNMARKED_UNTIL
   let changed = 0; let skipped = 0
+  /** @param {any} nuevo @returns {CekEnvelope} */
   const comprobar = (nuevo) => {
     if (!isCekEnvelope(nuevo) || nuevo.gen !== gen) throw new Error(`resealStale: reseal did not return a marked envelope of generation ${gen}`)
     return nuevo
   }
+  /** @param {any} v @returns {Promise<any>} */
   const walk = async (v) => {
     if (isCekEnvelope(v)) {
       if (v.gen === gen) return v
@@ -253,11 +305,13 @@ export async function resealStale (value, { gen, reseal, now = Date.now() }) {
       return comprobar(nuevo)
     }
     if (Array.isArray(v)) {
+      /** @type {any[]} */
       const out = []
       for (const x of v) out.push(await walk(x))
       return out
     }
     if (v && typeof v === 'object') {
+      /** @type {Record<string, any>} */
       const out = {}
       for (const [k, x] of Object.entries(v)) out[k] = await walk(x)
       return out

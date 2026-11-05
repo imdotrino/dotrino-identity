@@ -11,15 +11,21 @@
  * `pubkeyId` desde aquí para que haya UNA sola implementación.
  */
 
+/** @param {string} s */
 const enc = (s) => new TextEncoder().encode(s)
 
 /** Serialización canónica de los campos que identifican la llave (mismo orden siempre). */
+/** @param {JsonWebKey} jwk @returns {string} */
 function canonicalJwk (jwk) {
   return JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })
     .replace(/^{/, '{').replace(/}$/, '}')
 }
 
-/** id corto y estable de un pubkey (sha-256 hex de los campos canónicos del JWK). */
+/**
+ * id corto y estable de un pubkey (sha-256 hex de los campos canónicos del JWK).
+ * @param {string | JsonWebKey} publicJwkStr
+ * @returns {Promise<string>}
+ */
 export async function pubkeyId (publicJwkStr) {
   const jwk = typeof publicJwkStr === 'string' ? JSON.parse(publicJwkStr) : publicJwkStr
   const h = await crypto.subtle.digest('SHA-256', enc(canonicalJwk(jwk)))
@@ -29,6 +35,9 @@ export async function pubkeyId (publicJwkStr) {
 /**
  * La huella que SÍ se le enseña a una persona: `AB12-CD34`. Corta, comparable de un vistazo
  * y la misma en todo el ecosistema (emparejamiento, acta, lista de dispositivos).
+ *
+ * @param {string | JsonWebKey | null | undefined} publicJwkStr
+ * @returns {Promise<string>}
  */
 export async function keyLabel (publicJwkStr) {
   if (!publicJwkStr) return ''

@@ -38,6 +38,8 @@ jobs:
       - run: npm i -g npm@latest
       - run: npm ci
 
+      # LOS TIPOS: `strict` sobre todo el JS del paquete (menos `vault/vendor/`) y sus .d.ts.
+      - run: npm run type-check
       # LAS PRUEBAS ANTES DE PUBLICAR. Una versión que no pasa su suite no llega a npm.
       - run: npm test
       # El registro de compatibilidad (dotrino-roadmap, CONVENCIONES §14): nada instalado en

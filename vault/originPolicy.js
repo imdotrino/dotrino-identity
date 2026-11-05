@@ -35,26 +35,37 @@ const ALSO = Object.freeze({
   rewrapFor: /^https:\/\/pass\.dotrino\.com$/
 })
 
+/**
+ * @param {{ selfOrigin?: string | null }} args
+ */
 export function originPolicy ({ selfOrigin }) {
   const selfIsLocal = LOCAL.test(String(selfOrigin || ''))
+  /** @param {unknown} origin @returns {boolean} */
   const isConsole = (origin) => CONSOLE.test(String(origin || '')) || (selfIsLocal && LOCAL.test(String(origin || '')))
   const only = new Set(CONSOLE_ONLY)
 
   /**
    * Lanza `console-only` si `origin` no puede pedir `method` con estos parámetros. Lo demás pasa.
    * `me` es la llave pública del perfil activo (para el certificado de uno mismo).
+   *
+   * @param {string} method
+   * @param {any} params
+   * @param {unknown} origin
+   * @param {{ me?: string | null }} [opts]
    */
   function check (method, params, origin, { me = null } = {}) {
     if (isConsole(origin)) return
+    /** @param {string} why @returns {never} */
     const deny = (why) => { throw Object.assign(new Error(`${method}: ${why}`), { code: 'console-only' }) }
     if (only.has(method)) deny('only the vault console (vault.dotrino.com, profile.dotrino.com) can ask for this')
-    if (ALSO[method] && !ALSO[method].test(String(origin || ''))) deny('this origin cannot ask for this')
+    const also = /** @type {Record<string, RegExp | undefined>} */ (ALSO)[method]
+    if (also && !also.test(String(origin || ''))) deny('this origin cannot ask for this')
     if (method === 'signDelegation') {
       // Un certificado con poder sobre la bóveda (`vault:*`) es meter un aparato: eso es de la
       // consola, con su invitación. Una app sí firma lo suyo (geo: los aparatos de here) y su
       // propio certificado (`sub` = el perfil: el de terminal y el de ia).
       const scopes = Array.isArray(params?.scope) ? params.scope : [params?.scope]
-      const vaultPower = scopes.some((s) => typeof s !== 'string' || s.startsWith('vault:'))
+      const vaultPower = scopes.some((/** @type {unknown} */ s) => typeof s !== 'string' || s.startsWith('vault:'))
       if (vaultPower && !(me && params?.sub === me)) deny('a certificate with vault powers is issued from the vault console, with an invitation')
     }
   }

@@ -1,6 +1,8 @@
 export interface IdentityOptions {
   vaultUrl?: string
   timeoutMs?: number
+  /** `false`: no pedir aquí la contraseña de un perfil protegido (la app la pide a su manera). */
+  promptUnlock?: boolean
 }
 
 export interface ProfileLink { id: string; type: string; value: string; visible?: boolean }
@@ -188,7 +190,6 @@ export class Identity {
    */
   enrollDevice (qr: VaultInvitation, opts?: { label?: string; join?: 'new' | 'current' | 'adopt'; account?: string | null }): Promise<{ ok: boolean; deviceId: string; master: string; exp?: number; scope?: string[]; [k: string]: any }>
   vaultStatus (): Promise<any>
-  vaultUnpair (): Promise<any>
   vaultSign (payload: any): Promise<{ signature: string; publickey: string }>
   /**
    * El almacén de hilos EN la bóveda, cifrado de punta a punta con la clave de contenido del
@@ -264,10 +265,67 @@ export class Identity {
   selfVaultMachines (): Promise<any[]>
   selfVaultApprove (deviceId: string, code: string): Promise<any>
   selfVaultReject (deviceId: string): Promise<{ ok: true }>
-  selfVaultRevoke (nonce: string): Promise<any>
+  /** Por `sub` (su llave) quita el aparato entero; un `nonce` suelto retira solo ese certificado. */
+  selfVaultRevoke (target: string | { sub?: string; nonce?: string }): Promise<any>
   selfVaultProbe (pubkeys: string[]): Promise<{ online: string[] }>
   onSelfVault (handler: (payload: any) => void): () => void
   on (event: 'peer_updated' | 'me_updated' | 'sync' | 'vault' | 'selfVault', handler: (payload: any) => void): () => void
+  /** Quitar un APARATO: sale del acta y se le retiran todos sus certificados. */
+  revokeDevice (sub: string): Promise<any>
+  /** Los miembros del acta del perfil, con su id legible. */
+  profileMembers (): Promise<any>
+  /** Qué es ESTE aparato en el acta del perfil (sus permisos). */
+  myMembership (): Promise<any>
+  /** La cadena de actas desde `sinceSeq`. */
+  actaHistory (opts?: { sinceSeq?: number }): Promise<any>
+  /** Los que estuvieron en las actas de la ventana del historial y ya no están. */
+  pastMembers (): Promise<any>
+  /** ¿Puede ESTE aparato sellar el acta del perfil? */
+  isMaster (): Promise<boolean>
+  admitMember (member: Record<string, any>): Promise<any>
+  /** Registra la llave de cifrado de un miembro ya admitido. */
+  setMemberEncPub (args: { pub: string; encPub: string }): Promise<any>
+  setCaps (pub: string, caps: string[]): Promise<any>
+  /** Los permisos de VARIOS miembros en una sola acta: `[{ pub, caps }]`. */
+  setCapsMany (changes: Array<{ pub: string; caps?: string[]; cn?: string | null }>): Promise<any>
+  setLabel (pub: string, label: string): Promise<any>
+  removeMember (pub: string): Promise<any>
+  handoverMaster (to: string, member?: Record<string, any> | null): Promise<any>
+  renounceCaps (caps: string[]): Promise<any>
+  absorbRenounce (record: any): Promise<any>
+  adoptActa (acta: Acta): Promise<any>
+  /** Une ESTE perfil a la cuenta de otro (solo si nació para eso). */
+  joinProfile (acta: Acta): Promise<any>
+  /** Marca este perfil como nacido para ADOPTAR la cuenta de otro. */
+  prepareForAdoption (): Promise<any>
+  /** Rota la clave de contenido del perfil. */
+  rotateContentKey (): Promise<any>
+  /** Abre un sobre de un cajón de secretos con la envoltura dirigida a este aparato. */
+  openSealedValue (args?: { wrap?: any; envelope?: any }): Promise<any>
+  /** Desempareja este aparato de su bóveda. */
+  unpairDevice (): Promise<any>
+  /** Administrar la bóveda (admitir, expulsar…) con el papel de este aparato. */
+  vaultAdmin (op: string, args?: Record<string, any> & { to?: string }): Promise<any>
+  /** Registrar el token de push de una app nativa. */
+  registerPush (args?: { token?: string; kind?: string }): Promise<any>
+  canAdminVault (): Promise<boolean>
+  /** Los inicios de sesión con contraseña que guarda la bóveda de esta pestaña. */
+  selfVaultLogins (): Promise<any[]>
+  selfVaultLoginAdd (opts?: { user?: string; password?: string; label?: string; caps?: string[] }): Promise<any>
+  selfVaultLoginPasswd (opts?: { user?: string; oldPassword?: string; newPassword?: string }): Promise<{ ok: boolean; user?: string }>
+  selfVaultBackupDrawers (): Promise<any>
+  selfVaultBackupExport (opts?: { drawers?: string[] | null; password?: string }): Promise<{ file: any; summary: any }>
+  selfVaultBackupPlan (opts?: { file?: any; password?: string; drawers?: string[] | null; map?: Record<string, string> }): Promise<any>
+  selfVaultBackupImport (opts?: { file?: any; password?: string; drawers?: string[] | null; map?: Record<string, string>; onConflict?: string | null; decisions?: Record<string, any> }): Promise<any>
+  selfVaultLoginClose (opts?: { user?: string; sid?: string | null }): Promise<any>
+  selfVaultLoginUnblock (user: string): Promise<any>
+  selfVaultLoginRemove (user: string): Promise<any>
+  /** Salir de una cuenta abierta con contraseña (sin `id`, la activa). */
+  logoutLogin (id?: string | null): Promise<any>
+  /** El subconjunto PÚBLICO del perfil (lo marcado visible). */
+  publicMe (): Promise<Partial<Me> & Record<string, any>>
+  /** Cómo fue el último empujón del perfil a la bóveda. */
+  profilePushState (): Promise<{ ok: boolean | null; at: number; error: string | null }>
 }
 
 /** Un miembro del acta: su llave pública y lo que el acta le deja hacer. */

@@ -9,7 +9,11 @@ export function cleanMachine(raw: any): {
     os: string;
     name: string;
 } | null;
-/** Una línea para enseñarlo: `node · Linux 7.0.0 · mi-pc`. Vacía si no hay nada. */
+/**
+ * Una línea para enseñarlo: `node · Linux 7.0.0 · mi-pc`. Vacía si no hay nada.
+ * @param {any} m
+ * @returns {string}
+ */
 export function machineLine(m: any): string;
 /**
  * La máquina de ESTE navegador. `env` se inyecta en las pruebas; en la página es `globalThis`.

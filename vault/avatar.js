@@ -19,9 +19,11 @@
  */
 
 /** Hash FNV-1a + xorshift. Sin necesidades de seguridad: es decorativo. */
+/** @param {string} s @returns {{ h: number, bytes: number[] }} */
 function _hashSeed (s) {
   let h = 2166136261 >>> 0
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
+  /** @type {number[]} */
   const bytes = []
   let x = (h ^ 0x9e3779b9) >>> 0
   for (let i = 0; i < 16; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; x >>>= 0; bytes.push(x & 0xff) }
@@ -33,6 +35,10 @@ function _hashSeed (s) {
  * nace con imagen sin que el usuario tenga que subir nada. Síncrono → usable
  * directo en plantillas. Rejilla 5×5 simétrica sobre una "moneda" redondeada,
  * con color derivado del hash.
+ *
+ * @param {unknown} seed
+ * @param {{ size?: number }} [opts]
+ * @returns {string}
  */
 export function avatarSvg (seed, { size = 80 } = {}) {
   const { h, bytes } = _hashSeed(String(seed || 'dotrino'))
@@ -59,7 +65,12 @@ export function avatarSvg (seed, { size = 80 } = {}) {
     `<g fill="${fg}" transform="translate(${(size * 0.12).toFixed(2)} ${(size * 0.12).toFixed(2)}) scale(0.76)">${rects}</g></svg>`
 }
 
-/** El avatar como data-URI listo para `<img src>` o `background-image`. */
+/**
+ * El avatar como data-URI listo para `<img src>` o `background-image`.
+ * @param {unknown} seed
+ * @param {{ size?: number }} [opts]
+ * @returns {string}
+ */
 export function avatarDataUri (seed, opts) {
   return 'data:image/svg+xml,' + encodeURIComponent(avatarSvg(seed, opts))
 }

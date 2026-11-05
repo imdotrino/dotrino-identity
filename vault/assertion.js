@@ -75,16 +75,22 @@ export const newAssertionNonce = () => crypto.randomUUID()
  * Pedir alcances desconocidos NO es un aviso que se pueda ignorar: se descartan, y si no
  * queda ninguno se emite el mínimo (`id:whoami`), que es lo que significa «solo quiero
  * saber quién eres».
+ * @param {unknown} scopes
+ * @returns {string[]}
  */
 export function cleanScopes (scopes) {
   const list = [...new Set((Array.isArray(scopes) ? scopes : []).filter((s) => SCOPES.includes(s)))].sort()
   return list.length ? list : ['id:whoami']
 }
 
-/** Las claves de datos que esos alcances permiten llevar. */
+/**
+ * Las claves de datos que esos alcances permiten llevar.
+ * @param {unknown} scopes
+ * @returns {Set<string>}
+ */
 export function claimsAllowed (scopes) {
   const out = new Set()
-  for (const s of cleanScopes(scopes)) for (const c of SCOPE_CLAIMS[s]) out.add(c)
+  for (const s of cleanScopes(scopes)) for (const c of SCOPE_CLAIMS[/** @type {keyof typeof SCOPE_CLAIMS} */ (s)]) out.add(c)
   return out
 }
 
@@ -96,6 +102,7 @@ export function claimsAllowed (scopes) {
  *
  * Lanza si le falta algo: es un error de programación de quien emite, no un dato del otro
  * lado que pueda venir mal.
+ * @param {{ sub: string, aud: string, nonce: string, scopes?: unknown, claims?: Record<string, unknown> | null, iat: number, exp: number }} args
  */
 export function assertionBody ({ sub, aud, nonce, scopes, claims, iat, exp }) {
   if (typeof sub !== 'string' || !sub) throw new Error('assertion: sub required')
@@ -106,6 +113,7 @@ export function assertionBody ({ sub, aud, nonce, scopes, claims, iat, exp }) {
   if (exp - iat > ASSERTION_MAX_TTL_MS) throw new Error('assertion: lifetime over the cap')
   const granted = cleanScopes(scopes)
   const permitido = claimsAllowed(granted)
+  /** @type {Record<string, unknown>} */
   const out = {}
   for (const [k, v] of Object.entries(claims || {})) {
     // NO se recorta en silencio lo que sobra: llevar un dato sin su alcance es entregar
@@ -117,6 +125,7 @@ export function assertionBody ({ sub, aud, nonce, scopes, claims, iat, exp }) {
 }
 
 /** Los campos del cuerpo, sacados de una prueba completa (que además lleva firma y cadena). */
+/** @param {any} a */
 const bodyOf = (a) => ({ v: a.v, op: a.op, sub: a.sub, aud: a.aud, nonce: a.nonce, iat: a.iat, exp: a.exp, scopes: a.scopes, claims: a.claims })
 
 /**
@@ -157,7 +166,7 @@ export async function verifyAssertion (assertion, opts = {}) {
   if (a.exp <= now) return { ok: false, reason: 'expired' }
   if (a.iat > now + maxSkewMs) return { ok: false, reason: 'from-future' }
 
-  if (a.scopes.some((s) => !SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
+  if (a.scopes.some((/** @type {string} */ s) => !SCOPES.includes(s))) return { ok: false, reason: 'unknown-scope' }
   const permitido = claimsAllowed(a.scopes)
   if (Object.keys(a.claims || {}).some((k) => !permitido.has(k))) return { ok: false, reason: 'claim-without-scope' }
 
@@ -231,7 +240,7 @@ export async function verifySignedFor (args = {}) {
  * @param {{ signData: (d: object) => Promise<{ signature: string, publickey: string, chain?: any[] }> }} identity
  * @param {{ aud: string, fields?: object, ttlMs?: number, now?: number }} opts
  */
-export async function signedFor (identity, { aud, fields = {}, ttlMs = 24 * 60 * 60 * 1000, now = Date.now() } = {}) {
+export async function signedFor (identity, { aud, fields = {}, ttlMs = 24 * 60 * 60 * 1000, now = Date.now() } = /** @type {any} */ ({})) {
   if (typeof aud !== 'string' || !aud.trim()) throw Object.assign(new Error('signedFor: aud is required'), { code: 'no-audience' })
   const body = { aud: aud.trim(), iat: now, exp: now + ttlMs, nonce: crypto.randomUUID(), ...fields }
   const s = await identity.signData(body)

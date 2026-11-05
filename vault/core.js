@@ -26,6 +26,81 @@ import { assertionBody, cleanScopes, claimsAllowed, ASSERTION_DEFAULT_TTL_MS, AS
 import { pubkeyId as pubkeyIdOf, signWithDevice, keyLabel } from './capabilities.js'
 import { enrollDevice as remoteEnroll, requestSign as remoteSign, requestStore as remoteStore, requestDevices as remoteDevices, requestRenew as remoteRenew, requestAdmin as remoteAdmin, requestApproval as remoteApproval, requestRenounce as remoteRenounce, checkMembership as remoteCheck, registerLocalVault } from './remote.js'
 
+/**
+ * Almacén clave → texto, síncrono (localStorage, o lo que lo imite en Node y en la app).
+ * @typedef {{ getItem (k: string): string | null, setItem (k: string, v: string): void, removeItem (k: string): void }} Kv
+ */
+/**
+ * Una llave que firma o deriva: una CryptoKey, o un asa de una llave que vive fuera (el chip).
+ * @typedef {import('./capabilities.js').SigningKey | { external: true, kid?: string, sign: (bytes: Uint8Array) => Promise<string>, deriveBits?: (peerPubJwkStr: string) => Promise<ArrayBuffer>, paired?: (account: any) => Promise<any> }} PrivateKeyLike
+ */
+/**
+ * Lo que se guarda de un par en el almacén de llaves.
+ * @typedef {{ privateKey: PrivateKeyLike, publicJwk: JsonWebKey }} StoredPair
+ */
+/**
+ * Dónde viven las llaves privadas: IndexedDB en el navegador (CryptoKey no extraíble), o el
+ * chip del teléfono (`externalKeys.js`), que además sabe crearlas e importarlas.
+ * @typedef {object} KeyStore
+ * @property {(name: string) => Promise<any>} get
+ * @property {(name: string, rec: any) => Promise<void>} set
+ * @property {(name: string) => Promise<void>} remove
+ * @property {(kind: 'sign' | 'enc', name: string) => Promise<StoredPair>} [create]
+ * @property {(pair: { sign: { name: string, privateJwk: JsonWebKey, publickey: string }, enc: { name: string, privateJwk: JsonWebKey | null, publickey: string | null } }) => Promise<void>} [importPair]
+ */
+
+/**
+ * El libro de contactos que usa el núcleo: la interfaz de `vault/peerStore.js`.
+ * @typedef {{ initPeerStorage (): Promise<import('./peerStore.js').PeerBook>,
+ *   loadPeers (): import('./peerStore.js').PeerBook, savePeers (p: import('./peerStore.js').PeerBook): void,
+ *   setPeersDirect (p: import('./peerStore.js').PeerBook): void,
+ *   upsertPeer (publickey: string, patch: Record<string, any>): import('./peerStore.js').PeerRecord,
+ *   onDirty (fn: (() => void) | null): void,
+ *   setProfile? (pid: string | null, opts?: { volatile?: boolean }): void | Promise<void>,
+ *   adoptLegacy? (pid: string): void | Promise<void> }} CorePeers
+ */
+/**
+ * El candado de la maestra: sella y abre con la llave que sale de la contraseña del perfil.
+ * Cerrado, `open` devuelve `null`.
+ * @typedef {{ seal? (plaintext: string): Promise<any>, open? (sealed: any): Promise<string | null> }} KeyLock
+ */
+/**
+ * Lo que el núcleo necesita de quien lo monta (el iframe, Node o la app).
+ * @typedef {object} CoreDeps
+ * @property {Kv} kv  almacén síncrono estilo localStorage (keypairs, me, nonces)
+ * @property {CorePeers} peers  el libro de contactos
+ * @property {((cfg: { fileName: string, kind: string, exportLocal: () => Promise<any>, applyMerged: (merged: any) => Promise<void>, mergeFn: (local: any, remote: any) => Promise<{ merged: any, changed: boolean }> }) => any) | null} [makeSync]
+ *   fábrica del respaldo en Drive (`createSync`); sin ella, los `sync*` lanzan
+ * @property {KeyStore | null} [keyStore]  dónde viven las llaves privadas; sin él, JWK en `kv`
+ * @property {Kv | null} [sessionKv]  lo de esta pestaña (`sessionStorage`)
+ * @property {boolean} [removeAccountOnExpulsion]
+ * @property {KeyLock | null} [keyLock]
+ * @property {((q: { origin: string, scopes: string[], already: string[], onBehalfOf: string | null }) => Promise<boolean> | boolean) | null} [askConsent]
+ */
+
+/**
+ * Un perfil de la lista de este aparato.
+ * @typedef {{ id: string, name?: string, pubkey?: string | null, pendingJoin?: boolean } & Record<string, any>} ProfileEntry
+ */
+/**
+ * Un par cargado: la privada (CryptoKey o el asa del chip; `null` con el candado echado) y la pública.
+ * @typedef {{ privateKey: any, publicKey: CryptoKey, publicJwk: JsonWebKey, locked?: boolean }} LoadedPair
+ */
+
+/**
+ * El emparejamiento guardado con la bóveda: su papel, a quién y por dónde.
+ * @typedef {{ cert: any, master: string, proxy: string, deviceId?: string, pairedAt?: number, account?: string } & Record<string, any>} VaultLink
+ */
+/** @typedef {import('./remote.js').DeviceKey} DeviceKey */
+
+/** @typedef {import('./acta.js').Acta} Acta */
+
+/**
+ * Los parámetros de un manejador: llegan por `postMessage` (de cualquier aplicación) o por la
+ * API de Node, sin comprobar. Cada manejador valida lo que usa.
+ * @typedef {Record<string, any>} HandlerParams
+ */
+
 export const KEY_STORAGE = 'dotrino.identity.keypair'
 export const ENC_KEY_STORAGE = 'dotrino.identity.enc-keypair'
 export const ME_STORAGE = 'dotrino.identity.me'
@@ -62,10 +137,11 @@ const PILAR_VAULT = '@dotrino/vault'
 
 // ----- crypto helpers (puros) -----
 
+/** @param {any} v @returns {string} */
 export function canonicalStringify (v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v)
   // Un array con `undefined` va como `null`, igual que en JSON.stringify.
-  if (Array.isArray(v)) return '[' + v.map((x) => x === undefined ? 'null' : canonicalStringify(x)).join(',') + ']'
+  if (Array.isArray(v)) return '[' + v.map((/** @type {unknown} */ x) => x === undefined ? 'null' : canonicalStringify(x)).join(',') + ']'
   // Una clave con `undefined` NO existe, igual que en JSON.stringify: antes salía como
   // `"k":undefined` (ni siquiera es JSON) y lo firmado en memoria no cuadraba con lo mismo
   // leído del disco o de la red (el directorio de nombres, 2026-10-15).
@@ -73,6 +149,7 @@ export function canonicalStringify (v) {
   return '{' + ks.map(k => JSON.stringify(k) + ':' + canonicalStringify(v[k])).join(',') + '}'
 }
 
+/** @param {ArrayBuffer | ArrayLike<number>} buf @returns {string} */
 export function bufToBase64 (buf) {
   const bytes = new Uint8Array(buf)
   let s = ''
@@ -80,6 +157,7 @@ export function bufToBase64 (buf) {
   return btoa(s)
 }
 
+/** @param {string} b64 @returns {ArrayBuffer} */
 export function base64ToBuf (b64) {
   const s = atob(b64)
   const bytes = new Uint8Array(s.length)
@@ -87,11 +165,13 @@ export function base64ToBuf (b64) {
   return bytes.buffer
 }
 
+/** @param {string | JsonWebKey} jwkStr @returns {Promise<CryptoKey>} */
 async function importPeerEncPubkey (jwkStr) {
   const jwk = typeof jwkStr === 'string' ? JSON.parse(jwkStr) : jwkStr
   return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, true, [])
 }
 
+/** @param {any} myPriv  CryptoKey ECDH, o el asa de una llave del chip @param {CryptoKey} peerPub @returns {Promise<CryptoKey>} */
 async function deriveSharedAesKey (myPriv, peerPub) {
   if (myPriv?.external) {
     // Llave EXTERNA: el chip da los 32 bytes del secreto ECDH, que es exactamente lo que
@@ -109,12 +189,14 @@ async function deriveSharedAesKey (myPriv, peerPub) {
   )
 }
 
+/** @param {any} privateKey  CryptoKey ECDSA, o el asa de una llave del chip @param {Uint8Array<ArrayBuffer>} bytes @returns {Promise<string>} */
 async function signBytes (privateKey, bytes) {
   if (privateKey?.external) return privateKey.sign(bytes) // el chip del teléfono (ver rawSign)
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: { name: 'SHA-256' } }, privateKey, bytes)
   return bufToBase64(sig)
 }
 
+/** @param {string} publicJwkStr @param {Uint8Array<ArrayBuffer>} bytes @param {string} signatureBase64 @returns {Promise<boolean>} */
 async function verifyBytes (publicJwkStr, bytes, signatureBase64) {
   let publicKey
   try {
@@ -131,21 +213,13 @@ async function verifyBytes (publicJwkStr, bytes, signatureBase64) {
   )
 }
 
-/**
- * Crea el núcleo de identidad sobre los backends inyectados.
- *
- * @param {Object} deps
- * @param {{getItem(k):string|null, setItem(k,v):void, removeItem(k):void}} deps.kv
- *        Almacén clave-valor síncrono estilo localStorage (keypairs, me, nonces).
- * @param {Object} deps.peers  Peer book con la interfaz de vault/peerStore.js:
- *        { initPeerStorage, loadPeers, savePeers, setPeersDirect, upsertPeer, onDirty }
- * @param {Function|null} [deps.makeSync]  Factory de sync (createSync). Si es null,
- *        los métodos sync* lanzan "sync not ready" (modo headless / sin Drive).
- * @returns {Promise<{ handlers:Object, get me():Object, sync:Object|null,
- *                      onSyncStatus(fn):void }>}
+/*
+ * Crea el núcleo de identidad sobre los backends inyectados: `createIdentityCore`, más abajo.
+ * Las dependencias (`deps`) están descritas en el tipo `CoreDeps`.
  */
 // Campos personales estándar del perfil (escalares fijos), con su cap de longitud.
 // Cada uno tiene un flag `<campo>Visible` (booleano) para mostrar/ocultar al compartir.
+/** @type {Array<[string, number]>} */
 const STD_FIELD_CAPS = [
   ['nombres', 60], ['apellidos', 60], ['email', 120], ['telefono', 40], ['direccion', 200]
 ]
@@ -165,8 +239,14 @@ const STD_FIELDS_SENSITIVE = new Set(['telefono', 'direccion'])
  * Sensibles (teléfono, dirección) OCULTOS salvo que su marca diga que sí, explícitamente.
  * El resto se comparte salvo que digas que no.
  */
+/**
+ * @param {Record<string, any>} [m]
+ * @returns {Record<string, 'public' | 'private'>}
+ */
 export function profileFieldClasses (m = {}) {
+  /** @type {Record<string, 'public' | 'private'>} */
   const out = {}
+  /** @param {boolean} esPublico @returns {'public' | 'private'} */
   const clase = (esPublico) => (esPublico ? 'public' : 'private')
   if (m.nickname) out.nickname = clase(true)
   if (m.avatar) out.avatar = clase(m.avatarVisible !== false)
@@ -179,7 +259,12 @@ export function profileFieldClasses (m = {}) {
 
 // Sanea un patch de perfil (avatar/links/fields/nickname + campos estándar). Cada link/field
 // lleva `visible` (oculto = no se comparte). Caps de tamaño para no inflar el `me`. Los ids los pone la UI.
+/**
+ * @param {Record<string, any>} [patch]
+ * @returns {Record<string, any>}
+ */
 function sanitizeProfilePatch (patch = {}) {
+  /** @type {Record<string, any>} */
   const out = {}
   if (typeof patch.nickname === 'string') out.nickname = patch.nickname.slice(0, 40)
   // Campos personales estándar (Nombres/Apellidos/Correo/Teléfono/Dirección) + su visibilidad.
@@ -193,7 +278,7 @@ function sanitizeProfilePatch (patch = {}) {
   if (typeof patch.avatarVisible === 'boolean') out.avatarVisible = patch.avatarVisible
   if (Array.isArray(patch.links)) {
     // Filtra vacíos ANTES del tope: un draft vacío no debe consumir cupo ni desplazar un enlace real.
-    out.links = patch.links.slice(0, 100).map((l) => ({
+    out.links = patch.links.slice(0, 100).map((/** @type {any} */ l) => ({
       id: String(l?.id || '').slice(0, 24),
       type: String(l?.type || 'web').slice(0, 16),
       value: String(l?.value || '').slice(0, 200),
@@ -201,7 +286,7 @@ function sanitizeProfilePatch (patch = {}) {
     })).filter((l) => l.value).slice(0, 30)
   }
   if (Array.isArray(patch.fields)) {
-    out.fields = patch.fields.slice(0, 20).map((f) => ({
+    out.fields = patch.fields.slice(0, 20).map((/** @type {any} */ f) => ({
       id: String(f?.id || '').slice(0, 24),
       label: String(f?.label || '').slice(0, 40),
       value: String(f?.value || '').slice(0, 280),
@@ -218,6 +303,8 @@ function sanitizeProfilePatch (patch = {}) {
  * aplicación que pide sería la aplicación aprobándose a sí misma.
  *
  * Si no se inyecta, no se concede nada nuevo: sin forma de preguntar, la respuesta es no.
+ *
+ * @param {CoreDeps} deps
  */
 export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, keyStore: hostKeyStore = null, sessionKv = null, removeAccountOnExpulsion = true, keyLock = null, askConsent = null }) {
   const {
@@ -250,21 +337,29 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const VOLATILE_CLAIM = 'dotrino.identity.volatile.claim'    // en sessionKv: la de ESTA pestaña
   const VOLATILE_STALE_MS = 90_000
   const VOLATILE_BEAT_MS = 20_000
+  /** @type {Set<string | null>} */
   const volatilePids = new Set()
+  /** @type {ProfileEntry[]} */
   let volatileProfiles = []
+  /** @type {ReturnType<typeof setInterval> | null} */
   let volatileBeat = null
   const rawKv = hostKv
   const keyStore = hostKeyStore
 
+  /** @returns {Record<string, number>} */
   const loadVolatile = () => { try { return JSON.parse(hostKv.getItem(VOLATILE_STORAGE) || '{}') || {} } catch (_) { return {} } }
+  /** @param {Record<string, number>} m */
   const saveVolatile = (m) => hostKv.setItem(VOLATILE_STORAGE, JSON.stringify(m))
+  /** @param {string} pid */
   const beatVolatile = (pid) => { const m = loadVolatile(); m[pid] = Date.now(); saveVolatile(m) }
+  /** @param {string} pid */
   const keepBeating = (pid) => {
     if (volatileBeat) clearInterval(volatileBeat)
     beatVolatile(pid)
-    volatileBeat = setInterval(() => beatVolatile(pid), VOLATILE_BEAT_MS)
+    const beat = setInterval(() => beatVolatile(pid), VOLATILE_BEAT_MS)
+    volatileBeat = beat
     // En el navegador, que el latido no impida cerrar nada.
-    try { volatileBeat.unref?.() } catch (_) {}
+    try { beat.unref?.() } catch (_) {}
   }
 
   // ----- multi-perfil: kv SCOPEADO por el perfil activo -----
@@ -272,20 +367,26 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // namespacean transparentemente bajo `dotrino.identity.p.<currentPid>.*`. Las dos claves
   // globales (lista de perfiles + activo) usan el kv crudo. Cambiar de perfil = setear el
   // activo; la app recarga la página y re-inicializa con el nuevo (no reactivo, por diseño).
+  /** @type {string | null} */
   let currentPid = null
+  /** @param {string} k @returns {string} */
   const _scoped = (k) => (!currentPid || k === PROFILES_STORAGE || k === CURRENT_STORAGE)
     ? k : k.replace(/^dotrino\.identity\./, `dotrino.identity.p.${currentPid}.`)
+  /** @type {Kv} */
   const kv = {
     getItem: (k) => rawKv.getItem(_scoped(k)),
     setItem: (k, v) => rawKv.setItem(_scoped(k), v),
     removeItem: (k) => rawKv.removeItem(_scoped(k))
   }
+  /** @returns {ProfileEntry[]} */
   const loadProfiles = () => {
+    /** @type {ProfileEntry[]} */
     let list = []
     try { list = JSON.parse(hostKv.getItem(PROFILES_STORAGE) || '[]') || [] } catch { list = [] }
     return volatileProfiles.length ? [...list, ...volatileProfiles] : list
   }
   /** Lo volátil se queda en memoria; al disco va solo el resto. */
+  /** @param {ProfileEntry[]} list */
   const saveProfiles = (list) => {
     if (volatilePids.size) volatileProfiles = list.filter((p) => volatilePids.has(p.id))
     hostKv.setItem(PROFILES_STORAGE, JSON.stringify(list.filter((p) => !volatilePids.has(p.id))))
@@ -303,8 +404,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // entrada), y en la bóveda es UN directorio por perfil, donde esa lista está vacía y
   // no hay ninguna entrada que marcar. El kv es lo único que existe siempre y ya está
   // acotado al perfil abierto, así que ahí va la marca de la bóveda.
+  /** @param {string | null} [pid] @returns {boolean} */
   const isPendingJoin = (pid = currentPid) =>
     kv.getItem(PENDING_JOIN_STORAGE) === '1' || !!loadProfiles().find((p) => p.id === pid)?.pendingJoin
+  /** @param {string | null} [pid] */
   const clearPendingJoin = (pid = currentPid) => {
     try { kv.removeItem(PENDING_JOIN_STORAGE) } catch (_) {}
     const list = loadProfiles(); const e = list.find((p) => p.id === pid)
@@ -318,13 +421,20 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // kv, se importa como no extractable y se BORRA el plano. Sin keyStore
   // (Node/tests) se conserva el comportamiento kv anterior.
 
+  /** @type {Record<'sign' | 'enc', { algo: EcKeyImportParams, privUses: KeyUsage[], pubUses: KeyUsage[], pairUses: KeyUsage[] }>} */
   const ALGO_OF = {
     sign: { algo: { name: 'ECDSA', namedCurve: 'P-256' }, privUses: ['sign'], pubUses: ['verify'], pairUses: ['sign', 'verify'] },
     enc: { algo: { name: 'ECDH', namedCurve: 'P-256' }, privUses: ['deriveBits', 'deriveKey'], pubUses: [], pairUses: ['deriveBits', 'deriveKey'] }
   }
 
+  /**
+   * @param {'sign' | 'enc'} kind
+   * @param {string} storageKey
+   * @returns {Promise<LoadedPair>}
+   */
   async function loadOrCreatePair (kind, storageKey) {
     const { algo, privUses, pubUses, pairUses } = ALGO_OF[kind]
+    /** @param {JsonWebKey} jwk */
     const importPub = (jwk) => crypto.subtle.importKey('jwk', jwk, algo, true, pubUses)
     if (keyStore) {
       const name = _scoped(storageKey)
@@ -399,6 +509,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * bóveda cerrada no podía ni cifrar la lista de variables de la consola. Le pasó a la
    * alojada, cuya identidad nace con el candado ya abierto (2026-10-27).
    */
+  /** @param {string} storageKey @param {JsonWebKey} privateJwk @param {JsonWebKey} publicJwk @returns {Promise<void>} */
   async function guardarPar (storageKey, privateJwk, publicJwk) {
     if (storageKey === KEY_STORAGE && keyLock?.seal) {
       const sealed = await keyLock.seal(JSON.stringify(privateJwk))
@@ -471,12 +582,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return {}
     }
   }
+  /** @param {Record<string, number>} obj */
   function saveNonces (obj) { kv.setItem(NONCE_STORAGE, JSON.stringify(obj)) }
+  /** @param {string} nonce */
   function rememberNonce (nonce) { const o = loadNonces(); o[nonce] = Date.now(); saveNonces(o) }
+  /** @param {string} nonce */
   function isFreshNonce (nonce) { return Object.prototype.hasOwnProperty.call(loadNonces(), nonce) }
 
   // ----- delegaciones de capacidad emitidas + revocaciones (kv-backed) -----
 
+  /** @param {string} key @returns {Record<string, any>} */
   function loadJson (key) { try { return JSON.parse(kv.getItem(key) || '{}') || {} } catch (_) { return {} } }
 
   // YA NO SE PODA NADA, y el motivo es que la poda existía por el reloj.
@@ -493,6 +608,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // los 30 días porque para entonces el papel estaba vencido seguro, y sin vencimiento
   // olvidar una revocación lo resucita.
   const loadDelegations = () => loadJson(DELEGATIONS_STORAGE)
+  /** @param {Record<string, any>} o */
   const saveDelegations = (o) => kv.setItem(DELEGATIONS_STORAGE, JSON.stringify(o))
 
   /**
@@ -504,6 +620,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   function loadRevocations () {
     return loadJson(REVOCATIONS_STORAGE)
   }
+  /** @param {Record<string, any>} o */
   const saveRevocations = (o) => kv.setItem(REVOCATIONS_STORAGE, JSON.stringify(o))
 
   /**
@@ -512,10 +629,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Solo toca las listas locales: avisar al aparato es cosa del mostrador de enrolamiento,
    * que es quien puede firmar la orden de autoborrado.
    */
+  /** @param {string} sub @param {string | null} [keepNonce] @returns {string[]} */
   function revokePriorCertsFor (sub, keepNonce) {
     const store = loadDelegations()
     const rev = loadRevocations()
     const now = Date.now()
+    /** @type {string[]} */
     const hit = []
     for (const [nonce, d] of Object.entries(store)) {
       if (nonce === keepNonce || d?.sub !== sub || d?.revokedAt) continue
@@ -529,7 +648,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
   // ----- emparejamiento con el vault del usuario (este dispositivo enrolado) -----
   // Canal de eventos 'vault' (p.ej. el código a tipear durante el emparejamiento).
+  /** @type {Set<(payload: any) => void>} */
   const vaultListeners = new Set()
+  /** @param {Record<string, any>} p */
   const emitVault = (p) => { for (const fn of vaultListeners) { try { fn(p) } catch (_) {} } }
 
   /**
@@ -579,7 +700,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     removingAccount = true
     const gone = currentPid
     try { await purgeProfile(gone) } catch (e) {
-      emitVault({ phase: 'account-removed', removed: gone, error: e?.message || String(e) })
+      emitVault({ phase: 'account-removed', removed: gone, error: /** @type {any} */ (e)?.message || String(e) })
       return
     }
     // Y ya está: qué cuenta queda puesta lo resuelve el ARRANQUE al recargar, que es donde
@@ -596,6 +717,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Ojo: no es «cambiar de cuenta» de cara a las apps (eso exige recargar, multi-perfil no
    * es reactivo). Es dejar esta identidad coherente consigo misma antes de contestar.
    */
+  /** @param {string} pid */
   async function openProfileInMemory (pid) {
     currentPid = pid
     // Una cuenta volátil no deja rastro: si escribiera aquí, al cerrar la pestaña el
@@ -607,10 +729,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     keypair = await loadOrCreateKeypair(); publickeyJwkStr = JSON.stringify(keypair.publicJwk)
     encKeypair = await loadOrCreateEncKeypair(); encPublickeyJwkStr = JSON.stringify(encKeypair.publicJwk)
     const saved = loadMe()
-    me = (saved && saved.publickey === publickeyJwkStr)
+    /** @type {Record<string, any>} */
+    const abierto = (saved && saved.publickey === publickeyJwkStr)
       ? { ...saved, encryptionPubkey: encPublickeyJwkStr }
       : { publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr }
-    return { id: pid, name: me.nickname || '', pubkey: publickeyJwkStr }
+    me = abierto
+    return { id: pid, name: abierto.nickname || '', pubkey: publickeyJwkStr }
   }
 
   /**
@@ -622,16 +746,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * que no eran de nadie y la tuya sin abrir. La cuenta que se descarta es siempre una
    * recién creada por `vaultPair`, así que no hay nada dentro que perder.
    */
+  /** @param {string} pid @param {string | null} backTo */
   async function discardBornProfile (pid, backTo) {
     try {
       await purgeProfile(pid)
       if (backTo && loadProfiles().some((p) => p.id === backTo)) await openProfileInMemory(backTo)
     } catch (e) {
-      console.warn('[identity] could not discard the account born for the pairing:', e?.message || e)
+      console.warn('[identity] could not discard the account born for the pairing:', /** @type {any} */ (e)?.message || e)
     }
   }
 
   /** El certificado de bóveda guardado en OTRA cuenta de este dispositivo (sin abrirla). */
+  /** @param {string} pid @returns {VaultLink | null} */
   const vaultCertOf = (pid) => {
     try {
       const raw = rawKv.getItem(VAULT_CERT_STORAGE.replace(/^dotrino\.identity\./, `dotrino.identity.p.${pid}.`))
@@ -658,6 +784,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    *   su contraseña; sin la frase no hay con qué, y se contesta `profile-locked` en vez de
    *   fingir que no existe.
    */
+  /** @param {string} pid @returns {Promise<DeviceKey>} */
   async function signerForProfile (pid) {
     const nombre = KEY_STORAGE.replace(/^dotrino\.identity\./, `dotrino.identity.p.${pid}.`)
     if (keyStore) {
@@ -687,6 +814,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Mismas tres reglas que allí: no se mueve `currentPid`, no se genera ninguna llave (si no
    * está, se dice) y una cuenta sellada bajo su contraseña se contesta `profile-locked`.
    */
+  /** @param {string | null} pid @returns {Promise<any>} */
   async function encKeyForProfile (pid) {
     if (pid === currentPid) return encKeypair?.privateKey || null
     const { algo, privUses } = ALGO_OF.enc
@@ -715,11 +843,15 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Lo que no se puede abrir se dice (`ctxError`) en vez de quedarse como un pedido sin
    * comando: son cosas distintas y en la pantalla hay que poder distinguirlas.
    */
+  /** @param {any} items @param {string | null} pid */
   async function abrirContextos (items, pid) {
     if (!Array.isArray(items) || !items.length) return items
+    /** @type {any} */
     let priv = null
+    /** @type {string | null} */
     let fallo = null
-    try { priv = await encKeyForProfile(pid) } catch (e) { fallo = e?.code || 'no-key' }
+    try { priv = await encKeyForProfile(pid) } catch (e) { fallo = /** @type {any} */ (e)?.code || 'no-key' }
+    /** @type {any[]} */
     const salida = []
     for (const raw of items) {
       const { ctxWrap, ctxEnvelope, ...it } = raw || {}
@@ -729,13 +861,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const cek = await Content.openWrap({ wrap: ctxWrap, myEncPrivateKey: priv })
         salida.push({ ...it, ctx: JSON.parse(await Content.decryptWithCek({ cek, envelope: ctxEnvelope })) })
       } catch (e) {
-        salida.push({ ...it, ctxError: e?.code || 'cannot-open' })
+        salida.push({ ...it, ctxError: /** @type {any} */ (e)?.code || 'cannot-open' })
       }
     }
     return salida
   }
 
   /** La cuenta de este dispositivo que YA está emparejada con la bóveda `master`, si la hay. */
+  /** @param {string | null | undefined} master */
   const profilePairedWith = (master) => {
     if (!master) return null
     return loadProfiles().find((p) => vaultCertOf(p.id)?.master === master) || null
@@ -745,6 +878,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Borra un perfil y todo lo suyo. Sin preguntas: el freno de «no te quedes sin ninguna»
    * es de la interfaz y vive en `deleteProfile`.
    */
+  /** @param {string | null} id */
   async function purgeProfile (id) {
     const list = loadProfiles().filter((p) => p.id !== id)
     saveProfiles(list)
@@ -783,6 +917,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * DEGRADAR: avisar a la app de que la bóveda nos está rechazando, y que sea el usuario
    * quien decida. El borrado real llega por `vault.revoked` firmado (ver `wipeVaultLink`).
    */
+  /** @param {any} e @returns {never} */
   const handleVaultError = (e) => {
     if (e && /\brevoked\b/.test(e.message || '')) emitVault({ phase: 'rejected', reason: e.message })
     throw e
@@ -797,13 +932,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    *
    * Solo lo suyo: sin cert o sin `vault:approve` en ese cert, no hay nada que hacer aquí.
    */
+  /** @param {string} pid @param {{ op?: string, id?: string }} [args] */
   async function approvalsDeOtroPerfil (pid, { op, id } = {}) {
     if (!loadProfiles().some((p) => p.id === pid)) throw Object.assign(new Error('that profile does not exist on this device'), { code: 'no-profile' })
     const v = vaultCertOf(pid)
     if (!v?.cert) throw Object.assign(new Error('that profile is not paired with a vault'), { code: 'not-paired' })
     if (!(v.cert.scope || []).includes('vault:approve')) throw Object.assign(new Error('that profile does not approve requests'), { code: 'no-approve' })
     const device = await signerForProfile(pid)
-    const r = await remoteApproval({ acta: actaOfProfile(pid), master: v.master, proxy: v.proxy, device, cert: v.cert, op, id })
+    const r = await remoteApproval({ acta: actaOfProfile(pid), master: v.master, proxy: v.proxy, device, cert: v.cert, op: /** @type {string} */ (op), id })
     // Y EL COMANDO SE ABRE TAMBIÉN AQUÍ, con la llave de ESA cuenta. Sin esto los pedidos de
     // las demás cuentas se veían sin comando —el dato por el que se mira la pantalla— y el
     // fallo era mudo: llegaban con su sobre cerrado y nadie lo abría.
@@ -812,8 +948,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   }
 
   /** Id estable y corto de una llave de cifrado: con esto se indexan las envolturas. */
+  /** @param {string} encPub */
   const encKeyId = async (encPub) => (await pubkeyIdOf(encPub)).slice(0, 16)
 
+  /** @returns {VaultLink | null} */
   const loadVaultCert = () => { try { return JSON.parse(kv.getItem(VAULT_CERT_STORAGE) || 'null') } catch (_) { return null } }
 
   /**
@@ -827,11 +965,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * aparte», y fingirlo haría creer, por ejemplo, que lo suyo está respaldado en otro sitio.
    * Lo pone quien levanta la bóveda (`setSelfVault`) y lo quita al pararla.
    */
+  /** @type {{ cert: any, proxy: string } | null} */
   let selfLink = null
   /** Lo que se espera a una bóveda elegida: una alojada dormida arranca antes de contestar. */
   const VAULT_WAKE_MS = 45000
+  /** @type {(() => void) | null} */
   let selfLinkOff = null
   /** El enlace con el que administrar: el emparejamiento si lo hay, y si no, la bóveda local. */
+  /** @returns {{ v: VaultLink, device: DeviceKey, self: boolean } | null} */
   const adminLink = () => {
     const v = loadVaultCert(); const device = loadVaultDevice()
     if (v?.cert && device) return { v, device, self: false }
@@ -848,11 +989,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // porque el iframe no ve si está dentro de una extensión o de la app nativa, y viaja con
   // cada pedido firmado a la bóveda para que su lista lo enseñe al día. Sin página que lo
   // diga (Node, un cliente viejo) no se manda nada: mejor ningún dato que uno equivocado.
+  /** @type {{ kind: string, os: string, name: string } | null} */
   let pageMachine = null
+  /** @returns {DeviceKey | null} */
   const loadVaultDevice = () => {
     const d = loadVaultDeviceKey()
     return d && pageMachine ? { ...d, machine: pageMachine } : d
   }
+  /** @returns {DeviceKey | null} */
   const loadVaultDeviceKey = () => {
     try {
       const d = JSON.parse(kv.getItem(VAULT_DEVICE_STORAGE) || 'null')
@@ -892,9 +1036,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // Separar por `onBehalfOf` no le da a nadie más de lo que tenía: el nombre lo pone el
   // origen, así que un origen que mintiera solo conseguiría una concesión aparte —vacía—,
   // nunca la de otro origen. `|` no aparece en un origen, así que la clave no es ambigua.
+  /** @param {string} origin @param {string | null | undefined} onBehalfOf @returns {string} */
   const grantKey = (origin, onBehalfOf) => onBehalfOf ? `${origin}|${onBehalfOf}` : origin
+  /** @param {unknown} onBehalfOf @returns {string} */
   const behalfName = (onBehalfOf) => onBehalfOf ? String(onBehalfOf).slice(0, 60) : ''
+  /** @returns {Record<string, { scopes: string[], at?: number, lastUsed?: number, onBehalfOf?: string }>} */
   const loadGrants = () => {
+    /** @type {Record<string, any>} */
     let g
     try { g = JSON.parse(kv.getItem(GRANTS_STORAGE) || '{}') } catch (_) { return {} }
     // MIGRACIÓN DECLARADA (identity 0.93.0) — quitar después del 2026-10-17.
@@ -904,22 +1052,28 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     for (const k of Object.keys(g)) if (!k.includes('|') && g[k]?.onBehalfOf) delete g[k]
     return g
   }
+  /** @param {Record<string, any>} g */
   const saveGrants = (g) => { try { kv.setItem(GRANTS_STORAGE, JSON.stringify(g)) } catch (_) {} }
   /** Lo concedido a un origen (y a nombre de quién pide), hoy. */
+  /** @param {string} key @returns {string[]} */
   const grantedTo = (key) => (loadGrants()[key]?.scopes) || []
 
+  /** @returns {Acta | null} */
   const loadActa = () => { try { return JSON.parse(kv.getItem(ACTA_STORAGE) || 'null') } catch (_) { return null } }
   /** El acta guardada de OTRO perfil de este aparato (la del activo es `loadActa`). Dice a qué bóvedas sellarle. */
+  /** @param {string} pid @returns {Acta | null} */
   const actaOfProfile = (pid) => {
     if (pid === currentPid) return loadActa()
     try { return JSON.parse(rawKv.getItem(`dotrino.identity.p.${pid}.acta`) || 'null') } catch (_) { return null }
   }
+  /** @param {Acta} a */
   const saveActa = (a) => kv.setItem(ACTA_STORAGE, JSON.stringify(a))
   // VENTANA DE RETENCIÓN (§1.3): el master conserva las últimas actas para que un miembro
   // que estuvo apagado pueda comprobar el encadenamiento al volver. Un tercero no las
   // necesita —le basta el snapshot actual—, pero entre miembros hay que poder verificar
   // que la nueva desciende de la que uno tenía. Más viejo que la ventana ⇒ re-admitirse.
   const ACTA_WINDOW = 50
+  /** @returns {Acta[]} */
   const loadHistory = () => { try { return JSON.parse(kv.getItem(ACTA_HISTORY_STORAGE) || '[]') || [] } catch (_) { return [] } }
   /**
    * LOS ESLABONES DE LA CADENA DE SELLADORES NO CADUCAN (dueño, 2026-08-31).
@@ -937,6 +1091,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * No crecen: solo suman al añadir o quitar una bóveda, que casi nunca pasa. Un usuario
    * normal guarda uno —el génesis— para siempre.
    */
+  /** @param {Acta | null | undefined} acta */
   const pushHistory = (acta) => {
     if (!acta) return
     const h = loadHistory().filter((a) => a.seq !== acta.seq)
@@ -955,6 +1110,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Es lo que un extraño necesita para anclar en el `profileId`, y es corta a propósito —
    * no lleva las actas de emparejar aparatos, que son casi todas.
    */
+  /** @returns {Acta[]} */
   const sealerChain = () => {
     const cur = loadActa()
     if (!cur) return []
@@ -981,7 +1137,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     return [...antes, ...out]
   }
 
+  /** @returns {import('./acta.js').RenounceRecord[]} */
   const loadRenounces = () => { try { return JSON.parse(kv.getItem(RENOUNCE_STORAGE) || '[]') || [] } catch (_) { return [] } }
+  /** @param {import('./acta.js').RenounceRecord[]} l */
   const saveRenounces = (l) => kv.setItem(RENOUNCE_STORAGE, JSON.stringify(l))
 
   /** ¿Es ESTE dispositivo el master (el único que puede sellar)? */
@@ -997,15 +1155,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * y devuelve su pública. Se llama en cada acta, porque esa llave rota con el acta.
    * Un navegador no sella secretos: se queda en `null` y el acta no lleva llave.
    */
+  /** @type {(() => Promise<string | null>) | null} */
   let sealKeyProvider = null
 
   /** Sella con la llave del perfil (CryptoKey, puede ser no extractable). */
+  /** @param {Acta} acta */
   const seal = (acta) => Acta.sealActa({ acta, privateKey: masterKey() })
 
   /**
    * Aplica cambios, sella y guarda. Solo funciona si este dispositivo es el master: es la
    * regla 1 del modelo, y `applyChanges` la vuelve a comprobar por su cuenta.
    */
+  /** @param {any} changes @returns {Promise<Acta>} */
   async function sealChanges (changes) {
     const acta = loadActa()
     if (!acta) throw new Error('this profile has no record yet')
@@ -1030,8 +1191,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * con todas las capacidades. `profileId` = la pubkey de este perfil → el perfil se llama
    * como la identidad que el usuario ya tenía, así que no hay nada que migrar.
    */
+  /** @param {string} [label] @returns {Promise<Acta>} */
   async function ensureActa (label = '') {
-    if (loadActa()) return loadActa()
+    if (loadActa()) return /** @type {Acta} */ (loadActa())
     const base = Acta.genesisActa({
       pub: publickeyJwkStr, encPub: encPublickeyJwkStr, label: label || me?.nickname || ''
     })
@@ -1040,7 +1202,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     try {
       const { generation } = await Content.makeGeneration({ members: base.members, gen: 1 })
       base.keyring = [generation]
-    } catch (e) { console.warn('[identity] could not create the content key:', e.message) }
+    } catch (e) { console.warn('[identity] could not create the content key:', /** @type {any} */ (e).message) }
     const genesis = await seal(base)
     saveActa(genesis)
     // EL GÉNESIS VA A LA HISTORIA DESDE EL PRIMER DÍA. Es el ancla de la cadena de
@@ -1049,7 +1211,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // guardaba lo que DEJABA de ser vigente, así que una cuenta que nunca cambió su acta
     // no tenía génesis guardado y su cadena salía vacía.
     pushHistory(genesis)
-    return loadActa()
+    return /** @type {Acta} */ (loadActa())
   }
 
   // ----- CLAVE DE CONTENIDO del perfil (para que todos tus dispositivos lean lo mismo) -----
@@ -1076,13 +1238,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    *   3. clave nueva      → no podrá abrir el contenido NUEVO. Lo que ya leyó no
    *      vuelve: eso no se puede deshacer y no se promete.
    */
+  /** @param {string} pub */
   async function removeDevice (pub) {
     if (!pub || typeof pub !== 'string') throw new Error('pub (device pubkey) required')
     // Si no es miembro (papeles de antes de que existiera el acta), no es un error: se
     // le quitan igual los certificados, que es lo que de verdad le abría la puerta.
-    const isMember = (loadActa().members || []).some((m) => m.pub === pub)
-    const acta = isMember ? await sealChanges([{ op: 'remove', pub }]) : loadActa()
+    // Sin acta esto lanza (`TypeError`), igual que siempre: no hay de dónde quitar a nadie.
+    const isMember = (/** @type {Acta} */ (loadActa()).members || []).some((m) => m.pub === pub)
+    const acta = isMember ? await sealChanges([{ op: 'remove', pub }]) : /** @type {Acta} */ (loadActa())
     const nonces = revokePriorCertsFor(pub, null)
+    /** @type {{ gen: number, sinLlave: Array<string | undefined> } | null} */
     let rotated = null
     try { rotated = await rotateCek() } catch (_) {}
     return { ok: true, seq: acta.seq, nonces, rotated, revokedAt: Date.now() }
@@ -1090,7 +1255,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
   /** Rota la clave: generación nueva envuelta SOLO a los miembros actuales. */
   async function rotateCek () {
-    const acta = loadActa()
+    const acta = /** @type {Acta} */ (loadActa())
     const gen = ((acta.keyring || []).at(-1)?.gen || 0) + 1
     const { generation, sinLlave } = await Content.makeGeneration({ members: acta.members, gen })
     await sealChanges([{ op: 'keyring', generation }])
@@ -1116,17 +1281,21 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * cerrada no firma nada (`CLAUDE.md`, «la maestra tiene dos trabajos»), y cambiar el acta
    * al abrir es justo uno de ellos.
    */
+  /** @param {number} [now] */
   async function pruneExpiredDevices (now = Date.now()) {
     if (!keypair?.privateKey) return { removed: [], seq: null }
     const acta = loadActa()
     if (!acta) return { removed: [], seq: null }
     const store = loadDelegations(); const rev = loadRevocations()
+    /** @type {Map<string, any[]>} */
     const porSub = new Map()
     for (const d of Object.values(store)) {
       if (!d?.sub || d.revokedAt || rev[d.nonce]) continue
-      if (!porSub.has(d.sub)) porSub.set(d.sub, [])
-      porSub.get(d.sub).push(d)
+      let lista = porSub.get(d.sub)
+      if (!lista) { lista = []; porSub.set(d.sub, lista) }
+      lista.push(d)
     }
+    /** @param {any} d */
     const muerto = (d) => typeof d.seq !== 'number'
     const muertos = [...porSub]
       .filter(([sub, ds]) => sub !== publickeyJwkStr && ds.every(muerto))
@@ -1202,6 +1371,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // esa cuenta no reconoce y el aparato quedaría fuera de su propio perfil.
 
   /** Lo que quedó anotado de un inicio de sesión con contraseña, para cerrarlo o enseñarlo. */
+  /** @param {string} pid @returns {Record<string, any> | null} */
   const loginMetaOf = (pid) => {
     try {
       const raw = pid === currentPid
@@ -1214,8 +1384,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const deviceIdDe = keyLabel
 
   /**
-   * @param {object} entrada  lo que devuelve `loginWithPassword` del pilar
-   * @param {boolean} remember  `false` = cuenta VOLÁTIL (se va con la pestaña)
+   * @param {any} entrada  lo que devuelve `loginWithPassword` del pilar (lo comprueba esta función)
+   * @param {{ remember?: boolean, proxy?: string | null }} [opts]  `remember: false` = cuenta VOLÁTIL (se va con la pestaña)
    */
   async function adoptLogin (entrada, { remember = false, proxy = null } = {}) {
     // LO MÍNIMO QUE ESTA CASA TIENE QUE COMPROBAR ANTES DE ADOPTAR NADA. Quien entró ya
@@ -1224,7 +1394,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // se quedaría con una identidad que ningún acta reconoce — y sin forma de notarlo.
     const v = await Acta.verifyActa({ acta: entrada?.acta })
     if (!v.ok) throw Object.assign(new Error('the account record does not verify: ' + v.reason), { code: 'bad-record' })
-    if (!(entrada.acta.members || []).some((m) => m?.pub === entrada.publickey)) {
+    if (!(entrada.acta.members || []).some((/** @type {any} */ m) => m?.pub === entrada.publickey)) {
       throw Object.assign(new Error('that key is not a member of the account record'), { code: 'not-a-member' })
     }
 
@@ -1245,6 +1415,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // con `deriveBits` a secas), y aquí hace falta además `deriveKey`. Es lo mismo que ya
       // se hace al generar una propia — quién puede hacer qué con esta llave lo decide esta
       // casa, no una etiqueta que viajó dentro del paquete.
+      /** @param {JsonWebKey} jwk @returns {JsonWebKey} */
       const sinTopes = (jwk) => { const { key_ops: _o, ...resto } = jwk || {}; return resto }
       if (keyStore?.importPair) {
         // DENTRO DE UNA APP NATIVA: la llave que entrega la bóveda la guarda la app (cifrada
@@ -1293,7 +1464,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           name: entrada.acta?.name || entrada.address, profileId: entrada.acta?.profileId || null
         }).then(
           () => emitVault({ phase: 'native-account', ok: true }),
-          (e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
+          (/** @type {any} */ e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
         )
       }
       return { id: pid, name: entrada.user, address: entrada.address, user: entrada.user, sid: entrada.sid, volatile: !remember }
@@ -1308,16 +1479,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   }
 
   /** Deja de tener por nuestra una cuenta de paso: ni en la lista, ni reclamada, ni latiendo. */
+  /** @param {string} pid */
   function forgetVolatile (pid) {
     volatilePids.delete(pid)
     volatileProfiles = volatileProfiles.filter((x) => x.id !== pid)
     const m = loadVolatile()
     if (m[pid]) { delete m[pid]; saveVolatile(m) }
-    try { if (sessionKv?.getItem(VOLATILE_CLAIM) === pid) sessionKv.removeItem(VOLATILE_CLAIM) } catch (_) {}
+    try { if (sessionKv?.getItem(VOLATILE_CLAIM) === pid) /** @type {Kv} */ (sessionKv).removeItem(VOLATILE_CLAIM) } catch (_) {}
     if (volatileBeat) { clearInterval(volatileBeat); volatileBeat = null }
   }
 
   /** Borra una cuenta de paso —con sus llaves— y vuelve a la que este navegador tenía. */
+  /** @param {string} pid */
   async function dropVolatile (pid) {
     forgetVolatile(pid)
     await purgeProfile(pid)
@@ -1335,6 +1508,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * colgado esperándola—, pero borrar la cuenta de este navegador no lo es: eso pasa siempre.
    * La plaza que quede abierta allí se cierra desde la consola, y así está dicho en el diseño.
    */
+  /** @param {Record<string, any> | null} meta @returns {Promise<Record<string, any>>} */
   async function closeLoginOn (meta) {
     if (!meta?.user || !meta?.sid) return { ok: false, reason: 'no-login' }
     let client = null
@@ -1355,8 +1529,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       return { ok: false, reason: 'no-vault' }
     } catch (e) {
-      return { ok: false, reason: e?.code || 'no-answer' }
-    } finally { try { client?.close() } catch (_) {} }
+      return { ok: false, reason: /** @type {any} */ (e)?.code || 'no-answer' }
+    } finally { try { /** @type {any} */ (client)?.close() } catch (_) {} }
   }
 
   /**
@@ -1373,10 +1547,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * acta sin preguntar: una cuenta con su contenido pasaba a colgar de otra en silencio —
    * justo la fusión de cuentas que el modelo prohíbe (§4). Eso se acabó.
    */
+  /** @param {any} candidate */
   async function joinProfile (candidate) {
     const v = await Acta.verifyActa({ acta: candidate })
     if (!v.ok) return { joined: false, reason: 'invalid-record:' + v.reason }
-    if (!candidate.members.some((m) => m.pub === publickeyJwkStr)) {
+    if (!candidate.members.some((/** @type {any} */ m) => m.pub === publickeyJwkStr)) {
       return { joined: false, reason: 'not-a-member' }
     }
     const current = loadActa()
@@ -1412,6 +1587,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * cert contra la bóveda y entra a su cuenta. Aparte para que la decisión de CUÁL cuenta y
    * el deshacerla si esto falla vivan juntos arriba, y aquí solo quede el trámite.
    */
+  /**
+   * @param {{ qr: any, label?: string, machine?: any, account?: string | null, requireCaps?: string[] | null }} args
+   */
   async function pairWithVault ({ qr, label = '', machine = undefined, account = null, requireCaps = null }) {
     // Usa la PROPIA llave de identidad de este navegador como dispositivo: el cert delega
     // TU identidad (P) desde la maestra M → una sola identidad (signData/identify/cert = P).
@@ -1441,7 +1619,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         name: res.account || res.acta?.name || '', profileId: res.acta?.profileId || null
       }).then(
         () => emitVault({ phase: 'native-account', ok: true }),
-        (e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
+        (/** @type {any} */ e) => { console.warn('[identity] the phone did not save the account: ' + e.message); emitVault({ phase: 'native-account', ok: false, code: e.code || 'native-error', reason: e.message }) }
       )
     }
     pullProfileFromVault() // adoptar el perfil que ya viva en el vault (si hay)
@@ -1463,11 +1641,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * la manda: entra solo si su hash es el `prev` de la siguiente que ya tengo, y se baja eslabón
    * a eslabón desde las que conozco. Nunca cambia la vigente: solo completa lo que hay detrás.
    */
+  /** @param {any} actas */
   async function fillHistoryNow (actas) {
     const cur = loadActa()
     if (!cur || !Array.isArray(actas) || !actas.length) return { added: 0 }
     const known = new Map([...loadHistory(), cur].map((a) => [a.seq, a]))
-    const offered = new Map(actas.filter((a) => a && a.profileId === cur.profileId && typeof a.seq === 'number').map((a) => [a.seq, a]))
+    /** @type {Map<number, any>} */
+    const offered = new Map(actas.filter((/** @type {any} */ a) => a && a.profileId === cur.profileId && typeof a.seq === 'number').map((/** @type {any} */ a) => [a.seq, a]))
     let added = 0
     for (const s of [...known.keys()].sort((a, b) => b - a)) {
       let node = known.get(s)
@@ -1483,13 +1663,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     }
     return { added }
   }
+  /** @param {any} actas */
   function fillHistory (actas) {
     const run = adoptQueue.then(() => fillHistoryNow(actas))
     adoptQueue = run.catch(() => {})
     return run
   }
 
+  /** @param {any} chain */
   async function adoptChain (chain) {
+    /** @type {any} */
     let last = null
     for (const a of [...(chain || [])].sort((x, y) => x.seq - y.seq)) {
       const r = await adoptActa(a)
@@ -1513,13 +1696,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // estando en la #58, las dos se compararon contra la #58, y la #59 se guardó DESPUÉS — el acta
   // retrocedió y los aparatos con papel de la #60 recibían «stale-record». Con la fila, la
   // segunda se compara contra lo que dejó la primera, y una más vieja se rechaza.
+  /** @type {Promise<unknown>} */
   let adoptQueue = Promise.resolve()
+  /** @param {any} candidate */
   function adoptActa (candidate) {
     const run = adoptQueue.then(() => adoptActaNow(candidate))
     adoptQueue = run.catch(() => {})
     return run
   }
 
+  /** @param {any} candidate */
   async function adoptActaNow (candidate) {
     const current = loadActa()
     const r = await Acta.canAdopt({ candidate, current })
@@ -1534,6 +1720,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   }
 
   /** Guarda la que gana y mira si este aparato sigue dentro (común a las dos formas de adoptar). */
+  /** @param {Acta} candidate @param {string} reason */
   function installActa (candidate, reason) {
     saveActa(candidate)
     emitVault({ phase: 'acta', seq: candidate.seq, sealedBy: candidate.sealedBy, adopted: reason })
@@ -1560,12 +1747,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    *     anclado a él cuando trae ancla.
    * Así toda la autoridad nace en el acta que ya tengo: una rama ajena no entra.
    */
+  /** @param {any} sealerChain */
   async function adoptSealerChainNow (sealerChain) {
     const current = loadActa()
     if (!current) return { adopted: false, reason: 'no-current-record', seq: null }
     const links = (Array.isArray(sealerChain) ? sealerChain : [])
-      .filter((a) => a && a.profileId === current.profileId && typeof a.seq === 'number' && a.seq > current.seq)
-      .sort((a, b) => a.seq - b.seq)
+      .filter((/** @type {any} */ a) => a && a.profileId === current.profileId && typeof a.seq === 'number' && a.seq > current.seq)
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => a.seq - b.seq)
     if (!links.length) return { adopted: false, reason: 'nothing-to-adopt', seq: current.seq }
     const first = await Acta.canAdopt({ candidate: links[0], current })
     if (!first.adopt) return { adopted: false, reason: 'sealer-chain:' + first.reason, seq: current.seq }
@@ -1584,6 +1772,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     for (const a of links.slice(0, -1)) pushHistory(a)
     return installActa(links[links.length - 1], 'sealer-chain')
   }
+  /** @param {any} sealerChain */
   function adoptSealerChain (sealerChain) {
     const run = adoptQueue.then(() => adoptSealerChainNow(sealerChain))
     adoptQueue = run.catch(() => {})
@@ -1648,10 +1837,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
   // ----- me (kv-backed) -----
 
+  /** @returns {Record<string, any> | null} */
   function loadMe () {
     try { const raw = kv.getItem(ME_STORAGE); return raw ? JSON.parse(raw) : null }
     catch (_) { return null }
   }
+  /** @param {Record<string, any>} next */
   function saveMe (next) {
     kv.setItem(ME_STORAGE, JSON.stringify(next))
     me = next
@@ -1660,6 +1851,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
   // ----- endorsement verify / merge (sync) -----
 
+  /** @param {any} env @returns {Promise<boolean>} */
   async function verifyEndorsement (env) {
     if (!env || typeof env !== 'object') return false
     const { subject, rating, notes, ratedBy, issuedAt, signature } = env
@@ -1669,6 +1861,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     catch { return false }
   }
 
+  /** @param {Record<string, any>} localPeers @param {Record<string, any>} remotePeers */
   async function mergePeerMaps (localPeers, remotePeers) {
     const out = { ...localPeers }
     let changed = false
@@ -1749,6 +1942,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     }
   }
 
+  /** @param {'sign' | 'enc'} kind @param {string} storageKey @param {JsonWebKey} privateJwk @param {JsonWebKey} publicJwk */
   async function adoptJwkPair (kind, storageKey, privateJwk, publicJwk) {
     const { algo, privUses } = ALGO_OF[kind]
     if (keyStore) {
@@ -1760,6 +1954,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     }
   }
 
+  /** @param {any} merged */
   async function applyMergedFromSync (merged) {
     const localKeys = kv.getItem(KEY_STORAGE) || (keyStore && (await keyStore.get(_scoped(KEY_STORAGE)).catch(() => null)))
     if (!localKeys && merged.privateJwk && merged.publicJwk) {
@@ -1781,6 +1976,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     if (merged.peers && typeof merged.peers === 'object') setPeersDirect(merged.peers)
   }
 
+  /** @param {any} local @param {any} remote */
   async function mergeForSync (local, remote) {
     if (!remote) return { merged: local, changed: false }
     const { merged: mergedPeers, changed } = await mergePeerMaps(local.peers || {}, remote.peers || {})
@@ -1799,17 +1995,26 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
   // ----- runtime state -----
 
-  let keypair = null
-  let publickeyJwkStr = null
-  let encKeypair = null
-  let encPublickeyJwkStr = null
+  // Las cuatro se rellenan al arrancar (`openProfileInMemory` y el final de este archivo),
+  // ANTES de que se atienda ninguna petición: por eso su tipo no lleva `null`.
+  /** @type {LoadedPair} */
+  let keypair = /** @type {any} */ (null)
+  /** @type {string} */
+  let publickeyJwkStr = /** @type {any} */ (null)
+  /** @type {LoadedPair} */
+  let encKeypair = /** @type {any} */ (null)
+  /** @type {string} */
+  let encPublickeyJwkStr = /** @type {any} */ (null)
+  /** @type {any} el respaldo en Drive (`createSync`), si lo hay */
   let sync = null
-  let me = null
+  /** @type {Record<string, any>} el perfil: apodo, avatar, campos (se rellena al arrancar) */
+  let me = /** @type {any} */ (null)
 
   // ----- handlers (idénticos a la versión iframe) -----
 
   // Merge de un patch de perfil en `me` (preserva lo demás), saneado. Refleja el nombre en la
   // meta del perfil (para el switcher). Devuelve el `me` resultante.
+  /** @param {Record<string, any> | null | undefined} patch */
   function applyMeUpdate (patch) {
     const clean = sanitizeProfilePatch(patch || {})
     me = { ...(me || {}), ...clean, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, updatedAt: Date.now() }
@@ -1835,10 +2040,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * quien pregunta desde fuera. Lo que cambia es que ahora esa marca decide **cómo se
    * guarda** —en claro o en sobre— y no solo qué se enseña (`docs/datos-del-perfil.md` §2).
    *
+   * @param {Record<string, any>} m
    * @returns {Array<{key:string, value:string, cls:'public'|'private'}>}
    */
   function profileFields (m) {
+    /** @type {Array<{key:string, value:string, cls:'public'|'private'}>} */
     const out = []
+    /** @param {string} key @param {unknown} value @param {boolean} esPublico */
     const add = (key, value, esPublico) => {
       if (typeof value !== 'string' || !value) return
       out.push({ key, value, cls: esPublico ? 'public' : 'private' })
@@ -1849,7 +2057,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     for (const [k, cls] of Object.entries(clases)) add(k, m[k], cls === 'public')
     // Enlaces y campos libres viajan como UN dato cada lista: son arrays y partirlos por
     // elemento haría que reordenarlos pareciera media docena de cambios.
+    /** @param {any[] | null | undefined} arr */
     const visibles = (arr) => (arr || []).filter((x) => x.visible !== false).map(({ visible, ...r }) => r)
+    /** @param {any[] | null | undefined} arr */
     const ocultos = (arr) => (arr || []).filter((x) => x.visible === false)
     if (Array.isArray(m.links)) {
       const v = visibles(m.links); if (v.length) add('links', JSON.stringify(v), true)
@@ -1873,12 +2083,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * Solo se manda LO QUE CAMBIÓ: cada escritura estrena generación, y reescribir un dato
    * que no cambió llenaría el llavero y el histórico de ruido.
    */
+  /** @param {VaultLink} v @param {DeviceKey} device */
   async function pushProfileFields (v, device) {
     const campos = profileFields(me || {})
     const pendientes = campos.filter((c) => lastPushedFields[c.key] !== c.cls + '\u0000' + c.value)
     if (!pendientes.length) return
 
     const privados = pendientes.filter((c) => c.cls === 'private')
+    /** @type {any} */
     let destinatarios = null
     if (privados.length) {
       destinatarios = await remoteStore({
@@ -1891,6 +2103,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     }
 
     for (const c of pendientes) {
+      /** @type {{ key: string, cls: string, value?: string, sobre?: any }} */
       const args = { key: c.key, cls: c.cls }
       if (c.cls === 'public') {
         args.value = c.value
@@ -1899,6 +2112,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         // navegador, sin que ninguna privada ande suelta.
         const cek = await Content.makeContentKey()
         const e = await Content.encryptWithCek({ cek, gen: 0, plaintext: c.value })
+        /** @type {Record<string, any>} */
         const wraps = { '#recovery': await Content.wrapForMember({ cek, memberEncPub: destinatarios.recoveryPub }) }
         for (const m of destinatarios.members || []) {
           if (m.encPub) wraps[m.pub] = await Content.wrapForMember({ cek, memberEncPub: m.encPub })
@@ -1911,9 +2125,11 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   }
 
   /** Lo último que se consiguió empujar de cada dato, para no reescribir lo que no cambió. */
+  /** @type {Record<string, string>} */
   const lastPushedFields = Object.create(null)
 
-  let profilePushTimer = null
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let profilePushTimer
   /**
    * CÓMO FUE EL ÚLTIMO EMPUJÓN. Se guarda para que la UI pueda decir «esto no se guardó»
    * en vez de enseñar un perfil que solo existe en este aparato. Sin esto, el usuario ve
@@ -1923,6 +2139,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // intentó» y «salió bien» se veían igual — un valor por defecto que dice que sí, en la
   // función que existe justamente para no tragarse el fallo. Quien pregunte tiene que
   // poder distinguir las tres cosas, y por eso son tres valores y no dos.
+  /** @type {{ ok: boolean | null, at: number, error: string | null }} */
   let lastProfilePush = { ok: null, at: 0, error: null }
   function pushProfileToVault () {
     const v = loadVaultCert(); const device = loadVaultDevice()
@@ -1937,7 +2154,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           // edición se encontraba la bóveda cerrada otra vez, y mientras tanto el aparato
           // se quedaba con datos que nadie más tenía. Es exactamente lo que produjo el
           // «edito y no funciona, y cada dispositivo ve algo distinto».
-          lastProfilePush = { ok: false, at: Date.now(), error: e?.message || String(e) }
+          lastProfilePush = { ok: false, at: Date.now(), error: /** @type {any} */ (e)?.message || String(e) }
           try { console.warn('[identity] the profile change did NOT reach the vault:', lastProfilePush.error) } catch (_) {}
         })
     }, 800) // debounce: ediciones seguidas = un solo push
@@ -1968,13 +2185,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       if (v?.cert && loadVaultDevice()) return                      // con papel, ya lo comprueba el camino normal
       const r = await remoteCheck({
         acta,
-        master: Acta.sealersOf(acta)[0] || null,
+        master: /** @type {string} */ (Acta.sealersOf(acta)[0] || null),
         proxy: v?.proxy || 'wss://proxy.dotrino.com',
         device: { publickey: publickeyJwkStr, privateKey: masterKey() },
         onRevoked: wipeVaultLink
       })
       if (r?.error) console.warn('[identity] could not confirm membership with the vault:', r.error)
-    } catch (e) { console.warn('[identity] could not confirm membership with the vault:', e?.message || e) }
+    } catch (e) { console.warn('[identity] could not confirm membership with the vault:', /** @type {any} */ (e)?.message || e) }
   }
 
   /**
@@ -1992,11 +2209,13 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * `links`/`fields` viajan como UN dato cada lista (y su gemelo privado), así que aquí se
    * vuelven a juntar con su marca de visibilidad — que es de dónde salió la separación.
    */
+  /** @param {Record<string, any>} content @returns {boolean} */
   function applyPulledProfile (content) {
     const antes = JSON.stringify(me || {})
     const next = { ...(me || {}) }
+    /** @param {string} json @param {boolean} visible */
     const lista = (json, visible) => {
-      try { return (JSON.parse(json) || []).map((x) => ({ ...x, visible })) } catch (_) { return [] }
+      try { return (JSON.parse(json) || []).map((/** @type {any} */ x) => ({ ...x, visible })) } catch (_) { return [] }
     }
     for (const [k, v] of Object.entries(content)) {
       if (k === 'links' || k === 'fields' || k === 'links_private' || k === 'fields_private') continue
@@ -2038,9 +2257,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         if (me?.nickname || me?.avatar) pushProfileToVault()
         return
       }
-      const keyring = (b.wraps || []).map((w) => ({ gen: w.gen, wraps: { [publickeyJwkStr]: w.wrap } }))
+      const keyring = (b.wraps || []).map((/** @type {any} */ w) => ({ gen: w.gen, wraps: { [publickeyJwkStr]: w.wrap } }))
+      /** @type {Record<string, any>} */
       const content = {}
-      for (const [key, e] of Object.entries(entries)) {
+      for (const [key, e] of Object.entries(/** @type {Record<string, any>} */ (entries))) {
         try {
           if (e.cls === 'public') { content[key] = e.pubv; continue }
           content[key] = await Content.decryptWithKeyring({
@@ -2066,7 +2286,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   const PWD_SESSION = 'dotrino.identity.pwd.proof'
   const PWD_ITER = 300000
   let locked = false
+  /** @param {ArrayBuffer | Uint8Array} buf */
   const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  /** @param {unknown} password @param {string} saltB64 @param {number} iter @returns {Promise<string>} */
   async function derivePwd (password, saltB64, iter) {
     const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0))
     const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(password)), 'PBKDF2', false, ['deriveBits'])
@@ -2104,6 +2326,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
    * lo que ya estuviera concedido y nada más. **No se amplía en silencio**: sin respuesta,
    * la respuesta es no.
    */
+  /** @param {unknown} origin @param {string[]} pedidos @param {unknown} [onBehalfOf] @returns {Promise<string[]>} */
   async function consentFor (origin, pedidos, onBehalfOf = null) {
     const org = String(origin || '').trim()
     const behalf = behalfName(onBehalfOf)
@@ -2157,6 +2380,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       refreshLockState()
       return { protected: !!loadPwd(), locked }
     },
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async unlockProfile ({ password }) {
       const pwd = loadPwd()
       if (!pwd) { locked = false; return { ok: true, locked: false } }
@@ -2183,6 +2407,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { ok: true, locked: false }
     },
     // Poner/cambiar contraseña (requiere estar desbloqueado; cambiar exige la actual vía unlock previo).
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async setProfilePassword ({ password }) {
       if (locked) throw new Error('profile locked')
       if (!password || String(password).length < 4) throw new Error('password must be at least 4 characters')
@@ -2205,6 +2430,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { nonce }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async signChallenge ({ nonce }) {
       if (!nonce || typeof nonce !== 'string') throw new Error('nonce required')
       const bytes = new TextEncoder().encode(nonce)
@@ -2212,6 +2438,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { nonce, publickey: publickeyJwkStr, encryptionPubkey: encPublickeyJwkStr, signature }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async verifyResponse ({ nonce, publickey, signature, encryptionPubkey }) {
       if (!nonce || !publickey || !signature) return { ok: false }
       if (!isFreshNonce(nonce)) return { ok: false, reason: 'nonce expired or unknown' }
@@ -2224,6 +2451,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { ok: true, publickey, encryptionPubkey: encryptionPubkey || null, peer }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async getPeer ({ publickey }) {
       const p = loadPeers()
       return p[publickey] || null
@@ -2235,16 +2463,19 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * recibirla—, viaja con el libro de contactos a tu bóveda y a tus aparatos, y lo respeta
      * cada app que recibe mensajes (el messenger, el primero). Desbloquear deja `false` y no
      * borra el campo: así el cambio también llega a los demás aparatos.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setBlocked ({ publickey, blocked }) {
       if (!publickey) throw new Error('publickey required')
       return upsertPeer(publickey, { blocked: !!blocked, changedAt: Date.now() })
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async setNickname ({ publickey, nickname }) {
       return upsertPeer(publickey, { nickname: String(nickname || '').slice(0, 40) })
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async setRating ({ publickey, rating, notes }) {
       const r = Math.max(0, Math.min(5, Number(rating) || 0))
       const safeNotes = typeof notes === 'string' ? notes.slice(0, 500) : ''
@@ -2256,6 +2487,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return upsertPeer(publickey, { myRating, rating: r, notes: safeNotes })
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async mergeEndorsements ({ subject, endorsements, askerPubkey }) {
       if (!subject || !Array.isArray(endorsements)) return { merged: 0, total: 0 }
       const peersMap = loadPeers()
@@ -2294,12 +2526,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { merged, total: all.length }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async getRatingsForSubject ({ subject }) {
       const p = loadPeers()
       const r = p[subject]
       return { mine: r?.myRating || null, endorsements: Array.isArray(r?.endorsements) ? r.endorsements : [] }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async recordQuery ({ askerPubkey, subject }) {
       if (!askerPubkey || askerPubkey === publickeyJwkStr) return null
       const peersMap = loadPeers()
@@ -2320,14 +2554,17 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return Object.values(loadPeers()).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async forgetPeer ({ publickey }) {
       const p = loadPeers()
       delete p[publickey]
       savePeers(p)
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async addContact ({ publickey, nickname, encryptionPubkey, lastToken, notes }) {
       if (!publickey) throw new Error('publickey required')
+      /** @type {Record<string, any>} */
       const patch = { isContact: true }
       if (nickname != null) patch.nickname = String(nickname).slice(0, 40)
       if (encryptionPubkey) patch.encryptionPubkey = encryptionPubkey
@@ -2336,14 +2573,17 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return upsertPeer(publickey, patch)
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async updateContact ({ publickey, patch }) {
       if (!publickey) throw new Error('publickey required')
       if (!patch || typeof patch !== 'object') return null
+      /** @type {Record<string, any>} */
       const allowed = {}
       for (const k of ['nickname', 'encryptionPubkey', 'lastToken', 'contactNotes']) if (k in patch) allowed[k] = patch[k]
       return upsertPeer(publickey, allowed)
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async removeContact ({ publickey }) {
       const p = loadPeers()
       const rec = p[publickey]
@@ -2365,6 +2605,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * El `identify` del transporte es la excepción y SIEMPRE se firma en local: es lo que
      * identifica esta conexión ante el proxy, no una firma tuya de cara a nadie, y sin él
      * el dispositivo no podría ni hablar con la bóveda para pedirle que firme.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async signData ({ data }) {
       if (data == null) throw new Error('data required')
@@ -2447,6 +2688,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Retirar lo concedido a una aplicación. La próxima vez que pida, se vuelve a preguntar.
      * `onBehalfOf` es obligatorio para las que piden por otro (el puente): retirar el permiso
      * de UNA no puede quitárselo a todas las que entran por el mismo sitio.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async revokeGrant ({ origin, onBehalfOf } = {}) {
       const g = loadGrants()
@@ -2464,6 +2706,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Es una AFIRMACIÓN del origen, no un hecho comprobable — y por eso se enseña siempre
      * subordinado a él («sso.dotrino.com dice: Tal App»), nunca en su lugar. Quien
      * responde por lo que pase sigue siendo el origen.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async requestAssertion ({ audience, nonce, scopes, ttlMs, onBehalfOf, __origin } = {}) {
       if (typeof audience !== 'string' || !audience.trim()) throw new Error('audience required')
@@ -2473,8 +2716,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const sub = acta?.profileId || publickeyJwkStr
       const granted = await consentFor(__origin, cleanScopes(scopes), onBehalfOf)
       const permitido = claimsAllowed(granted)
+      /** @type {Record<string, unknown>} */
       const claims = {}
       if (permitido.size) {
+        /** @type {Record<string, any>} */
         const pub = await handlers.publicMe()
         if (permitido.has('name')) {
           const n = pub.nickname || [pub.nombres, pub.apellidos].filter(Boolean).join(' ').trim()
@@ -2505,6 +2750,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `ttlMs`/`exp` se aceptan y se IGNORAN a propósito, para no romper a quien todavía los
      * pasa (el daemon, `enroll.js`). Reventar ahí dejaría sin emparejar a media cadena por
      * un parámetro que ya no significa nada.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async signDelegation ({ sub, scope, nonce, label, supersede }) {
       if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
@@ -2518,7 +2764,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // `iss` se FUERZA a la propia maestra: el usuario no puede emitir cert para otro emisor.
       const cert = await signDelegationWith(masterKey(), publickeyJwkStr, { sub, scope, iat, seq: acta.seq, nonce: nonce || crypto.randomUUID() })
       const store = loadDelegations()
-      store[cert.nonce] = { nonce: cert.nonce, sub, scope, iat, seq: acta.seq, label: typeof label === 'string' ? label.slice(0, 60) : '' }
+      // `nonce` va siempre: se pasa arriba, dado o recién sacado.
+      store[/** @type {string} */ (cert.nonce)] = { nonce: cert.nonce, sub, scope, iat, seq: acta.seq, label: typeof label === 'string' ? label.slice(0, 60) : '' }
       saveDelegations(store)
       // UNA LLAVE, UN CERTIFICADO VIGENTE. Renovar emitía uno nuevo y dejaba vivo el
       // anterior: el mismo aparato salía dos veces en la lista (parecían dos máquinas) y,
@@ -2534,12 +2781,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Retira TODOS los certificados vigentes de un dispositivo (por su llave `sub`).
      * Es lo que significa «quitar el dispositivo»: revocar por `nonce` retira un papel,
      * no al aparato, que puede tener otros.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async revokeDevice ({ sub }) {
       if (!sub || typeof sub !== 'string') throw new Error('sub (device pubkey) required')
       return removeDevice(sub)
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async revokeDelegation ({ nonce }) {
       if (!nonce || typeof nonce !== 'string') throw new Error('nonce required')
       const rev = loadRevocations()
@@ -2588,23 +2837,27 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // no le corresponde»). Un acta guardada que no nombra la llave del propio perfil no es la de
       // su cuenta —una copia cruzada o de antes—, y sus bóvedas no son de ese perfil: no se listan.
       // Lo mismo el papel: solo vale el que se emitió para la llave de ese perfil.
+      /** @param {string} pid @param {string | null} mine @param {string | null} certMaster */
       const vaultsOf = async (pid, mine, certMaster) => {
         if (!mine) return []
+        /** @type {import('./acta.js').ActaMember[]} */
         let members = []
         try {
           const raw = pid === currentPid ? kv.getItem(ACTA_STORAGE) : rawKv.getItem(`dotrino.identity.p.${pid}.acta`)
           members = (raw ? JSON.parse(raw) : null)?.members || []
         } catch (_) { members = [] }
         if (!members.some((m) => m.pub === mine)) members = []
+        /** @type {Array<{ comm: string | null, master: string, id: string, label: string }>} */
         const out = await Promise.all(members.filter((m) => m.cn === Acta.VAULT_CN && m.vault).map(async (m) => {
           const owner = members.find((x) => x.pub === m.vault)
-          return { comm: m.pub, master: m.vault, id: await Acta.memberId(m.vault), label: owner?.label || '' }
+          const master = /** @type {string} */ (m.vault)
+          return { comm: m.pub, master, id: await Acta.memberId(master), label: owner?.label || '' }
         }))
         if (certMaster && !out.some((v) => v.master === certMaster)) {
           // Un papel con una maestra ilegible no puede tumbar la lista entera, que es el menú de
           // perfiles de todas las apps: esa bóveda no sale, y se dice.
           let id = null
-          try { id = await Acta.memberId(certMaster) } catch (e) { console.warn(`[identity] profile ${pid}: the vault named by its certificate is not a key (${e.message})`) }
+          try { id = await Acta.memberId(certMaster) } catch (e) { console.warn(`[identity] profile ${pid}: the vault named by its certificate is not a key (${/** @type {any} */ (e).message})`) }
           if (id) out.push({ comm: null, master: certMaster, id, label: members.find((x) => x.pub === certMaster)?.label || '' })
         }
         return out
@@ -2645,6 +2898,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }))
     },
     async currentProfile () {
+      /** @type {Partial<ProfileEntry>} */
       const e = loadProfiles().find((p) => p.id === currentPid) || {}
       return { id: currentPid, name: e.name || me?.nickname || '', pubkey: publickeyJwkStr }
     },
@@ -2654,6 +2908,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `forVault: true` la marca como **nacida para adoptar** la cuenta de una bóveda
      * (camino B): es el único permiso que acepta `joinProfile`, y se consume al unirse.
      * Sin la marca, la cuenta es de este dispositivo y nadie se la puede llevar.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async createProfile ({ name, forVault = false } = {}) {
       const pid = 'p' + crypto.randomUUID().slice(0, 8)
@@ -2670,6 +2925,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       await ensureActa(me.nickname) // el perfil nuevo nace con su acta (él mismo es el master)
       return { id: pid, name: me.nickname, pubkey: publickeyJwkStr, pendingJoin: !!forVault }
     },
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async switchProfile ({ id } = {}) {
       if (!loadProfiles().find((p) => p.id === id)) throw new Error('profile does not exist')
       // Una cuenta volátil no puede ser «la activa» de este navegador: vive en la memoria de
@@ -2683,6 +2939,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       rawKv.setItem(CURRENT_STORAGE, id) // la app recarga la página → re-init con el nuevo perfil
       return { id }
     },
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async renameProfile ({ id, name } = {}) {
       const list = loadProfiles(); const e = list.find((p) => p.id === (id || currentPid))
       if (!e) throw new Error('profile does not exist')
@@ -2696,6 +2953,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * La alerta es de la INTERFAZ, que pregunta antes. Si era la activa, `current` dice cuál
      * queda, y la app tiene que RECARGAR; si no queda ninguna, el arranque estrena una nueva
      * y vacía (ver `purgeProfile`).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async deleteProfile ({ id } = {}) {
       if (!loadProfiles().find((p) => p.id === id)) throw new Error('profile does not exist')
@@ -2717,6 +2975,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *
      * La contraseña NO viaja: lo que viaja son los mensajes de OPAQUE, que no la llevan ni
      * dejan adivinarla (`@dotrino/vault/login-client`).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async loginWithPassword ({ address, password, remember = false, label = '', proxyUrl = null } = {}) {
       const url = proxyUrl || DEFAULT_PROXY
@@ -2734,6 +2993,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /**
      * SALIR del inicio de sesión con contraseña: se le dice a la bóveda que suelte la plaza
      * y la cuenta desaparece de este navegador. Sin `id`, el activo.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async logoutLogin ({ id = null } = {}) {
       const pid = id || currentPid
@@ -2785,6 +3045,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *
      * Es opt-in a propósito: una identidad de navegador no sella nada, y un acta sin llave
      * de sellado es perfectamente válida.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     setSealKeyProvider ({ provider } = {}) {
       sealKeyProvider = typeof provider === 'function' ? provider : null
@@ -2802,7 +3063,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { ok: true, seq: acta.seq, sealPub: acta.sealPub }
     },
 
-    /** La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS. */
+    /**
+     * La llave con la que se firmaron los sobres de un acta dada. Para VERIFICARLOS.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     sealKeyAt ({ seq, vault = null } = {}) {
       return Acta.sealKeyAt(loadActa(), seq, vault)
     },
@@ -2858,6 +3122,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * estrena pubkey, y su cajón de variables va indexado por la vieja, así que
      * arrancaría sin configuración y sin decirlo. Esto le pone la llave sin moverle
      * nada más.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setMemberEncPub ({ pub, encPub } = {}) {
       const acta = await sealChanges([{ op: 'encpub', pub, encPub }])
@@ -2867,6 +3132,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /**
      * Admite un miembro (solo el master). El cert lo emite quien llama, antes o después.
      * `continuity`: si esa identidad ya existía por su cuenta, su puente firmado (F3).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async admitMember ({ pub, encPub = null, label = '', cn = null, caps = null, cert = null, continuity = null, machine = null, vault = null } = {}) {
       // `cn`: si viene, este miembro es un SERVICIO: abre el cajón de secretos de ESE nombre
@@ -2893,12 +3159,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * DE QUÉ BÓVEDA ES una llave de comunicación (`vault`: su maestra). La pone la propia
      * bóveda a la llave que entró antes de existir el campo; sin él, con dos bóvedas en la
      * cuenta no hay forma de escribirle a una sola.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setMemberVault ({ pub, vault } = {}) {
       const acta = await sealChanges([{ op: 'vault', pub, vault }])
       return { ok: true, seq: acta.seq }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async setCaps ({ pub, caps } = {}) {
       const acta = await sealChanges([{ op: 'caps', pub, caps }])
       return { ok: true, seq: acta.seq }
@@ -2908,7 +3176,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * LOS PERMISOS DE VARIOS APARATOS EN UNA SOLA ACTA (dueño, 2026-09-26). Editar tres
      * aparatos eran tres actas y tres avisos; ahora el borrador entero se sella de golpe.
      * `changes`: `[{ pub, caps }]`, cada `caps` la lista COMPLETA de ese aparato.
-     * @param {{ changes?: Array<{ pub: string, caps: string[] }> }} [args]
+     * @param {{ changes?: Array<{ pub: string, caps?: string[], cn?: string | null }> }} [args]  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setCapsMany ({ changes } = {}) {
       if (!Array.isArray(changes) || !changes.length) throw new Error('setCapsMany: no changes')
@@ -2942,6 +3210,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * TAMBIÉN en la delegación: son dos registros distintos —el acta dice quién es del
      * perfil, las delegaciones qué certs se emitieron— y las listas de dispositivos leen
      * la segunda, así que tocar solo una deja el nombre viejo a la vista.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setLabel ({ pub, label } = {}) {
       const limpio = String(label || '').slice(0, 60)
@@ -2953,6 +3222,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { ok: true, seq: acta.seq, label: limpio, delegations: tocadas }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async removeMember ({ pub } = {}) {
       return removeDevice(pub)
     },
@@ -2968,6 +3238,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * poder sellar uno mismo, en el mismo acto— ya no se puede: nadie se quita el sello a
      * sí mismo (dejaría un acta que él firma sin poder firmarla). Si quieres salir, se lo
      * pides al otro cuando ya pueda sellar.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async handoverMaster ({ to, member = null } = {}) {
       const changes = []
@@ -2986,6 +3257,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * RENUNCIA (§2.2): este dispositivo se quita capacidades a sí mismo. No pasa por el
      * master —por eso funciona con la bóveda apagada, que es justo cuando hace falta (te
      * robaron el aparato)— y solo puede QUITAR, así que cualquiera puede honrarla.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async renounceCaps ({ caps } = {}) {
       const acta = loadActa()
@@ -3017,7 +3289,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { ok: true, record, caps: Acta.effectiveCaps(loadActa(), publickeyJwkStr, loadRenounces()) }
     },
 
-    /** Absorbe en el acta una renuncia ajena ya verificada (solo el master). */
+    /**
+     * Absorbe en el acta una renuncia ajena ya verificada (solo el master).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async absorbRenounce ({ record } = {}) {
       if (!(await Acta.verifyRenounce(record))) throw new Error('invalid renounce: the signature is not the member own')
       const acta = await sealChanges([{ op: 'renounce', record }])
@@ -3034,6 +3309,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Cifra algo con la clave de contenido del perfil. Devuelve el sobre MARCADO
      * `{ t: 'dotrino-cek', gen, iv, ct }` (la marca deja a la bóveda reconocerlo y volver a
      * cerrarlo al rotar). La llave privada de cifrado NUNCA sale de aquí.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async sealContent ({ plaintext } = {}) {
       const mine = await myCek()
@@ -3052,6 +3328,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *
      * Distinto de `openContent`, que usa el llavero del PERFIL (el contenido del usuario);
      * aquí la envoltura viene suelta, del llavero de un cajón de secretos.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async openSealedValue ({ wrap, envelope } = {}) {
       if (!wrap || !envelope) throw new Error('openSealedValue: missing the wrap or the envelope')
@@ -3072,8 +3349,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * es a alguien que el ACTA —firmada por la maestra— ya reconoce como miembro. La
      * autorización es el acta; esto solo es el sobre.
      *
-     * @param {{ wrap: any, encPub: string }} o `wrap`: mi envoltura · `encPub`: la
-     *   pública de cifrado del miembro al que hay que envolvérsela.
+     * @param {{ wrap?: any, encPub?: string }} [o] `wrap`: mi envoltura · `encPub`: la
+     *   pública de cifrado del miembro al que hay que envolvérsela. Llega sin comprobar.
      * @returns {Promise<any>} la envoltura nueva, para que la bóveda la guarde.
      */
     async rewrapFor ({ wrap, encPub } = {}) {
@@ -3082,7 +3359,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return Content.wrapForMember({ cek, memberEncPub: encPub })
     },
 
-    /** Abre un sobre de contenido con el llavero del perfil (todas las generaciones). */
+    /**
+     * Abre un sobre de contenido con el llavero del perfil (todas las generaciones).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async openContent ({ envelope } = {}) {
       return Content.decryptWithKeyring({
         envelope, keyring: loadActa()?.keyring, myPub: publickeyJwkStr, myEncPrivateKey: encKeypair.privateKey
@@ -3116,6 +3396,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * conexión de la bóveda con un 1009 y la dejaba muda para TODO el ecosistema, sin un
      * solo log de su lado (2026-08-24: el bot social dejó de publicar y eco se quedó sin un
      * eco que mostrar).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async actaHistory ({ sinceSeq = 0 } = {}) {
       const cur = loadActa()
@@ -3170,6 +3451,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Guarda la tarjeta de OTRA persona en su ficha de contacto. La primera vez se acepta
      * (es el mismo criterio con el que agregaste el contacto); después solo si no retrocede
      * y la firmó el mismo master. Si el master cambió, se avisa en vez de aceptarlo callando.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async adoptPeerCard ({ card } = {}) {
       if (!card?.profileId) throw new Error('invalid card')
@@ -3181,26 +3463,44 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return { adopted: true, reason: r.reason, devices: card.keys.length }
     },
 
-    /** Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso). */
+    /**
+     * Adopta un acta que llega de otro miembro (gana el seq mayor; a igual seq, el traspaso).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async adoptActa ({ acta } = {}) { return adoptActa(acta) },
 
-    /** Adopta una cadena completa (para ponerse al día tras estar apagado). */
+    /**
+     * Adopta una cadena completa (para ponerse al día tras estar apagado).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async adoptActaChain ({ chain } = {}) { return adoptChain(chain) },
 
-    /** Se pone al día por la cadena de selladoras (`adoptSealerChainNow`). */
+    /**
+     * Se pone al día por la cadena de selladoras (`adoptSealerChainNow`).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async adoptActaBySealerChain ({ sealerChain } = {}) { return adoptSealerChain(sealerChain) },
 
-    /** Completa el historial con las actas que falten detrás de la vigente (`fillHistoryNow`). */
+    /**
+     * Completa el historial con las actas que falten detrás de la vigente (`fillHistoryNow`).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async fillActaHistory ({ actas } = {}) { return fillHistory(actas) },
 
-    /** Las últimas actas que guardo, con la vigente: lo que otra bóveda necesita para rellenar. */
+    /**
+     * Las últimas actas que guardo, con la vigente: lo que otra bóveda necesita para rellenar.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async recentActas ({ count = 10 } = {}) {
       const cur = loadActa()
       if (!cur) return { actas: [] }
       return { actas: [...loadHistory().filter((a) => a.seq < cur.seq).slice(-Math.max(0, count - 1)), cur] }
     },
 
-    /** Une este dispositivo al perfil de otra bóveda (solo si aquí no hay nada que perder). */
+    /**
+     * Une este dispositivo al perfil de otra bóveda (solo si aquí no hay nada que perder).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     */
     async joinProfile ({ acta } = {}) { return joinProfile(acta) },
 
     // ----- emparejar ESTE dispositivo con el vault del usuario (Fase 1) -----
@@ -3227,6 +3527,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *                   `profileId`); lo que cambia es quién sella. Solo puede hacerlo el
      *                   master: si esta cuenta ya la manda otra bóveda, no hay nada que
      *                   regalar y falla en voz alta.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async vaultPair ({ qr, label = '', join = 'current', machine = undefined, account = null, requireCaps = null }) {
       if (join === 'adopt') return handlers.vaultAdopt({ qr, label, machine })
@@ -3282,6 +3583,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * Requisito (§2 del doc): solo puede hacerlo el master. Si esta cuenta ya la manda otra
      * bóveda, este aparato no puede regalar lo que no tiene; el traspaso se hace desde la
      * que manda hoy.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async vaultAdopt ({ qr, label = '', machine = undefined } = {}) {
       const mine = loadActa()
@@ -3301,6 +3603,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         // Admitir + envolver + traspasar, en UN solo sello. Se ejecuta cuando la bóveda ya
         // fue aprobada por un humano (el código de 6 dígitos volvió correcto).
         onAdopt: async ({ pub, encPub, label: vlabel }) => {
+          /** @type {any[]} */
           const cambios = [{ op: 'admit', member: { pub, encPub, label: vlabel || 'bóveda', caps: ['sign', 'store', 'read'] } }]
           // Sin la clave de contenido envuelta, la bóveda entraría mandando pero sin poder
           // leer nada de lo que guarda la cuenta que acaba de recibir.
@@ -3342,7 +3645,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
 
     /**
      * La página dice dónde corre (`machine.js`); se manda con los pedidos a la bóveda.
-     * @param {any} [args]
+     * @param {HandlerParams} [args]  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async setMachine ({ machine } = {}) {
       pageMachine = Acta.cleanMachine(machine)
@@ -3366,6 +3669,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // Firma DELEGADA: pide a la maestra del vault que firme `payload` (con el cert de
     // este dispositivo). Aditivo y explícito — NO cambia `signData` (que sigue local),
     // así nada se rompe si no estás emparejado o si el vault está apagado.
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async vaultSign ({ payload }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
       if (!v?.cert || !device) throw new Error('this device is not paired with a vault')
@@ -3386,6 +3690,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * envuelto la clave. Ahora falla con `no-content-key`, que se arregla entrando al
      * perfil desde un aparato que ya la tenga — y se ve, en vez de viajar a la vista.
      * Por lo mismo, una respuesta sin cifrar tampoco se acepta.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async vaultStore ({ method, args, wake = true }) {
       const v = loadVaultCert(); const device = loadVaultDevice()
@@ -3429,6 +3734,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * `op`: `pending` · `pair` · `approve` · `reject` · `revoke` · `audit`. Cambiar
      * permisos y traspasar el mando NO están, y no es un olvido: eso sigue siendo del
      * master, en su máquina.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async vaultAdmin ({ op, to = null, ...rest } = {}) {
       const link = adminLink()
@@ -3444,6 +3750,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
       // LAS CONCESIONES (`grants`) traen el comando sellado a este aparato, como los pedidos:
       // se abre aquí, donde está la llave. Lo que no trae nada sellado pasa tal cual.
+      /** @param {any} r */
       const opened = async (r) => (Array.isArray(r?.items) ? { ...r, items: await abrirContextos(r.items, currentPid) } : r)
       if (link.self) return opened(await remoteAdmin({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest }))
       maybeRenewVaultCert()
@@ -3458,6 +3765,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *
      * `profile` apunta a OTRA cuenta de este mismo dispositivo (ver `vaultApprovalsAll`):
      * sin él es la activa, como siempre.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async vaultApprovals ({ op, id, profile = null, notify } = {}) {
       if (profile && profile !== currentPid) return approvalsDeOtroPerfil(profile, { op, id })
@@ -3470,6 +3778,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         return r
       }
       maybeRenewVaultCert()
+      /** @param {any} cert */
       const ask = (cert) => remoteApproval({ acta: loadActa(), master: v.master, proxy: v.proxy, device, cert, op, id, notify, onRevoked: wipeVaultLink })
       try {
         let r
@@ -3480,7 +3789,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           // «unauthorized: scope» para siempre. Se renueva UNA vez y se reintenta; la bóveda
           // decide qué papel toca según SU acta. Un aparato revocado o sin el permiso no se
           // reintenta: renovar no lo arregla y esconder el motivo sería peor.
-          if (e?.code !== 'unauthorized' || !PAPER_REASONS.has(e.reason)) throw e
+          const err = /** @type {any} */ (e)
+          if (err?.code !== 'unauthorized' || !PAPER_REASONS.has(err.reason)) throw e
           r = await ask(await renovarCert())
         }
         // El comando de cada pedido viene sellado a este aparato: se abre aquí, que es
@@ -3509,7 +3819,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * (eso escribe, y escribir en otra cuenta desde la pantalla de otra es pedir un lío).
      * Mirar es de solo lectura; si el papel de una cuenta está desfasado, se dice y punto.
      *
-     * @returns {Promise<Array<{ profile, name, items, error? }>>} una entrada por cuenta que
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
+     * @returns {Promise<Array<{ profile: string, name: string, current: boolean, items: any[], error?: string }>>} una entrada por cuenta que
      *   aprueba — con sus pedidos, o con el motivo por el que no se pudo preguntar.
      */
     async vaultApprovalsAll ({ notify } = {}) {
@@ -3525,7 +3836,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const base = { profile: p.id, name: p.name || '', current: p.id === currentPid }
         let device = null
         try { device = p.id === currentPid ? (propia?.device || loadVaultDevice()) : await signerForProfile(p.id) } catch (e) {
-          return { ...base, items: [], error: e?.code || 'no-key' }
+          return { ...base, items: [], error: /** @type {any} */ (e)?.code || 'no-key' }
         }
         if (!device) return { ...base, items: [], error: 'no-key' }
         try {
@@ -3535,16 +3846,18 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           const items = Array.isArray(r?.items) ? await abrirContextos(r.items, p.id) : []
           return { ...base, items }
         } catch (e) {
-          return { ...base, items: [], error: e?.code || e?.message || 'error' }
+          const err = /** @type {any} */ (e)
+          return { ...base, items: [], error: err?.code || err?.message || 'error' }
         }
       }))
-      return salida.filter(Boolean)
+      return /** @type {Array<{ profile: string, name: string, current: boolean, items: any[], error?: string }>} */ (salida.filter(Boolean))
     },
 
     /**
      * PUSH DE LA APP NATIVA: registra el token (FCM/APNs) de este aparato en el proxio,
      * bajo la llave del dispositivo, para que la bóveda pueda «timbrarlo» cuando haya
      * un pedido. La app nativa le pasa el token a la página; la página lo trae aquí.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async registerPush ({ kind = 'fcm', token } = {}) {
       const device = loadVaultDevice()
@@ -3593,6 +3906,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * administra. Sin él contesta la que emitió mi papel. Antes la lista iba siempre a esa,
      * aunque la consola administrara la otra: la cabecera era de la Nube y los aparatos, sus
      * papeles y sus versiones eran del PC (2026-10-27: «parece que mezcla cosas»).
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async listVaultDevices ({ to = null } = {}) {
       const v = loadVaultCert(); const device = loadVaultDevice()
@@ -3604,7 +3918,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       // que da el binario (qué versión corre cada aparato, dónde corre, si le llegan avisos).
       // El acta es la nuestra: no hay nada que adoptar.
       if ((!v?.cert || !device) && adminLink()?.self) {
-        const self = adminLink()
+        const self = /** @type {NonNullable<ReturnType<typeof adminLink>>} */ (adminLink())
         const res = await remoteDevices({ acta: loadActa(), master: self.v.master, proxy: self.v.proxy, device: self.device, cert: self.v.cert, sinceSeq: loadActa()?.seq ?? 0, ...target })
         return { ...res, acta: loadActa() }
       }
@@ -3644,7 +3958,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
           if (r && !r.adopted && !r.joined && llega != null && antes != null && llega > antes) {
             console.warn(`[identity] the vault is on record #${llega} and this device stays on #${antes}: ${r.reason}`)
           }
-        } catch (e) { console.warn('[identity] could not adopt the record from the vault: ' + e.message) }
+        } catch (e) { console.warn('[identity] could not adopt the record from the vault: ' + /** @type {any} */ (e).message) }
         // El acta acaba de llegar: si trae permisos que el cert no lleva, se renueva YA. La
         // comprobación de arriba corrió ANTES de tenerla, así que sin esto haría falta una
         // segunda visita para estrenar un permiso recién concedido.
@@ -3676,12 +3990,14 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       return Object.values(loadPeers()).filter(p => p && p.isContact).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async setMyNickname ({ nickname }) {
       return { me: applyMeUpdate({ nickname }) }
     },
 
     // Perfil completo (avatar 250x250, links de redes, datos), cada ítem con `visible`
     // (oculto = no se comparte). Merge: no pisa lo que no venga en el patch.
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async updateMe ({ patch } = {}) {
       return { me: applyMeUpdate(patch || {}) }
     },
@@ -3696,6 +4012,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     // Subconjunto PÚBLICO del perfil (solo lo marcado visible) — para compartir/publicar.
     async publicMe () {
       const m = me || {}
+      /** @type {Record<string, any>} */
       const out = { publickey: m.publickey, encryptionPubkey: m.encryptionPubkey }
       if (m.nickname) out.nickname = m.nickname
       if (m.avatar && m.avatarVisible !== false) out.avatar = m.avatar
@@ -3705,8 +4022,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         const shown = STD_FIELDS_SENSITIVE.has(k) ? (m[k + 'Visible'] === true) : (m[k + 'Visible'] !== false)
         if (shown) out[k] = m[k]
       }
-      if (Array.isArray(m.links)) { const v = m.links.filter((l) => l.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.links = v }
-      if (Array.isArray(m.fields)) { const v = m.fields.filter((f) => f.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.fields = v }
+      if (Array.isArray(m.links)) { const v = m.links.filter((/** @type {any} */ l) => l.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.links = v }
+      if (Array.isArray(m.fields)) { const v = m.fields.filter((/** @type {any} */ f) => f.visible !== false).map(({ visible, ...r }) => r); if (v.length) out.fields = v }
       return out
     },
 
@@ -3720,6 +4037,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      *    puede abrirla también un dispositivo que no estaba conectado cuando se envió.
      * 2. **Se cifra a TODOS los dispositivos de esa persona**, si conocemos su tarjeta de
      *    perfil (§tarjeta). Le escribes a la persona, no al aparato desde el que te habló.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async encrypt ({ recipients, plaintext }) {
       if (!Array.isArray(recipients) || recipients.length === 0) throw new Error('recipients required')
@@ -3739,6 +4057,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         for (const kk of (card?.keys || [])) if (kk.encPub) encPubs.add(kk.encPub)
       }
 
+      /** @type {Record<string, { iv: string, ct: string }>} */
       const wrap = {}
       for (const encPub of encPubs) {
         try {
@@ -3755,6 +4074,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     /**
      * Descifra. Busca MI envoltura por el id de mi llave de cifrado (v2); `myToken` ya no
      * hace falta y se acepta solo por compatibilidad de llamada.
+     * @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía
      */
     async decrypt ({ senderEncryptionPubkey, myToken, envelope }) {
       if (!senderEncryptionPubkey) throw new Error('senderEncryptionPubkey required')
@@ -3791,13 +4111,16 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       }
     },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async syncConnect ({ clientId }) { if (!sync) throw new Error('sync not ready'); return sync.connectGoogle(clientId) },
     async syncDisconnect () { if (!sync) return; return sync.disconnectGoogle() },
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async syncUnlock ({ passphrase }) { if (!sync) throw new Error('sync not ready'); return sync.unlock(passphrase) },
     async syncLock () { if (!sync) return; return sync.lock() },
     async syncStatus () { return sync ? sync.getStatus() : { connected: false, unlocked: false, dirty: false } },
     async syncNow () { if (!sync) throw new Error('sync not ready'); await sync.pull(); await sync.push(); return sync.getStatus() },
 
+    /** @param {HandlerParams} params  lo que llega por `postMessage` o la API: sin comprobar todavía */
     async importIdentity ({ privateJwk, publicJwk, encPrivateJwk, encPublicJwk, me: meIn, peers: peersIn }) {
       if (!privateJwk || !publicJwk) throw new Error('privateJwk and publicJwk required')
       await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify'])
@@ -3835,6 +4158,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   // marca se consume, así que ninguna cuenta de verdad entra en este barrido.
   {
     const list = loadProfiles()
+    /** @param {ProfileEntry} p */
     const orphan = (p) => p.pendingJoin && !vaultCertOf(p.id)
     const dead = list.filter(orphan)
     const alive = list.filter((p) => !orphan(p))
@@ -3842,7 +4166,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       const stored = rawKv.getItem(CURRENT_STORAGE)
       const back = dead.find((p) => p.id === stored)?.from
       for (const p of dead) {
-        try { await purgeProfile(p.id) } catch (e) { console.warn('[identity] could not discard a ghost account:', e?.message || e) }
+        try { await purgeProfile(p.id) } catch (e) { console.warn('[identity] could not discard a ghost account:', /** @type {any} */ (e)?.message || e) }
       }
       if (back && alive.some((p) => p.id === back)) rawKv.setItem(CURRENT_STORAGE, back)
     }
@@ -3887,7 +4211,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     for (const [pid, visto] of Object.entries(vivas)) {
       if (pid === reclamada || (ahora - visto) < VOLATILE_STALE_MS) continue
       try { await purgeProfile(pid) }
-      catch (e) { console.warn('[identity] could not sweep an abandoned walk-in account:', e?.message || e) }
+      catch (e) { console.warn('[identity] could not sweep an abandoned walk-in account:', /** @type {any} */ (e)?.message || e) }
       delete vivas[pid]; cambio = true
     }
     if (cambio) saveVolatile(vivas)
@@ -3940,7 +4264,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
     kv.setItem(ME_STORAGE, JSON.stringify(me))
   }
   // Acta de perfil: si no existe, nace ahora (un miembro, este dispositivo, que es el master).
-  try { await ensureActa() } catch (e) { console.warn('[identity] could not create the profile record:', e.message) }
+  try { await ensureActa() } catch (e) { console.warn('[identity] could not create the profile record:', /** @type {any} */ (e).message) }
 
   // Perfil compartido: jalar del vault en background (gana el más nuevo).
   pullProfileFromVault()
@@ -3972,8 +4296,10 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   //
   // Solo con bóveda y con la clave de contenido; una cuenta volátil no guarda contactos en ningún
   // sitio, tampoco en la bóveda. Sin bóveda no es un error: es el estado normal, y no se dice.
-  let peerSyncTimer = null
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let peerSyncTimer
   let peerSyncRunning = false
+  /** @param {number} delay */
   function schedulePeerSync (delay) {
     if (volatilePids.has(currentPid)) return
     clearTimeout(peerSyncTimer)
@@ -3993,7 +4319,8 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         if (changed) setPeersDirect(merged)
       }
     } catch (e) {
-      if (!['not-paired', 'no-content-key'].includes(e?.code)) console.warn(`[cc-identity] contact book ↔ vault failed (${e?.code || 'error'}): ${e?.message}`)
+      const err = /** @type {any} */ (e)
+      if (!['not-paired', 'no-content-key'].includes(err?.code)) console.warn(`[cc-identity] contact book ↔ vault failed (${err?.code || 'error'}): ${err?.message}`)
     } finally { peerSyncRunning = false }
   }
   schedulePeerSync(4000)
@@ -4003,8 +4330,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
   refreshLockState()
   for (const name of Object.keys(handlers)) {
     if (LOCK_EXEMPT.has(name)) continue
-    const fn = handlers[name]
-    handlers[name] = async (params) => {
+    const h = /** @type {Record<string, (params: any) => any>} */ (handlers)
+    const fn = h[name]
+    h[name] = async (params) => {
       if (locked) refreshLockState() // otra pestaña pudo desbloquear… no: session es por pestaña; re-chequea por si se quitó el pwd
       if (locked) throw new Error('profile locked: unlock it with your password (unlockProfile)')
       return fn(params)
@@ -4043,6 +4371,7 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
      * pararse (ver `adminLink`). En el núcleo y no en `handlers`: ninguna
      * aplicación tiene por qué poder decir dónde está la bóveda de esta cuenta.
      */
+    /** @param {{ cert: any, proxy: string, open: (onReply: (reply: any) => void) => { send (payload: any): void, close (): void } } | null} [self] */
     setSelfVault (self = null) {
       if (self && (!self.cert || typeof self.proxy !== 'string' || typeof self.open !== 'function')) throw new Error('setSelfVault: cert, proxy and open are required')
       try { selfLinkOff?.() } catch (_) {}
@@ -4050,7 +4379,9 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
       selfLink = self ? { cert: self.cert, proxy: self.proxy } : null
       if (self && publickeyJwkStr) selfLinkOff = registerLocalVault(publickeyJwkStr, self.open)
     },
+    /** @param {(status: any) => void} fn */
     onSyncStatus (fn) { if (sync) sync.onStatus(fn) },
+    /** @param {(payload: any) => void} fn */
     onVaultEvent (fn) { vaultListeners.add(fn); return () => vaultListeners.delete(fn) }
   }
 }

@@ -20,12 +20,14 @@
 const subtle = () => globalThis.crypto.subtle
 
 const b64 = {
+  /** @param {ArrayBuffer | Uint8Array} buf @returns {string} */
   enc (buf) {
     const b = new Uint8Array(buf)
     let s = ''
     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i])
     return btoa(s)
   },
+  /** @param {string} str @returns {Uint8Array<ArrayBuffer>} */
   dec (str) {
     const bin = atob(str)
     const out = new Uint8Array(bin.length)
@@ -44,6 +46,10 @@ export async function makeEphemeral () {
 /**
  * Deriva la clave AES-256-GCM de la sesión a partir de la privada propia y la
  * pub efímera (base64 raw) del otro extremo. `salt` liga la clave a la sesión.
+ * @param {CryptoKey} privateKey
+ * @param {string} otherPubB64
+ * @param {string} salt
+ * @returns {Promise<CryptoKey>}
  */
 export async function deriveKey (privateKey, otherPubB64, salt) {
   const otherPub = await subtle().importKey(
@@ -60,7 +66,12 @@ export async function deriveKey (privateKey, otherPubB64, salt) {
   )
 }
 
-/** Cifra un objeto JSON → sobre { iv, ct } (ambos base64). */
+/**
+ * Cifra un objeto JSON → sobre { iv, ct } (ambos base64).
+ * @param {CryptoKey} key
+ * @param {unknown} obj
+ * @returns {Promise<{ iv: string, ct: string }>}
+ */
 export async function seal (key, obj) {
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
   const pt = new TextEncoder().encode(JSON.stringify(obj))
@@ -68,7 +79,12 @@ export async function seal (key, obj) {
   return { iv: b64.enc(iv), ct: b64.enc(ct) }
 }
 
-/** Descifra un sobre { iv, ct } → objeto JSON. Lanza si el tag GCM no valida. */
+/**
+ * Descifra un sobre { iv, ct } → objeto JSON. Lanza si el tag GCM no valida.
+ * @param {CryptoKey} key
+ * @param {{ iv: string, ct: string }} env
+ * @returns {Promise<any>}
+ */
 export async function open (key, env) {
   const pt = await subtle().decrypt({ name: 'AES-GCM', iv: b64.dec(env.iv) }, key, b64.dec(env.ct))
   return JSON.parse(new TextDecoder().decode(pt))

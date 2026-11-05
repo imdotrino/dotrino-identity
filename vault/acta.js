@@ -39,6 +39,69 @@ import { signWithDevice, verifyDeviceSig, verifyDelegation, keyLabel, pubkeyId }
 import { cleanMachine } from './machine.js'
 export { cleanMachine }
 
+/**
+ * Un miembro del acta: un aparato, un servicio (con `cn`) o la llave de comunicación de una
+ * bóveda (`cn: 'vault'`, con `vault`).
+ * @typedef {object} ActaMember
+ * @property {string} pub
+ * @property {string[]} caps
+ * @property {string | null} [encPub]
+ * @property {string} [label]
+ * @property {string | null} [cn]
+ * @property {number} [addedAt]
+ * @property {any} [cert]
+ * @property {any} [continuity]
+ * @property {{ kind: string, os: string, name: string } | null} [machine]
+ * @property {string | null} [vault]
+ * @property {string | null} [sealPub]
+ * @property {number} [sealSince]
+ * @property {number | null} [renouncedAt]
+ */
+/**
+ * El eslabón publicable de la cadena de selladores.
+ * @typedef {{ v: number, profileId: string, seq: number, by: string, sealers: string[],
+ *   prev: { seq: number, hash: string } | null, iat: number, sig?: string }} SealerLink
+ */
+/**
+ * Una generación del llavero de contenido: la clave del perfil envuelta a cada miembro.
+ * @typedef {{ gen: number, wraps: Record<string, any>, createdAt?: number }} KeyringGeneration
+ */
+/**
+ * La renuncia firmada de un miembro a algunas de sus capacidades.
+ * @typedef {{ op: string, member: string, caps: string[], ts: number, sig: string }} RenounceRecord
+ */
+/**
+ * Un acta de perfil: quién es de la cuenta y qué puede.
+ * @typedef {object} Acta
+ * @property {number} v
+ * @property {string} profileId
+ * @property {string} sealedBy
+ * @property {string} [sealer]  solo en actas anteriores a v3
+ * @property {string | null} [chainUrl]
+ * @property {number} seq
+ * @property {string | null} prev
+ * @property {{ seq: number, hash: string } | null} [sealerAnchor]
+ * @property {boolean} [sealerChanged]
+ * @property {SealerLink | null} [sealerLink]
+ * @property {ActaMember[]} members
+ * @property {Array<{ nonce: string, until: number }>} revoked
+ * @property {RenounceRecord[]} renounced
+ * @property {KeyringGeneration[]} keyring
+ * @property {string | null} [sealPub]
+ * @property {number} [sealSince]
+ * @property {Array<{ pub: string, from: number, to: number, by?: string | null }>} [sealKeys]
+ * @property {number} [updatedAt]
+ * @property {string} [sig]
+ * @property {ProfileCard} [card]
+ */
+/**
+ * La tarjeta de perfil: las llaves de cifrado de los aparatos, firmada por quien selló.
+ * @typedef {{ v: number, profileId: string, seq: number, sealedBy: string,
+ *   keys: Array<{ pub: string, encPub: string }>, iat?: number, sig?: string }} ProfileCard
+ */
+/** Lo que llega de fuera y todavía no se ha comprobado: puede faltar. @typedef {Acta | null | undefined} MaybeActa */
+/** @typedef {import('./capabilities.js').SigningKey} SigningKey */
+
 export const ACTA_V = 5
 
 /**
@@ -67,12 +130,14 @@ const ACTA_LEIBLES = Object.freeze([1, 2, 3, 4, 5])
 /** Desde esta versión, el acta lleva su eslabón de la cadena de selladores. */
 const V_CON_CADENA = 4
 /** ¿Esta acta lleva el eslabón? Las anteriores se leen igual; no pueden encadenar. */
+/** @param {MaybeActa} acta */
 const conCadena = (acta) => Number(acta?.v) >= V_CON_CADENA
 /**
  * Solo `https`, y sin excepción para localhost: esta dirección la va a abrir un TERCERO
  * que no te conoce, y mandarlo por texto plano es dejar que cualquiera en el camino le
  * conteste otra cosa. Que no lleve `#` ni credenciales: no es un enlace para una persona.
  */
+/** @param {unknown} u @returns {boolean} */
 const isChainUrl = (u) => {
   if (typeof u !== 'string' || u.length > 300) return false
   try {
@@ -83,6 +148,7 @@ const isChainUrl = (u) => {
 /** Desde esta versión, sellar es solo un permiso y no hay campo `sealer`. */
 const V_SIN_CAMPO_SELLADOR = 3
 /** ¿Este acta es de las viejas, con el campo? */
+/** @param {MaybeActa} acta */
 const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
 
 /**
@@ -175,18 +241,20 @@ export const PAIRED_CAPS = Object.freeze(['sign', 'store', 'read'])
 export const allowedCaps = () => [...DEVICE_CAPS]
 
 /** Un CN válido: minúsculas, números y guiones (igual que el namespace de secretos). */
+/** @param {unknown} cn @returns {cn is string} */
 export const isValidCn = (cn) => typeof cn === 'string' && /^[a-z0-9-]{1,32}$/.test(cn)
 
 /**
  * Scope del cert que corresponde a cada capacidad. El del cajón no sale de aquí: lo da el
  * CN (`cnScope`).
  */
+/** @param {string} cap @returns {string | null} */
 export function capScope (cap) {
   // SALE DE `CAP_SCOPE`, no de una cadena de `if` escrita a mano. Esto era lo segundo: la
   // lista de arriba y esta se escribían por separado, así que un permiso nuevo entraba en
   // una y no en la otra y se quedaba sin scope en silencio. Ya pasó con `sealer`,
   // `unattended` y `secrets`; con `replica` se cortó aquí.
-  return CAP_SCOPE[cap] || null
+  return CAP_SCOPE[/** @type {keyof typeof CAP_SCOPE} */ (cap)] || null
 }
 
 /**
@@ -201,21 +269,27 @@ export function capScope (cap) {
 export const VAULT_CN = 'vault'
 
 /** ¿Es el `cn` de un servicio con cajón? Válido y distinto del de la propia bóveda. */
+/** @param {unknown} cn @returns {cn is string} */
 const hasDrawer = (cn) => isValidCn(cn) && cn !== VAULT_CN
 
 /**
  * El scope del cajón de un servicio: el miembro `proxy` obtiene `vault:secrets:proxy` y nada
  * más — no existe un scope de secretos «de todos».
  */
+/** @param {unknown} cn @returns {string | null} */
 export const cnScope = (cn) => (hasDrawer(cn) ? 'vault:secrets:' + cn : null)
 
 /** Compat: el mapa directo, para las capacidades de dispositivo. */
 export const CAP_SCOPE = Object.freeze({ sign: 'vault:sign', store: 'vault:store', read: 'vault:read', admin: 'vault:admin', approve: 'vault:approve', passwords: 'vault:passwords', sealer: 'vault:sealer', replica: 'vault:replica' })
 
+/** @param {string} s */
 const enc = (s) => new TextEncoder().encode(s)
+/** @param {ArrayBuffer} buf */
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+/** @param {unknown} v @returns {v is string} */
 const isPub = (v) => typeof v === 'string' && v.length > 0
 /** La maestra de la que es una llave de comunicación; solo la del `cn` de la bóveda la lleva. */
+/** @param {unknown} cn @param {unknown} vault @returns {string} */
 const vaultOfComm = (cn, vault) => {
   if (cn !== VAULT_CN) throw new Error('vault: only the vault communication key says which vault it is')
   if (!isPub(vault)) throw new Error('vault: missing the vault master pubkey')
@@ -228,6 +302,7 @@ const vaultOfComm = (cn, vault) => {
  * ese aparato se le puede envolver un secreto: una `encPub` mal formada no falla al
  * escribir el acta, falla mucho después al intentar sellarle algo.
  */
+/** @param {unknown} v @returns {v is string} */
 export const isEncPub = (v) => {
   if (typeof v !== 'string' || !v) return false
   try {
@@ -235,18 +310,25 @@ export const isEncPub = (v) => {
     return j?.kty === 'EC' && j?.crv === 'P-256' && typeof j?.x === 'string' && typeof j?.y === 'string'
   } catch (_) { return false }
 }
+/** @param {unknown} caps @returns {string[]} */
 const cleanCaps = (caps) => [...new Set((Array.isArray(caps) ? caps : []).filter((c) => CAPS.includes(c)))].sort()
 
 /**
  * El acta SIN la firma ni la tarjeta: es lo que se sella y sobre lo que se calcula el hash.
  * La `card` va aparte porque lleva su propia firma y se comparte sola (ver `makeProfileCard`).
+ * @param {any} acta
+ * @returns {Omit<Acta, 'sig' | 'card'>}
  */
 export function actaBody (acta) {
   const { sig, card, ...body } = acta || {}
   return body
 }
 
-/** Hash del acta (hex de SHA-256 sobre el cuerpo canónico). Es lo que apunta el `prev`. */
+/**
+ * Hash del acta (hex de SHA-256 sobre el cuerpo canónico). Es lo que apunta el `prev`.
+ * @param {any} acta
+ * @returns {Promise<string>}
+ */
 export async function actaHash (acta) {
   return hex(await crypto.subtle.digest('SHA-256', enc(canonicalStringify(actaBody(acta)))))
 }
@@ -278,20 +360,28 @@ export async function actaHash (acta) {
 export const SEALER_LINK_V = 1
 
 /** El cuerpo firmable del eslabón (todo menos su propia firma). */
+/** @param {SealerLink | null | undefined} link @returns {Partial<Omit<SealerLink, 'sig'>>} */
 export const sealerLinkBody = (link) => { const { sig, ...body } = link || {}; return body }
 
-/** Hash del eslabón. Es a esto a lo que apunta el `prev` del siguiente. */
+/**
+ * Hash del eslabón. Es a esto a lo que apunta el `prev` del siguiente.
+ * @param {SealerLink | null | undefined} link
+ * @returns {Promise<string>}
+ */
 export async function sealerLinkHash (link) {
   return hex(await crypto.subtle.digest('SHA-256', enc(canonicalStringify(sealerLinkBody(link)))))
 }
 
 /** El eslabón que hay que publicar de esta acta, o `null` si no cambió el sellador. */
+/** @param {MaybeActa} acta @returns {SealerLink | null} */
 export const sealerLinkOf = (acta) => (acta?.sealerChanged && acta?.sealerLink) || null
 
 /**
  * ¿Es este eslabón coherente con el acta que lo lleva? Es lo que hace verdad la frase «ya
  * está validado dentro del acta»: la firma del acta cubre el eslabón, pero eso solo prueba
  * que está ahí — que DIGA lo mismo que el acta hay que comprobarlo.
+ * @param {Acta} acta
+ * @returns {string | null}
  */
 export function checkSealerLink (acta) {
   const l = acta?.sealerLink
@@ -318,7 +408,11 @@ export function checkSealerLink (acta) {
   return null
 }
 
-/** Firma del eslabón por quien sella. Se hace ANTES de firmar el acta que lo lleva. */
+/**
+ * Firma del eslabón por quien sella. Se hace ANTES de firmar el acta que lo lleva.
+ * @param {any} link
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
 export async function verifySealerLink (link) {
   if (!link || link.v !== SEALER_LINK_V) return { ok: false, reason: 'link-version' }
   if (!isPub(link.profileId) || !isPub(link.by)) return { ok: false, reason: 'link-shape' }
@@ -342,6 +436,9 @@ export async function verifySealerLink (link) {
  *
  * Lo que NO resuelve, y no lo esconde: la frescura. Quien guardó una cadena vieja sigue
  * aceptando a un sellador retirado; para eso está mirar el registro, no más firmas.
+ * @param {any} chain
+ * @param {{ expectedProfileId?: string | null }} [opts]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, seq: number, sealers: string[] }>}
  */
 export async function verifySealerLinkChain (chain, { expectedProfileId = null } = {}) {
   if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'empty-chain' }
@@ -372,7 +469,11 @@ export async function verifySealerLinkChain (chain, { expectedProfileId = null }
   return { ok: true, profileId: raiz.profileId, seq: ultimo.seq, sealers: [...ultimo.sealers] }
 }
 
-/** Id legible de un miembro (mismo formato que el deviceId del emparejamiento). */
+/**
+ * Id legible de un miembro (mismo formato que el deviceId del emparejamiento).
+ * @param {string} pub
+ * @returns {Promise<string>}
+ */
 export async function memberId (pub) {
   if (!pub) throw new Error('memberId: missing key')
   return keyLabel(pub)
@@ -396,6 +497,11 @@ export async function memberId (pub) {
  * escribir: se da y se quita con `caps`, quitar al miembro se lo lleva, y no hay forma de
  * nombrar sellador a quien no está en la cuenta.
  */
+/**
+ * @param {MaybeActa} acta
+ * @param {RenounceRecord[]} [renounces]
+ * @returns {string[]}
+ */
 export const sealersOf = (acta, renounces = []) => {
   if (!acta) return []
   const porPermiso = (acta.members || [])
@@ -410,6 +516,12 @@ export const sealersOf = (acta, renounces = []) => {
 }
 
 /** ¿Puede `pub` sellar la siguiente acta de este perfil? */
+/**
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {RenounceRecord[]} [renounces]
+ * @returns {boolean}
+ */
 export const canSeal = (acta, pub, renounces = []) =>
   !!acta && (memberCan(acta, pub, 'sealer', renounces) || (conCampoSellador(acta) && pub === acta.sealer))
 
@@ -417,6 +529,8 @@ export const canSeal = (acta, pub, renounces = []) =>
  * Acta de génesis: un perfil recién nacido tiene UN miembro (esta llave), que además es el
  * sellador, con todas las capacidades. `profileId` = su pubkey → el nombre del perfil es
  * estable para siempre y coincide con la identidad que el usuario ya tenía (cero migración).
+ * @param {{ pub: string, encPub?: string | null, sealPub?: string | null, label?: string, chainUrl?: string | null, now?: number }} args
+ * @returns {Acta}
  */
 export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', chainUrl = null, now = Date.now() }) {
   if (!isPub(pub)) throw new Error('genesisActa: missing genesis pubkey')
@@ -471,7 +585,11 @@ export function genesisActa ({ pub, encPub = null, sealPub = null, label = '', c
   }
 }
 
-/** Comprobaciones de FORMA (sin cripto): que el acta sea un acta. */
+/**
+ * Comprobaciones de FORMA (sin cripto): que el acta sea un acta.
+ * @param {any} acta
+ * @returns {string | null}
+ */
 export function checkShape (acta) {
   if (!acta || typeof acta !== 'object') return 'no-record'
   if (!ACTA_LEIBLES.includes(acta.v)) return 'version'
@@ -509,7 +627,7 @@ export function checkShape (acta) {
     // permisivo, un lector viejo lo ignoraría y actuaría de más — y entonces sí habría que
     // subir `ACTA_V` y negarse a leer las versiones que no se entienden. `unattended`
     // cumple la regla: sin él se pide aprobación.
-    if (m.caps.some((c) => typeof c !== 'string' || !c)) return 'member'
+    if (m.caps.some((/** @type {unknown} */ c) => typeof c !== 'string' || !c)) return 'member'
     if (m.renouncedAt != null && (typeof m.renouncedAt !== 'number' || !Number.isFinite(m.renouncedAt))) return 'member'
     // El CN es la frontera: un SERVICIO solo puede abrir su propio cajón, y un
     // DISPOSITIVO no tiene cajón que abrir. Que no se pueda escribir un acta que
@@ -551,7 +669,7 @@ export function checkShape (acta) {
     if (k.by != null && !isPub(k.by)) return 'invalid-sealkey'
   }
   }
-  if (new Set(acta.members.map((m) => m.pub)).size !== acta.members.length) return 'duplicate-member'
+  if (new Set(acta.members.map((/** @type {ActaMember} */ m) => m.pub)).size !== acta.members.length) return 'duplicate-member'
   // SIN NADIE QUE SELLE, el acta está muerta: no habría forma de volver a cambiarla nunca.
   // Es el hermano del cierre de `sign`, y sustituye a «el sellador tiene que ser miembro»
   // ahora que sellar es solo un permiso y los permisos ya son de miembros por definición.
@@ -568,11 +686,15 @@ export function checkShape (acta) {
   // inválida. Lo que sostiene la cadena no es el ancla sino que **cada eslabón lo selle
   // alguien a quien el anterior autorizaba**; el ancla añade que no se pueda empalmar un
   // eslabón de otra rama, y se comprueba cuando viene (ver `verifySealerChain`).
-  if (!acta.members.some((m) => m.caps.includes('sign'))) return 'no-signer'
+  if (!acta.members.some((/** @type {ActaMember} */ m) => m.caps.includes('sign'))) return 'no-signer'
   return null
 }
 
-/** Sella (firma) un acta. `privateKey` puede ser una CryptoKey no extractable. */
+/**
+ * Sella (firma) un acta. `privateKey` puede ser una CryptoKey no extractable.
+ * @param {{ acta: Acta, privateKey?: SigningKey | null, privateJwk?: JsonWebKey }} args
+ * @returns {Promise<Acta>}
+ */
 export async function sealActa ({ acta, privateKey, privateJwk }) {
   const shape = checkShape(acta)
   if (shape) throw new Error('invalid record: ' + shape)
@@ -638,7 +760,7 @@ export async function sealActa ({ acta, privateKey, privateJwk }) {
  * registro público, que es otra capa.
  */
 /**
- * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], expectedProfileId?: string|null }} [args]
+ * @param {{ data?: any, signature?: string, publickey?: string, chain?: any[], expectedProfileId?: string|null, ns?: string|null }} [args]
  */
 export async function verifySignedBy (args = {}) {
   const { data, signature, publickey, chain, expectedProfileId = null, ns = null } = args
@@ -647,7 +769,8 @@ export async function verifySignedBy (args = {}) {
   }
   const c = await verifySealerChain(chain, { expectedProfileId })
   if (!c.ok) return { ok: false, reason: 'chain:' + c.reason }
-  const cabeza = chain[chain.length - 1]
+  const cadena = /** @type {Acta[]} */ (chain)  // `verifySealerChain` ya comprobó que es una lista
+  const cabeza = cadena[cadena.length - 1]
   // Quien firmó tiene que ser miembro CON `sign` en el acta vigente de esa cadena. Si le
   // quitaste el permiso, sus firmas dejan de contar en cuanto se ve un acta más nueva.
   // Un SERVICIO (miembro con `cn`) solo firma dentro de su cajón: quien verifica dice cuál
@@ -664,6 +787,10 @@ export async function verifySignedBy (args = {}) {
  * alta trae la cadena de selladoras de la bóveda que invita: se verifica, se comprueba que quien
  * contestó sella esa cuenta y se compara el id del perfil con el esperado (`pubkeyId`, 64 hex).
  * Devuelve `null` si es la cuenta, o el porqué si no.
+ * @param {any} chain
+ * @param {string} iss
+ * @param {string} account
+ * @returns {Promise<string | null>}
  */
 export async function accountMismatch (chain, iss, account) {
   if (!Array.isArray(chain) || !chain.length) return 'the vault did not say which account it belongs to (it may need an update)'
@@ -674,6 +801,11 @@ export async function accountMismatch (chain, iss, account) {
   return got === account ? null : `the invitation is from account ${got}, not from ${account}`
 }
 
+/**
+ * @param {any} chain
+ * @param {{ expectedProfileId?: string | null }} [opts]
+ * @returns {Promise<{ ok: false, reason: string } | { ok: true, profileId: string, seq: number, sealers: string[] }>}
+ */
 export async function verifySealerChain (chain, { expectedProfileId = null } = {}) {
   if (!Array.isArray(chain) || !chain.length) return { ok: false, reason: 'empty-chain' }
   const [raiz] = chain
@@ -714,6 +846,10 @@ export async function verifySealerChain (chain, { expectedProfileId = null } = {
   return { ok: true, profileId: raiz.profileId, seq: ultima.seq, sealers: sealersOf(ultima) }
 }
 
+/**
+ * @param {{ acta?: any, expectedProfileId?: string | null }} [args]
+ * @returns {Promise<{ ok: true } | { ok: false, reason: string }>}
+ */
 export async function verifyActa ({ acta, expectedProfileId } = {}) {
   const shape = checkShape(acta)
   if (shape) return { ok: false, reason: shape }
@@ -752,6 +888,7 @@ export async function verifyActa ({ acta, expectedProfileId } = {}) {
  * papel — el llavero que el aparato va a usar viaja ahí dentro. Al RENOVAR no se pide: la
  * última acta pudo sellarla otra selladora de la cuenta.
  *
+ * @param {{ acta?: any, cert?: any, vault?: unknown, sub?: unknown, scope?: string | null, justSealed?: boolean }} [args]
  * @returns {Promise<{ok:true}|{ok:false, reason:string}>}
  */
 export async function checkVaultReply ({ acta, cert, vault, sub, scope = null, justSealed = false } = {}) {
@@ -782,8 +919,12 @@ export async function checkVaultReply ({ acta, cert, vault, sub, scope = null, j
  * Sellar se concede con `{op:'caps'}` como cualquier otro permiso.
  * Van en ARRAY porque hay combinaciones que deben ser atómicas: admitir al nuevo sellador y
  * traspasarle el master ocurre en el MISMO `seq` (§2.1.3).
+ * @param {Acta} acta
+ * @param {any} changes
+ * @param {{ by: string, now?: number, sealPub?: string | null }} opts
+ * @returns {Promise<Acta>}
  */
-export async function applyChanges (acta, changes, { by, now = Date.now(), sealPub = null } = {}) {
+export async function applyChanges (acta, changes, { by, now = Date.now(), sealPub = null } = /** @type {any} */ ({})) {
   const shape = checkShape(acta)
   if (shape) throw new Error('invalid record: ' + shape)
   if (!by) throw new Error('applyChanges: missing `by` (who seals)')
@@ -824,21 +965,23 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
   // porque los sobres que firmó tienen que seguir verificando. Re-firmarlos al rotar
   // sería recorrer todos los secretos en cada cambio de membresía.
   if (sealPub && sealPub !== next.sealPub) {
-    if (next.sealPub) next.sealKeys.push({ pub: next.sealPub, from: next.sealSince, to: acta.seq })
+    if (next.sealPub) next.sealKeys.push({ pub: next.sealPub, from: /** @type {number} */ (next.sealSince), to: acta.seq })
     next.sealPub = sealPub
     next.sealSince = next.seq
   }
 
+  /** @param {unknown} pub */
   const find = (pub) => next.members.find((m) => m.pub === pub)
 
   // CADA BÓVEDA, SU LLAVE (§11.5 de `docs/replicas.md` de dotrino-vault). La que sella nombra
   // la suya recién estrenada en su propio miembro; las de sus hermanas siguen como estaban,
   // porque los miembros se copian enteros. La de antes pasa al registro con `by`, para que los
   // sobres que firmó sigan verificando.
+  /** @param {ActaMember} m @param {unknown} pub */
   const nameSealKey = (m, pub) => {
     if (!isPub(pub)) throw new Error('sealkey: invalid sealing key (expected a P-256 public JWK)')
     if (m.sealPub === pub) return
-    if (m.sealPub) next.sealKeys.push({ pub: m.sealPub, from: m.sealSince, to: acta.seq, by: m.pub })
+    if (m.sealPub) next.sealKeys.push({ pub: m.sealPub, from: /** @type {number} */ (m.sealSince), to: acta.seq, by: m.pub })
     m.sealPub = pub
     m.sealSince = next.seq
   }
@@ -1110,6 +1253,10 @@ export async function applyChanges (acta, changes, { by, now = Date.now(), sealP
  * VERIFICA un sobre: el sobre dice con qué acta se selló, y esto dice con qué llave hay
  * que comprobarlo. `null` si no había ninguna (perfil que no sellaba) o si el `seq` viene
  * del futuro, que es un sobre que no puede ser bueno.
+ * @param {MaybeActa} acta
+ * @param {number} seq
+ * @param {string | null} [vault]
+ * @returns {string | null}
  */
 export function sealKeyAt (acta, seq, vault = null) {
   if (!acta || !Number.isInteger(seq) || seq < 1 || seq > acta.seq) return null
@@ -1118,18 +1265,22 @@ export function sealKeyAt (acta, seq, vault = null) {
   if (vault != null) {
     const m = (acta.members || []).find((x) => samePubkey(x.pub, vault))
     if (!m || !memberCan(acta, m.pub, 'sealer')) return null
-    if (m.sealPub && seq >= m.sealSince) return m.sealPub
+    if (m.sealPub && seq >= /** @type {number} */ (m.sealSince)) return m.sealPub
     for (const k of acta.sealKeys || []) if (k.by && samePubkey(k.by, m.pub) && seq >= k.from && seq <= k.to) return k.pub
     return null
   }
-  if (acta.sealPub && seq >= acta.sealSince) return acta.sealPub
+  if (acta.sealPub && seq >= /** @type {number} */ (acta.sealSince)) return acta.sealPub
   for (const k of acta.sealKeys || []) if (!k.by && seq >= k.from && seq <= k.to) return k.pub
   return null
 }
 
 // ----- renuncia (§2.2): el único cambio que no pasa por el master -----
 
-/** Crea el registro firmado con el que un miembro se QUITA capacidades a sí mismo. */
+/**
+ * Crea el registro firmado con el que un miembro se QUITA capacidades a sí mismo.
+ * @param {{ member: string, caps: string[], privateKey?: SigningKey | null, privateJwk?: JsonWebKey, now?: number }} args
+ * @returns {Promise<RenounceRecord>}
+ */
 export async function makeRenounce ({ member, caps, privateKey, privateJwk, now = Date.now() }) {
   const body = { op: 'renounce', member, caps: cleanCaps(caps), ts: now }
   if (body.caps.length === 0) throw new Error('resign: no capabilities to remove')
@@ -1140,6 +1291,8 @@ export async function makeRenounce ({ member, caps, privateKey, privateJwk, now 
 /**
  * ¿Es válida esta renuncia? La firma tiene que ser del PROPIO miembro. Como solo puede
  * quitar, cualquiera puede honrarla sin riesgo, sin esperar a que el master la selle.
+ * @param {any} record
+ * @returns {Promise<boolean>}
  */
 export async function verifyRenounce (record) {
   if (!record || record.op !== 'renounce' || !isPub(record.member) || typeof record.sig !== 'string') return false
@@ -1148,7 +1301,11 @@ export async function verifyRenounce (record) {
   return verifyDeviceSig({ publickey: record.member, data: body, signature: sig })
 }
 
-/** Apunta en el miembro la fecha de la última renuncia suya que vio el acta. */
+/**
+ * Apunta en el miembro la fecha de la última renuncia suya que vio el acta.
+ * @param {ActaMember} m
+ * @param {unknown} ts
+ */
 function markRenounced (m, ts) {
   if (typeof ts === 'number' && Number.isFinite(ts) && ts > (m.renouncedAt || 0)) m.renouncedAt = ts
 }
@@ -1158,6 +1315,9 @@ function markRenounced (m, ts) {
  * que el acta ya vio (`renouncedAt`). Así un registro capturado no sirve para volver a quitar
  * un permiso que el master devolvió después: monotonía, como el `seq`. Sin `ts` numérico no
  * es nueva: no hay con qué ordenarla.
+ * @param {MaybeActa} acta
+ * @param {any} record
+ * @returns {boolean}
  */
 export function renounceIsFresh (acta, record) {
   if (typeof record?.ts !== 'number' || !Number.isFinite(record.ts)) return false
@@ -1169,6 +1329,10 @@ export function renounceIsFresh (acta, record) {
 /**
  * Capacidad EFECTIVA de un miembro: lo que dice el acta menos lo que haya renunciado.
  * `extraRenounces` son renuncias sueltas ya verificadas que todavía no absorbió el master.
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {string[]}
  */
 export function effectiveCaps (acta, pub, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
@@ -1180,7 +1344,7 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
   // Las del acta ya las selló el master. Las sueltas tienen que ser nuevas: una repetida
   // no quita lo que se concedió después.
   const sueltas = extraRenounces.filter((r) => renounceIsFresh(acta, r))
-  for (const r of [...(acta.renounced || []), ...sueltas]) {
+  for (const r of [...(/** @type {Acta} */ (acta).renounced || []), ...sueltas]) {
     if (r?.member === pub) for (const c of (r.caps || [])) quitadas.add(c)
   }
   return m.caps.filter((c) => CAPS.includes(c) && !quitadas.has(c))
@@ -1204,6 +1368,11 @@ export function effectiveCaps (acta, pub, extraRenounces = []) {
  *
  * `ns` es opcional y es para lo que va atado a un cajón: un servicio (miembro con `cn`)
  * solo firma dentro del suyo. Sin `ns`, se pregunta por la capacidad a secas.
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {string | null} [ns]
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {boolean}
  */
 export function memberCanSign (acta, pub, ns = null, extraRenounces = []) {
   if (!memberCan(acta, pub, 'sign', extraRenounces)) return false
@@ -1232,29 +1401,48 @@ export function memberCanSign (acta, pub, ns = null, extraRenounces = []) {
  *
  * Devuelve `false` ante un scope que no reconoce: si aparece uno nuevo, lo que toca es
  * añadirlo aquí, no que se cuele por no estar en la lista.
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {unknown} scope
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {boolean}
  */
 export function memberCanScope (acta, pub, scope, extraRenounces = []) {
   if (!acta || typeof scope !== 'string') return false
   const secretos = /^vault:secrets:([a-z0-9-]{1,32})$/.exec(scope)
   if (secretos) return memberCanReadSecrets(acta, pub, secretos[1], extraRenounces)
   if (scope === 'vault:sign') return memberCanSign(acta, pub, null, extraRenounces)
-  const cap = Object.keys(CAP_SCOPE).find((c) => CAP_SCOPE[c] === scope)
+  const cap = Object.keys(CAP_SCOPE).find((c) => CAP_SCOPE[/** @type {keyof typeof CAP_SCOPE} */ (c)] === scope)
   return cap ? memberCan(acta, pub, cap, extraRenounces) : false
 }
 
+/**
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {string} ns
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {boolean}
+ */
 export function memberCanReadSecrets (acta, pub, ns, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   return !!m && hasDrawer(m.cn) && m.cn === ns
 }
 
-/** Los scopes de cert que le corresponden a un miembro según el acta. */
+/**
+ * Los scopes de cert que le corresponden a un miembro según el acta.
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {string[]}
+ */
 export function memberScopes (acta, pub, extraRenounces = []) {
   const m = (acta?.members || []).find((x) => x.pub === pub)
   if (!m) return []
-  return [cnScope(m.cn), ...effectiveCaps(acta, pub, extraRenounces).map((c) => capScope(c))].filter(Boolean)
+  return /** @type {string[]} */ ([cnScope(m.cn), ...effectiveCaps(acta, pub, extraRenounces).map((c) => capScope(c))].filter(Boolean))
 }
 
 /** ¿Es un servicio (tiene CN) o un dispositivo del usuario? */
+/** @param {MaybeActa} acta @param {string} pub @returns {boolean} */
 export const isService = (acta, pub) => !!(acta?.members || []).find((x) => x.pub === pub)?.cn
 
 /**
@@ -1262,6 +1450,9 @@ export const isService = (acta, pub) => !!(acta?.members || []).find((x) => x.pu
  * misma llave escrita por dos piezas distintas da dos strings distintos y `===` dice que
  * no. Lo que identifica a una P-256 es el punto (`kty`, `crv`, `x`, `y`); lo demás del
  * JWK es cómo se usa, no cuál es.
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
  */
 export function samePubkey (a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false
@@ -1286,8 +1477,8 @@ export function samePubkey (a, b) {
  * en voz alta. Quien llama tiene que parar ahí, no mandar en claro — un miembro sin
  * `encPub` (un acta vieja, un servicio) simplemente no puede recibir nada sellado.
  *
- * @param {any} acta
- * @param {string} pub
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
  * @returns {string|null}
  */
 export function memberEncPub (acta, pub) {
@@ -1295,7 +1486,14 @@ export function memberEncPub (acta, pub) {
   return m?.encPub || null
 }
 
-/** ¿Puede este miembro hacer `cap` según el acta? (con el cert se cruza aparte: cert ∩ acta). */
+/**
+ * ¿Puede este miembro hacer `cap` según el acta? (con el cert se cruza aparte: cert ∩ acta).
+ * @param {MaybeActa} acta
+ * @param {unknown} pub
+ * @param {string} cap
+ * @param {RenounceRecord[]} [extraRenounces]
+ * @returns {boolean}
+ */
 export function memberCan (acta, pub, cap, extraRenounces = []) {
   return effectiveCaps(acta, pub, extraRenounces).includes(cap)
 }
@@ -1314,6 +1512,8 @@ export function memberCan (acta, pub, cap, extraRenounces = []) {
  *
  * La firma el MASTER al sellar, y viaja con el acta, para que cualquier miembro pueda
  * entregarla aunque no sea él quien manda.
+ * @param {Acta} acta
+ * @returns {Omit<ProfileCard, 'sig'>}
  */
 export function cardBody (acta) {
   return {
@@ -1325,13 +1525,17 @@ export function cardBody (acta) {
     // qué recibir los mensajes de nadie.
     keys: acta.members
       .filter((m) => !m.cn && m.encPub)
-      .map((m) => ({ pub: m.pub, encPub: m.encPub }))
+      .map((m) => ({ pub: m.pub, encPub: /** @type {string} */ (m.encPub) }))
       .sort((a, b) => (a.pub < b.pub ? -1 : 1)),
     iat: acta.updatedAt
   }
 }
 
-/** Firma la tarjeta de este acta (lo hace el master al sellar). */
+/**
+ * Firma la tarjeta de este acta (lo hace el master al sellar).
+ * @param {{ acta: Acta, privateKey?: SigningKey | null, privateJwk?: JsonWebKey }} args
+ * @returns {Promise<ProfileCard>}
+ */
 export async function makeProfileCard ({ acta, privateKey, privateJwk }) {
   const body = cardBody(acta)
   const { signature } = await signWithDevice({ privateKey, privateJwk, publickey: acta.sealedBy, data: body })
@@ -1340,6 +1544,10 @@ export async function makeProfileCard ({ acta, privateKey, privateJwk }) {
 
 /** Verifica que la tarjeta la firmó quien dice (`sealedBy`). Que ÉSE sea el master de esa
  * persona se decide al adoptarla, comparándola con la que ya tenías (`canAdoptCard`). */
+/**
+ * @param {any} card
+ * @returns {Promise<boolean>}
+ */
 export async function verifyProfileCard (card) {
   if (!card || card.v !== 1 || !isPub(card.profileId) || !isPub(card.sealedBy)) return false
   if (!Number.isInteger(card.seq) || !Array.isArray(card.keys) || typeof card.sig !== 'string') return false
@@ -1357,6 +1565,8 @@ export async function verifyProfileCard (card) {
  * Si el master cambió legítimamente (traspaso), la tarjeta nueva la firma el entrante y
  * hay que re-confirmarla: se devuelve `master-changed` para que la app lo diga en vez de
  * aceptarlo en silencio.
+ * @param {{ card: any, current?: ProfileCard | null }} args
+ * @returns {Promise<{ adopt: boolean, reason: string }>}
  */
 export async function canAdoptCard ({ card, current }) {
   if (!(await verifyProfileCard(card))) return { adopt: false, reason: 'invalid-signature' }
@@ -1377,6 +1587,7 @@ export async function canAdoptCard ({ card, current }) {
  *
  * No otorga nada por sí solo: es una declaración del que se une, y solo tiene efecto
  * dentro del acta donde el master la mete.
+ * @param {{ member: string, from?: string | null, privateKey?: SigningKey | null, privateJwk?: JsonWebKey, now?: number }} args
  */
 export async function makeContinuity ({ member, from, privateKey, privateJwk, now = Date.now() }) {
   const body = { op: 'continuity', member, from: from || member, ts: now }
@@ -1384,7 +1595,11 @@ export async function makeContinuity ({ member, from, privateKey, privateJwk, no
   return { ...body, sig: signature }
 }
 
-/** ¿La firmó de verdad la identidad que dice venir? (única comprobación posible). */
+/**
+ * ¿La firmó de verdad la identidad que dice venir? (única comprobación posible).
+ * @param {any} record
+ * @returns {Promise<boolean>}
+ */
 export async function verifyContinuity (record) {
   if (!record || record.op !== 'continuity' || !isPub(record.member) || typeof record.sig !== 'string') return false
   const { sig, ...body } = record
@@ -1407,6 +1622,7 @@ export async function verifyContinuity (record) {
  *     determinista, y nada salva de un master hostil.
  *   · `seq` menor → nunca (jamás retroceder).
  *
+ * @param {{ candidate: any, current?: Acta | null }} args
  * @returns {Promise<{adopt:boolean, reason:string}>}
  */
 export async function canAdopt ({ candidate, current }) {
