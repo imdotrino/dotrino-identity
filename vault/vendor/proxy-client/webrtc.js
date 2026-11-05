@@ -154,7 +154,11 @@ export class WebRTCManager {
     this.count = typeof opts.count === 'function' ? opts.count : null
     this.iceServers = (opts.config && opts.config.iceServers) || DEFAULT_ICE_SERVERS
     this.peers = new Map() // remoteToken -> PeerState
+    this.closed = false    // `closeAll()`: no se abre nada más hasta `reopen()`
   }
+
+  /** El cliente vuelve a conectar tras un `close()`: se puede negociar otra vez. */
+  reopen () { this.closed = false }
 
   /**
    * True if this is a control envelope and was consumed.
@@ -173,6 +177,8 @@ export class WebRTCManager {
   handleIncoming (from, parsed) {
     if (!parsed || typeof parsed !== 'object' || parsed.t !== RTC_TAG) return false
     if (this.acceptFrom && !this.acceptFrom(from)) return false
+    // Cerrado: una señal que llega tarde no abre una conexión que ya nadie va a cerrar.
+    if (this.closed) return true
     const peer = this._ensurePeer(from)
     this._handleSignal(peer, parsed).catch((e) => {
       this.emit('error', { type: 'webrtc_signal', error: e, peer: from })
@@ -186,6 +192,7 @@ export class WebRTCManager {
    * to the proxy. Also opportunistically starts the connection negotiation.
    */
   trySend (to, payloadString) {
+    if (this.closed) return false
     const peer = this._ensurePeer(to)
     if (usable(peer)) {
       try {
@@ -225,6 +232,7 @@ export class WebRTCManager {
 
   /** Optional: explicitly preconnect to a peer. */
   connect (to) {
+    if (this.closed) return Promise.reject(new Error('WebRTC closed'))
     const peer = this._ensurePeer(to)
     if (usable(peer)) return Promise.resolve()
     if (!peer.negotiating) this._startNegotiation(peer).catch(() => {})
@@ -233,16 +241,39 @@ export class WebRTCManager {
     })
   }
 
+  /**
+   * CERRAR CON UNA DESCRIPCIÓN EN VUELO DEJA SOCKETS ABIERTOS. En Node (`@dotrino/webrtc`, o
+   * sea werift), `setLocalDescription` reúne los candidatos y abre un socket UDP por
+   * dirección; si `close()` llega en medio, cierra los que ya estaban y los que terminan de
+   * abrirse después no los cierra nadie. El proceso no sale nunca: así se colgaron las
+   * pruebas de la bóveda en CI (0.186.0 y 0.186.1). Por eso, con una descripción en vuelo,
+   * la conexión se cierra al terminar esta, que ya ha reunido todo.
+   */
   closePeer (to) {
     const peer = this.peers.get(to)
     if (!peer) return
-    try { if (peer.dc) peer.dc.close() } catch (_) {}
-    try { if (peer.pc) peer.pc.close() } catch (_) {}
     this.peers.delete(to)
+    peer.closing = true
+    try { if (peer.dc) peer.dc.close() } catch (_) {}
+    if (!peer.busy) this._closePC(peer)
   }
 
   closeAll () {
+    this.closed = true
     for (const t of Array.from(this.peers.keys())) this.closePeer(t)
+  }
+
+  _closePC (peer) {
+    try { if (peer.pc) peer.pc.close() } catch (_) {}
+  }
+
+  /** Una descripción (local o remota) en vuelo: mientras dure, cerrar espera a que acabe. */
+  async _describe (peer, fn) {
+    peer.busy = (peer.busy || 0) + 1
+    try { return await fn() } finally {
+      peer.busy--
+      if (peer.closing && !peer.busy) this._closePC(peer)
+    }
   }
 
   /**
@@ -340,7 +371,8 @@ export class WebRTCManager {
     pc.onnegotiationneeded = async () => {
       try {
         peer.makingOffer = true
-        await pc.setLocalDescription()
+        await this._describe(peer, () => pc.setLocalDescription())
+        if (peer.closing) return
         this._signal(peer, { kind: 'sdp', sdp: pc.localDescription })
       } catch (e) {
         this.emit('error', { type: 'webrtc_negotiate', error: e, peer: peer.remote })
@@ -443,14 +475,16 @@ export class WebRTCManager {
         (peer.makingOffer || pc.signalingState !== 'stable')
       peer.ignoreOffer = !peer.polite && offerCollision
       if (peer.ignoreOffer) return
-      await pc.setRemoteDescription(msg.sdp)
+      await this._describe(peer, () => pc.setRemoteDescription(msg.sdp))
+      if (peer.closing) return
       // flush any queued candidates
       for (const c of peer.pendingCandidates) {
         try { await pc.addIceCandidate(c) } catch (_) {}
       }
       peer.pendingCandidates = []
       if (msg.sdp.type === 'offer') {
-        await pc.setLocalDescription()
+        await this._describe(peer, () => pc.setLocalDescription())
+        if (peer.closing) return
         this._signal(peer, { kind: 'sdp', sdp: pc.localDescription })
       }
     } else if (msg.kind === 'ice' && msg.candidate) {

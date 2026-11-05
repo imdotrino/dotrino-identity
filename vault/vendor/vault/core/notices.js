@@ -22,7 +22,14 @@ export const NOTICE_TTL_MS = 24 * 60 * 60 * 1000
  * (`docs/pairing-protocol.md` §1.7). No pide nada: no hay a quién bloquear, porque ninguno
  * entró. Lo cuenta, con el ID y la máquina de los dos.
  */
-export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested', 'log-anchor']
+export const NOTICE_EVS = ['updated', 'update-needs-root', 'pairing-contested', 'log-anchor', 'delivered']
+/**
+ * `delivered`: un aparato con `unattended` se llevó claves de un cajón (`kind: 'secrets'`) o
+ * una contraseña (`kind: 'passwords'`) sin que nadie aprobara, porque no le hacía falta (dueño,
+ * 2026-11-04: «equipos unattended no deben pedir aprobación, quizás sí notificar que han
+ * entregado contraseñas»). No pide nada: lo cuenta. Lleva `ns`, `deviceId` y `label`.
+ */
+const DELIVERED_KINDS = ['secrets', 'passwords']
 
 const newId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('')
 
@@ -58,8 +65,17 @@ export function openNotices ({ disk, now = Date.now }) {
      * administrador). `product`: qué (`@dotrino/vaultd` es la propia bóveda);
      * `deviceId`/`label`: el aparato, si fue uno.
      */
-    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null, logSeq = null, head = null, tsa = null }) {
+    add (ev, { version, from = null, product = '@dotrino/vaultd', deviceId = null, label = null, devices = null, logSeq = null, head = null, tsa = null, ns = null, kind = null }) {
       if (!NOTICE_EVS.includes(ev)) throw fail('bad-notice', `unknown notice: ${ev}`)
+      if (ev === 'delivered') {
+        if (!DELIVERED_KINDS.includes(kind)) throw fail('bad-notice', `${ev}: kind must be one of ${DELIVERED_KINDS.join(', ')}`)
+        if (typeof ns !== 'string' || !ns) throw fail('bad-notice', `${ev}: the drawer (ns) is required`)
+        if (typeof deviceId !== 'string' || !deviceId) throw fail('bad-notice', `${ev}: the device is required`)
+        const n = { id: newId(), ev, kind, ns, deviceId, label: typeof label === 'string' ? label : '', ts: now() }
+        items = [...items.filter(alive), n]
+        save()
+        return n
+      }
       // EL ANCLA DE LA BITÁCORA (`logAnchor.js`): la cabeza sellada por el signer, para que el
       // aprobador la guarde. Solo se queda la última: la anterior ya no dice nada que esta no diga.
       if (ev === 'log-anchor') {

@@ -2036,6 +2036,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     }
     audit('secrets', { device: await deviceIdOf(chk.device), ns, ...(publicOnly ? { publicOnly: true } : {}) })
     reply(from, { type: MSG.SECRETS_RESULT, ...res })
+    if (!publicOnly) announceDelivered({ device: chk.device, ns, kind: 'secrets' })
   }
 
   /** El bundle de `ns` para `devicePub`, sellado a su `ek` y firmado por la llave de sellado. */
@@ -2249,6 +2250,42 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * en vez de mandárselo en claro «para que al menos lo vea»: eso sería cambiar la promesa
    * por comodidad, y encima sin avisar a nadie.
    */
+  /** Un objeto pequeño sellado a un `encPub` del acta: `{ wrap, envelope }`, lo abre `openSealed`. */
+  async function sealTo (encPub, obj) {
+    const cek = await makeContentKey()
+    const envelope = await encryptWithCek({ cek, gen: 0, plaintext: JSON.stringify(obj) })
+    const wrap = await wrapForMember({ cek, memberEncPub: encPub })
+    return { wrap, envelope }
+  }
+
+  /**
+   * EL ASUNTO DEL TIMBRE, SELLADO AL TELÉFONO (dueño, 2026-11-04: «que las notificaciones a
+   * móviles no sean del todo anónimas sino que al menos tengan asunto, para ver quién solicita
+   * qué»). El timbre que sale por FCM/APNs lo leen Google y Apple, así que el proxio lo manda
+   * vacío. Lo que va aquí viaja dentro del mensaje como `ring` y el proxio lo pega al timbre
+   * TAL CUAL: va cifrado a la `encPub` del aprobador, y solo su teléfono lo abre, sin red.
+   *
+   * Es solo el asunto. Quien aprueba sigue decidiendo con la lista (`op: 'approvals'`), que
+   * es la que va firmada: un asunto falso no aprueba nada.
+   *
+   * Sin `encPub` en el acta no hay asunto (y el teléfono enseña el genérico): mandarlo en claro
+   * sería cambiar la promesa sin avisar.
+   */
+  const RING_CTX_KEYS = ['op', 'fields', 'product', 'version', 'from', 'reporterLabel', 'kind']
+  async function ringFor (pub, record, hint) {
+    const encPub = (record?.members || []).find((m) => m.pub === pub)?.encPub || null
+    if (!encPub) return null
+    let ctx = null
+    if (hint.ctx && typeof hint.ctx === 'object') {
+      ctx = {}
+      for (const k of RING_CTX_KEYS) if (hint.ctx[k] != null) ctx[k] = hint.ctx[k]
+    }
+    try { return await sealTo(encPub, { ...hint, ctx }) } catch (e) {
+      log(`[vault] could not seal the subject of the ring for ${pub.slice(0, 24)}…: ${e.message}`)
+      return null
+    }
+  }
+
   async function withSealedContext (items, approver, record) {
     const encPub = (record?.members || []).find((m) => m.pub === approver)?.encPub || null
     const output = []
@@ -2257,9 +2294,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       if (!ctx) { output.push({ ...rest, ctx: null }); continue }
       if (!encPub) { output.push({ ...rest, ctx: null, ctxSealed: false, ctxReason: 'no-enc-key' }); continue }
       try {
-        const cek = await makeContentKey()
-        const envelope = await encryptWithCek({ cek, gen: 0, plaintext: JSON.stringify(ctx) })
-        const wrap = await wrapForMember({ cek, memberEncPub: encPub })
+        const { wrap, envelope } = await sealTo(encPub, ctx)
         output.push({ ...rest, ctx: null, ctxSealed: true, ctxWrap: wrap, ctxEnvelope: envelope })
       } catch (e) {
         // NO SE TRAGA: sin esto, un fallo al sellar se vería en el teléfono igual que un
@@ -2300,7 +2335,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       for (const pub of who) {
         // A la app que APRUEBA (`vault`): en un teléfono la llave es de todas sus apps, y sin
         // decirlo el pedido timbraba a messenger (websocket-proxy ≥ 1.4.0).
-        try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault' }) }
+        const ring = await ringFor(pub, record, { ...body, ctx: pend.ctx || null })
+        try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal, ...(ring ? { ring } : {}) }, { app: 'vault' }) }
         catch (e) { log(`[vault] could not ring ${pub.slice(0, 24)}… about ${pend.ns}: ${e.message}`) }
       }
       log(`[vault] ${pend.ns}: rang ${who.length} approver(s) for ${pend.id}`)
@@ -2331,9 +2367,12 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     const { id, ev, ts, ...rest } = notice
     const body = { ev, id, ...rest, ts }
     const seal = await sealOrFail(body)
+    // Lo que calla no timbra: no lleva asunto. Lo que suena, sí (ver `ringFor`).
+    const record = quiet ? null : await refreshActa()
     let sent = 0
     for (const pub of who) {
-      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal }, { app: 'vault', ...(quiet ? { quiet: true } : {}) }); sent++ }
+      const ring = quiet ? null : await ringFor(pub, record, { ev, id, ts, kind: rest.kind || null, ns: rest.ns || null, deviceId: rest.deviceId || null, label: rest.label || null, product: rest.product || null, version: rest.version || null, from: rest.from || null })
+      try { client.sendByPubkey(pub, { type: MSG.ADMIN_EVENT, body, seal, ...(ring ? { ring } : {}) }, { app: 'vault', ...(quiet ? { quiet: true } : {}) }); sent++ }
       catch (e) { log(`[vault] could not tell ${pub.slice(0, 24)}… about ${what}: ${e.message}`) }
     }
     return sent
@@ -2400,6 +2439,39 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     log(`[vault] update: told ${sent} of ${who.length} approver(s) that ${deviceId ? `${deviceId} (${product})` : 'this vault'} ${ev === 'updated' ? 'now runs' : 'needs administrator rights to install'} ${version}`)
     if (!sent) throw Object.assign(new Error('no approver could be told'), { code: 'announce-failed' })
     return { approvers: who.length, sent, notice }
+  }
+
+  /**
+   * «SE LLEVÓ CLAVES SIN PEDIR», a quien aprueba (dueño, 2026-11-04). Un aparato con
+   * `unattended` no pide aprobación —para eso se le dio—, pero que lo haga en silencio deja al
+   * dueño sin saber qué máquina se llevó qué. Se cuenta como aviso (`delivered`), no como pedido.
+   *
+   * UNO POR APARATO, CAJÓN Y HORA: un servicio pide su cajón en cada arranque y el gestor una
+   * contraseña en cada relleno; timbrar cada vez enseña a ignorar el timbre. Solo cuando de
+   * verdad no se pidió por `unattended`: sin aprobadores no hay a quién contar, y lo aprobado
+   * ya lo vio quien aprobó.
+   */
+  const DELIVERED_EVERY_MS = 60 * 60 * 1000
+  const deliveredAt = new Map()
+  async function announceDelivered ({ device, ns, kind }) {
+    try {
+      const record = await refreshActa()
+      if (!record || !Acta.memberCan(record, device, 'unattended')) return
+      const who = (record.members || []).filter((m) => Acta.memberCan(record, m.pub, 'approve')).map((m) => m.pub)
+      if (!who.length) return
+      const key = `${device}|${kind}|${ns}`
+      const now = Date.now()
+      if (now - (deliveredAt.get(key) || 0) < DELIVERED_EVERY_MS) return
+      deliveredAt.set(key, now)
+      for (const [k, t] of deliveredAt) if (now - t >= DELIVERED_EVERY_MS) deliveredAt.delete(k)
+      const deviceId = await deviceIdOf(device).catch(() => null)
+      if (!deviceId) return log(`[vault] delivered: could not name the device that took ${kind} of ${ns}, so nobody is told`)
+      const label = (record.members || []).find((m) => m.pub === device)?.label || ''
+      const notice = notices.add('delivered', { kind, ns, deviceId, label })
+      const sent = await sendNotice(notice, who, `the delivery of ${kind} of ${ns} to ${deviceId}`)
+      audit('delivered.announced', { device: deviceId, ns, kind, approvers: who.length, sent })
+      log(`[vault] delivered: told ${sent} of ${who.length} approver(s) that ${deviceId} took ${kind} of ${ns} without approval (unattended)`)
+    } catch (e) { log(`[vault] delivered: could not tell the approvers (${e.code || 'error'}: ${e.message})`) }
   }
 
   /**
@@ -2676,6 +2748,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // el permiso se seguía sirviendo solo.
       needsApproval: passwordsNeedApproval,
       approve: approvePasswordRequest,
+      onDelivered: (pub) => announceDelivered({ device: pub, ns: 'passwords', kind: 'passwords' }),
       audit,
       log,
     }).start()
@@ -3019,6 +3092,14 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       for (const m of members) notify(m.pub)
       for (const d of issued || []) notify(d.sub)
       log(`[vault] notified ${seen.size} member(s) of "${ev}" (record #${acta?.seq ?? '?'})`)
+      // Y SE DEJA EN LA CACHÉ DEL PROXIO (websocket-proxy ≥ 1.10.0): así un aparato que va
+      // atrás se pone al día sin despertar a la bóveda (una ventana de Terminal esperaba 4-17 s
+      // por esto, 2026-11-04). El proxio solo guarda; quien la toma la adopta si encadena.
+      if (acta) {
+        Promise.resolve().then(() => client.putActa(acta)).then(
+          (r) => log(`[vault] record #${acta.seq} left on the proxy cache${r.stored ? '' : ' (it already had it)'}`),
+          (e) => log(`[vault] could not leave record #${acta.seq} on the proxy cache: ${e.code || 'error'} · ${e.message}`))
+      }
     } catch (e) { log('[vault] could not notify members of the change:', e.message) }
     // Y a los replicadores, que no quieren un aviso sino el CONTENIDO: sin esto se
     // quedarían con el acta de ayer y repartiendo sobres de un aparato ya revocado.
@@ -4721,8 +4802,17 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
         }
       }
     } catch (_) { /* comprobar es un extra: si falla, no rompe el cambio */ }
-    const devices = await Promise.all(changes.map(async ({ pub, caps }) => ({ deviceId: await deviceIdOf(pub).catch(() => null), caps })))
-    for (const d of devices) audit('caps', { device: d.deviceId, caps: d.caps })
+    // DISPOSITIVO O SERVICIO (`cn`, identity ≥ 0.135.0). Un pilar viejo ignora la clave y
+    // sella el acta sin tocarlo: eso no es «listo», y se dice.
+    for (const { pub, cn } of changes) {
+      if (cn === undefined) continue
+      const m = await memberOf(pub)
+      if ((m?.cn ?? null) !== cn) {
+        throw Object.assign(new Error(`the device is still ${m?.cn ? `the "${m.cn}" service` : 'a device'}: this build's @dotrino/identity cannot change it (needs 0.135.0)`), { code: 'cn-unavailable' })
+      }
+    }
+    const devices = await Promise.all(changes.map(async ({ pub, caps, cn }) => ({ deviceId: await deviceIdOf(pub).catch(() => null), caps, ...(cn !== undefined ? { service: cn } : {}) })))
+    for (const d of devices) audit('caps', { device: d.deviceId, caps: d.caps, ...(d.service !== undefined ? { service: d.service } : {}) })
     // El acta acaba de cambiar QUIÉN debe tener envoltura de qué: se repasa antes de
     // avisar, para que el aviso salga con el llavero ya al día.
     await refreshWraps('caps')

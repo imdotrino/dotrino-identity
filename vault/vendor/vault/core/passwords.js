@@ -36,6 +36,7 @@ export const PASSWORDS_CAP = 'passwords'
  *   `encPubOf(pubkey)`  su llave de cifrado, para sellarle la respuesta
  *   `needsApproval(pubkey)`  (async) si ese aparato tiene que pedir aprobación (`unattended`)
  *   `approve({ pubkey, op })`  pide el visto bueno (el teléfono) y espera
+ *   `onDelivered(pubkey)`  se sirvió una lectura (`pm2.get`) a ese aparato
  *   `audit(op, info)`  la bitácora del vault
  */
 export function createPasswordDesk (opts = {}) {
@@ -48,6 +49,7 @@ export function createPasswordDesk (opts = {}) {
     encPubOf = () => null,
     needsApproval = () => true,
     approve = async () => false,
+    onDelivered = () => {},
     audit = () => {},
     log = () => {},
   } = opts
@@ -73,6 +75,8 @@ export function createPasswordDesk (opts = {}) {
       // La bitácora NO lleva qué credencial se pidió: eso es contenido del usuario.
       audit('passwords', { op: r.op, outcome: r.outcome, device: (r.from || '').slice(0, 24) })
       if (r.outcome !== 'ok') log(`[vault] passwords: ${r.op} ${r.outcome}`)
+      // Una LECTURA servida: quien llama decide si hay que contarla (`unattended`, ver vault.js).
+      else if (r.op === 'pm2.get' && r.from) onDelivered(r.from)
     },
   })
 
