@@ -3436,9 +3436,12 @@ export async function createIdentityCore ({ kv: hostKv, peers, makeSync = null, 
         }
         rest = { ...rest, to, timeoutMs: VAULT_WAKE_MS }
       }
-      if (link.self) return remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest })
+      // LAS CONCESIONES (`grants`) traen el comando sellado a este aparato, como los pedidos:
+      // se abre aquí, donde está la llave. Lo que no trae nada sellado pasa tal cual.
+      const opened = async (r) => (Array.isArray(r?.items) ? { ...r, items: await abrirContextos(r.items, currentPid) } : r)
+      if (link.self) return opened(await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest }))
       maybeRenewVaultCert()
-      try { return await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink }) }
+      try { return await opened(await remoteAdmin({ master: v.master, proxy: v.proxy, device, cert: v.cert, op, ...rest, onRevoked: wipeVaultLink })) }
       catch (e) { return handleVaultError(e) }
     },
 

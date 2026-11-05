@@ -50,6 +50,11 @@ export const ADMIN_OPS = Object.freeze([
   // Los BLOQUEADOS por un aprobador (`src/blocked.js`): verlos y desbloquearlos. Bloquear a
   // distancia también, por si el administrador llega antes que el teléfono. No toca el acta.
   'blocked', 'block', 'unblock',
+  // LAS CONCESIONES (un pedido aprobado deja pasar ese comando una hora que se renueva con
+  // cada uso): verlas y cortarlas. Las mismas que el aprobador ve en /approvals; aquí las ve
+  // quien administra, igual que la TUI del binario. Cortar no sella nada: la lista es de la
+  // bóveda, no del acta.
+  'grants', 'grant-revoke',
   // Variables de entorno: verlas (nombres siempre; valor solo de las públicas) y
   // ponerles valor (de las dos). Borrar NO está, y es a propósito: un aparato robado
   // no debe poder dejar sin configuración a los servicios.
@@ -99,8 +104,8 @@ export const ADMIN_OPS = Object.freeze([
  */
 export const ADMIN_OPS_WHILE_LOCKED = Object.freeze([
   'audit', 'vars', 'var.set', 'var.setMany', 'var.recipients', 'var.reveal.begin', 'var.reveal',
-  // Bloquear no sella nada: la lista es de la bóveda, no del acta.
-  'blocked', 'block', 'unblock',
+  // Bloquear no sella nada: la lista es de la bóveda, no del acta. Las concesiones, igual.
+  'blocked', 'block', 'unblock', 'grants', 'grant-revoke',
   // Las dos de abrir, obviamente: son las únicas que solo tienen sentido con el candado
   // echado. Que estén aquí NO las deja pasar sin más — siguen exigiendo cert, acta, nonce
   // y frescura como todas, y además la contraseña dentro del sobre.
@@ -154,6 +159,9 @@ export function createAdminDesk ({
   unlockDesk = null,
   // La lista de bloqueados, inyectada como `vars`: `{ list(), set(pub, on, { by }) }`.
   blocked = null,
+  // Las CONCESIONES, inyectadas igual: `{ list(device), revoke(id, { by }) }`. `list` recibe
+  // a quien pregunta porque el comando de cada una va sellado a su llave de cifrado.
+  grants = null,
   now = () => Date.now()
 }) {
   const ops = new Set(ADMIN_OPS)
@@ -352,6 +360,13 @@ export function createAdminDesk ({
       // usarlo para quitar dejaba un miembro sin certificados al que la bóveda ya nunca le
       // mandaba el aviso de expulsión (mientras siga en el acta, un papel retirado
       // significa «renueva»). Ese era el dispositivo fantasma.
+      if (data.op === 'grants' || data.op === 'grant-revoke') {
+        if (!grants) return { ok: false, error: 'admin: this vault has no grants' }
+        if (data.op === 'grants') return { ok: true, result: await grants.list(chk.device) }
+        if (typeof data.id !== 'string' || !data.id) return { ok: false, error: 'admin: grant-revoke needs the grant id' }
+        const ok = await grants.revoke(data.id, { by })
+        return { ok: true, result: { id: data.id, ok } }
+      }
       if (data.op === 'blocked' || data.op === 'block' || data.op === 'unblock') {
         if (!blocked) return { ok: false, error: 'admin: this vault cannot block devices' }
         if (data.op === 'blocked') return { ok: true, result: { items: blocked.list() } }

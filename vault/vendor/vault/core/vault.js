@@ -2140,12 +2140,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     if (op === 'blocked') return answer({ op: 'blocked', items: blocked.list() })
     if (op === 'grant-revoke') {
       const gid = typeof p.data?.id === 'string' ? p.data.id : ''
-      const ok = gid ? grants.revoke(gid) : false
-      if (ok) {
-        audit('secrets.grant.revoked', { id: gid, by })
-        log(`[vault] grant ${gid} revoked by ${by} — that command will ring again`)
-      }
-      return answer({ op: 'grant-revoke.result', id: gid, ok })
+      return answer({ op: 'grant-revoke.result', id: gid, ok: revokeGrantBy(gid, by) })
     }
     const id = typeof p.data?.id === 'string' ? p.data.id : ''
     const pend = approvals.take(id)
@@ -2284,6 +2279,16 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       log(`[vault] could not seal the subject of the ring for ${pub.slice(0, 24)}…: ${e.message}`)
       return null
     }
+  }
+
+  /** Corta una concesión (desde /approvals o desde la consola de administración). */
+  function revokeGrantBy (gid, by) {
+    const ok = gid ? grants.revoke(gid) : false
+    if (ok) {
+      audit('secrets.grant.revoked', { id: gid, by })
+      log(`[vault] grant ${gid} revoked by ${by} — that command will ring again`)
+    }
+    return ok
   }
 
   async function withSealedContext (items, approver, record) {
@@ -3521,6 +3526,13 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     deviceIdOf,
     audit,
     blocked: { list: () => blocked.list(), set: setBlocked },
+    grants: {
+      list: async (device) => {
+        const record = (await identity.profileActa?.().catch(() => null))?.acta
+        return { items: await withSealedContext(grants.list(), device, record), ttlMs: GRANT_TTL_MS }
+      },
+      revoke: async (id, { by }) => revokeGrantBy(id, by)
+    },
     // Abrir a distancia. Va inyectado porque `admin.js` es puro y esto necesita cripto y
     // disco; `null` si este perfil no lo soporta, y entonces la operación contesta que no.
     unlockDesk,
