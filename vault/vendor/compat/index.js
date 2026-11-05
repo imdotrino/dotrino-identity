@@ -21,8 +21,35 @@
  * consumidor (ver `PENDIENTES.md`, «pilar anidado»).
  */
 
-/** Lo que responde `check`. El `code` es lo que se compara; el texto puede cambiar. */
 import { satisfies } from './ranges.js'
+
+/**
+ * El anuncio de una pieza: qué es, qué build corre, qué protocolo habla y cuáles entiende.
+ * @typedef {object} Declaration
+ * @property {string} product
+ * @property {string} version
+ * @property {number} protocol   entero; sube solo cuando cambia el cable
+ * @property {number[]} speaks   protocolos que entiende (incluye `protocol`)
+ * @property {string[]} [needs]  permisos del acta que necesita
+ */
+
+/**
+ * Una entrada de la lista de rotas.
+ * @typedef {object} BrokenEntry
+ * @property {string} product
+ * @property {string | string[]} versions   lo mismo que un rango del manifiesto (`ranges.js`)
+ * @property {string} [why]
+ * @property {string} [fix]
+ */
+
+/**
+ * Lo que responde `check`. El `code` es lo que se compara; el texto puede cambiar.
+ * @typedef {object} Verdict
+ * @property {boolean} compatible
+ * @property {string} code
+ * @property {string} reason
+ * @property {Declaration | null} peer
+ */
 
 export const OK = 'ok'
 export const INCOMPATIBLE_PROTOCOL = 'incompatible-protocol'
@@ -54,9 +81,14 @@ export const UNDECLARED = 'undeclared'
  * algún día se decide bloquear, se decide arriba y se escribe allí, no aquí.
  */
 
+/** @param {unknown} n @returns {n is string[]} */
 const isNeeds = (n) => Array.isArray(n) && n.every((c) => typeof c === 'string' && c.length > 0)
 
-/** ¿Tiene forma de anuncio? No dice si es compatible, solo si se puede juzgar. */
+/**
+ * ¿Tiene forma de anuncio? No dice si es compatible, solo si se puede juzgar.
+ * @param {any} d   lo que llegó por la red, sin comprobar: esta función es la que lo comprueba
+ * @returns {d is Declaration}
+ */
 export function isDeclaration (d) {
   return !!d && typeof d.product === 'string' && d.product.length > 0 &&
     typeof d.version === 'string' && d.version.length > 0 &&
@@ -74,12 +106,16 @@ export function isDeclaration (d) {
  * que el acta le da (`missingCaps`) y ENSEÑA lo que falta, igual que una versión incompatible:
  * informa, no concede ni bloquea. Lo pagó `accounts`: le faltaba `sign`, renovar su papel le
  * devolvía uno que no le servía, y ninguna pantalla lo decía.
+ *
+ * @param {{ product: string, version: string, protocol: number, speaks?: number[], needs?: string[] }} args
+ * @returns {Declaration}
  */
 export function declare ({ product, version, protocol, speaks, needs }) {
   if (!Number.isInteger(protocol)) throw new Error('compat: protocol must be an integer')
   const habla = speaks && speaks.length ? [...new Set(speaks)].sort((a, b) => a - b) : [protocol]
   if (!habla.includes(protocol)) throw new Error('compat: speaks must include protocol')
   if (needs !== undefined && !isNeeds(needs)) throw new Error('compat: needs must be a list of record permissions')
+  /** @type {Declaration} */
   const d = { product: String(product), version: String(version), protocol, speaks: habla }
   if (needs && needs.length) d.needs = [...new Set(needs)].sort()
   if (!isDeclaration(d)) throw new Error('compat: incomplete declaration')
@@ -90,6 +126,10 @@ export function declare ({ product, version, protocol, speaks, needs }) {
  * Los permisos que la pieza declaró necesitar (`needs`) y el acta no le da (`caps`). Vacío si
  * no declaró nada o tiene todo. Lo que el acta no conoce también cuenta como falta: si una
  * pieza pide un permiso que esta bóveda no sabe dar, eso es lo que hay que ver.
+ *
+ * @param {Partial<Declaration> | null | undefined} declaration
+ * @param {Iterable<string>} [caps]
+ * @returns {string[]}
  */
 export function missingCaps (declaration, caps = []) {
   const needs = declaration?.needs
@@ -107,6 +147,10 @@ export function missingCaps (declaration, caps = []) {
  * de decir «esta versión entra» acaban discrepando, y esa discrepancia no hace ruido.
  *
  * Lo que no se entiende no coincide — no marca roto y tampoco absuelve: solo no dice nada.
+ *
+ * @param {BrokenEntry[] | null | undefined} lista
+ * @param {{ product: string, version: string }} who
+ * @returns {BrokenEntry | null}  la entrada que la marca rota, o null
  */
 export function isBroken (lista, { product, version }) {
   for (const b of lista || []) {
@@ -131,10 +175,11 @@ export function isBroken (lista, { product, version }) {
  * Y de ahí sale por qué avisar es la otra mitad: si el viejo no puede juzgar, tampoco puede
  * enterarse solo. El que ve la incompatibilidad es el único que puede decírselo.
  *
- * @param {object} o.mine     mi declaración
- * @param {object} o.theirs   la del otro (o null si no dijo nada)
- * @param {Array}  [o.broken] mi lista de rotas (la del código más la del aviso de la red)
- * @returns {{compatible:boolean, code:string, reason:string, peer:object|null}}
+ * @param {object} [o]
+ * @param {Declaration} [o.mine]     mi declaración
+ * @param {unknown} [o.theirs]       la del otro (o null si no dijo nada)
+ * @param {BrokenEntry[]} [o.broken] mi lista de rotas (la del código más la del aviso de la red)
+ * @returns {Verdict}
  */
 export function check ({ mine, theirs, broken = [] } = {}) {
   if (!isDeclaration(mine)) throw new Error('compat: my own declaration is not valid')
@@ -184,6 +229,10 @@ export function check ({ mine, theirs, broken = [] } = {}) {
  * El mensaje original no se toca: se le añade detrás. Nadie que empareje por texto se rompe
  * si compara por prefijo, y quien compare por `code` no se entera (ver «los errores son un
  * contrato»).
+ *
+ * @param {string} message
+ * @param {Verdict | null | undefined} verdict
+ * @returns {string}
  */
 export function annotate (message, verdict) {
   if (!verdict || verdict.compatible !== false) return message
@@ -197,6 +246,8 @@ export function annotate (message, verdict) {
  * Lleva las dos declaraciones porque el que lo recibe suele ser el que NO sabe que está
  * roto —es el viejo—, así que hay que decirle qué es él, qué somos nosotros y qué hacer.
  * Sin esto el rechazo sería otro silencio, que es de lo que venimos huyendo.
+ *
+ * @param {{ mine: Declaration, theirs: unknown, verdict: Verdict }} args
  */
 export function incompatibleNotice ({ mine, theirs, verdict }) {
   return {

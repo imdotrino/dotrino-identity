@@ -25,13 +25,22 @@
 
 const PARTES = /^(\d+)\.(\d+)\.(\d+)$/
 
-/** `[major, minor, patch]`, o `null` si no tiene la forma. */
+/**
+ * `[major, minor, patch]`, o `null` si no tiene la forma.
+ * @param {unknown} v
+ * @returns {[number, number, number] | null}
+ */
 export function parseVersion (v) {
   const m = PARTES.exec(String(v || '').trim())
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
 
-/** -1, 0 o 1. Lanza si alguna no tiene forma: comparar basura no puede dar un resultado. */
+/**
+ * -1, 0 o 1. Lanza si alguna no tiene forma: comparar basura no puede dar un resultado.
+ * @param {string} a
+ * @param {string} b
+ * @returns {-1 | 0 | 1}
+ */
 export function compareVersions (a, b) {
   const x = parseVersion(a)
   const y = parseVersion(b)
@@ -42,6 +51,7 @@ export function compareVersions (a, b) {
   return 0
 }
 
+/** @type {Array<[string, (c: number) => boolean]>} */
 const OPS = [
   ['>=', (c) => c >= 0],
   ['<=', (c) => c <= 0],

@@ -46,7 +46,7 @@ import { BACKUP_VERSION, PASSWORDS_DRAWER, wants, assertSelected, planImport, re
 import { openSealKeys } from './sealKey.js'
 import { openCommKey, COMM_CN, COMM_CAPS } from './commKey.js'
 import { seal } from '../sealed.js'
-import { MSG, SCOPE, secretsScope, isValidSecretsNs, VAULT_PROTOCOL, VAULT_SPEAKS } from '../protocol.js'
+import { MSG, SCOPE, secretsScope, isValidSecretsNs, VAULT_PROTOCOL, VAULT_SPEAKS, SEALED_REQUEST_TYPES, unsealedRequestsAllowed, UNSEALED_REQUESTS_UNTIL_TEXT } from '../protocol.js'
 import { sha256Hex } from './sha256.js'
 import { sealHead, ANCHOR_EVERY_MS, ANCHOR_FIRST_MS } from './logAnchor.js'
 import { createGate } from './gate.js'
@@ -655,6 +655,63 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
    * nada — es la misma puerta, con el camino más corto.
    */
   const channels = new Map()
+
+  /**
+   * LA RESPUESTA A UNA PETICIÓN SELLADA VUELVE SELLADA (`docs/sealed-requests.md`).
+   *
+   * El aparato mete en lo firmado una llave de un solo uso (`data.rek`), y a esa llave se le
+   * sella todo lo que se le conteste a ESA petición. Se hace con un canal más de `channels`
+   * —como el socket local—, así que ningún mostrador tiene que saber nada: contesta a `from`
+   * como siempre y el canal sella. El canal es por conexión Y llave: dos peticiones por la
+   * misma conexión con llaves distintas no se pisan, y un tercero que escriba «desde» ese
+   * token con otra llave se lleva su propio canal, no el del aparato.
+   *
+   * Viven lo que puede tardar la respuesta más lenta (un pedido que espera al teléfono) y se
+   * podan por antigüedad; si ya no está, la respuesta a un pedido aprobado sale por la cola
+   * del aparato, como antes.
+   */
+  const SEALED_CHANNEL_TTL_MS = 24 * 60 * 60 * 1000
+  const SEALED_CHANNELS_MAX = 5000
+  const sealedChannelAt = new Map()
+  function sealedChannel (token, rek) {
+    const id = `sealed:${token}:${sha256Hex(rek).slice(0, 16)}`
+    const now = Date.now()
+    if (!channels.has(id)) {
+      for (const [k, t] of sealedChannelAt) {
+        if (now - t < SEALED_CHANNEL_TTL_MS && sealedChannelAt.size < SEALED_CHANNELS_MAX) break
+        sealedChannelAt.delete(k); channels.delete(k)
+      }
+      // EN ORDEN: sellar es asíncrono, y dos respuestas seguidas podían adelantarse una a la
+      // otra. El orden importa (el aviso firmado de expulsión va ANTES del «no», porque el
+      // aparato deja de escuchar al recibir el «no»), así que salen en fila.
+      let tail = Promise.resolve()
+      channels.set(id, (obj) => {
+        tail = tail.then(() => client.sendSealedTo(token, obj, { peerEncPub: rek, pilar: true }))
+          .catch((e) => log(`[vault] could not send a sealed reply (${e.code || 'error'}): ${e.message}`))
+      })
+    }
+    sealedChannelAt.delete(id)
+    sealedChannelAt.set(id, now)
+    return id
+  }
+  const unsealedTold = new Map()
+  /** MIGRACIÓN (caduca 2026-12-15): una petición en claro de un cliente viejo. */
+  function unsealedRequest (from, payload) {
+    const type = String(payload.type)
+    if (!unsealedRequestsAllowed()) {
+      audit('rejected', { what: type, reason: 'unsealed' })
+      reply(from, { type: MSG.ERROR, error: `${type}: requests must be sealed to this vault — update the client`, code: 'request-unsealed' })
+      return false
+    }
+    const t = Date.now()
+    if (t - (unsealedTold.get(type) || 0) > 60 * 60 * 1000) {
+      unsealedTold.set(type, t)
+      log(`[vault] ${type} arrived UNSEALED from an old client: served until ${UNSEALED_REQUESTS_UNTIL_TEXT} (migration), then refused — update it`)
+    }
+    return true
+  }
+  const SEALED_TYPES = new Set(SEALED_REQUEST_TYPES)
+
 
   /**
    * QUÉ SOMOS, Y QUÉ CORRE CADA APARATO (CONVENCIONES §14, `@dotrino/compat`).
@@ -2574,6 +2631,19 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
       // desconocidos, y quien teclea su contraseña tiene que saber por qué no contesta.
       if (pass.throttled) reply(from, { type: MSG.ERROR, error: 'too many tries: wait before trying again', code: 'too-many-tries', waitMs: pass.waitMs })
       return
+    }
+    // ¿SELLADA? Por el socket local (`channels`) no hace falta: no toca la red. Por el proxio,
+    // lo que pide un aparato tiene que venir sellado, y su respuesta vuelve sellada a `rek`.
+    if (SEALED_TYPES.has(payload.type) && !channels.has(from)) {
+      if (meta?.sealed) {
+        const rek = payload?.data?.rek
+        if (!ActaPilar.isEncPub(rek)) {
+          // Sellada pero sin a dónde sellar la respuesta: contestar en claro sería deshacer el
+          // sobre de la petición. Se dice, en claro y sin nada del aparato dentro.
+          return reply(from, { type: MSG.ERROR, error: `${payload.type}: a sealed request needs data.rek to seal the reply to`, code: 'no-reply-key' })
+        }
+        from = sealedChannel(from, rek)
+      } else if (!unsealedRequest(from, payload)) return
     }
     try {
       if (payload.type === MSG.HELLO) return desk.handleHello(from, payload)

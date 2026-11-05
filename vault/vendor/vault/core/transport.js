@@ -81,12 +81,16 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
   // CON QUÉ SE ABRE LO QUE NOS SELLAN (`commKey.encKeypair`): sin esto la bóveda no podía
   // recibir nada sellado, y una hermana cerrada no habría podido abrir los cajones que le
   // manda la otra. El pilar anuncia la pública al identificarse con la llave de comunicación.
-  const enc = commKey?.pub?.() && typeof commKey.encKeypair === 'function'
+  let enc = commKey?.pub?.() && typeof commKey.encKeypair === 'function'
     ? await commKey.encKeypair().catch((e) => { log('[vault] no transport encryption key: ' + e.message); return null })
     : null
-  const client = makeClient ? makeClient({ url, acceptDirectFrom: inActa }) : new WebSocketProxyClient({
+  // Y A QUIEN CREA EL CLIENTE TAMBIÉN se le pasa (la extensión, la pestaña): sin esto una bóveda
+  // de navegador no anunciaba llave de cifrado, y lo que sus aparatos le sellan
+  // (`docs/sealed-requests.md`) no tenía con qué abrirse.
+  const encOpts = enc ? { myEncPub: enc.encPub, myEncPrivateKey: enc.privateKey } : {}
+  const client = makeClient ? makeClient({ url, acceptDirectFrom: inActa, ...encOpts }) : new WebSocketProxyClient({
     url, enableWebRTC: true, acceptDirectFrom: inActa, autoReconnect: true,
-    ...(enc ? { myEncPub: enc.encPub, myEncPrivateKey: enc.privateKey } : {}),
+    ...encOpts,
     maxReconnectAttempts: 100000, reconnectDelay: 4000,
     // EL BLUETOOTH (proxy-client docs/bluetooth.md) lo decide la plataforma: el binario en
     // Linux sí; la pestaña y la extensión no pueden. Misma puerta que WebRTC (`inActa`).
@@ -118,6 +122,14 @@ export async function createTransport ({ identity, url = DEFAULT_PROXY, commKey 
     const record = (await identity.profileActa?.().catch(() => null))?.acta || null
     seenActa = record   // la copia que mira la puerta del canal directo
     const comm = commKey?.pub?.() || null
+    // LA LLAVE DE CIFRADO TAMBIÉN SI LA DE COMUNICACIÓN SE ESTRENÓ DESPUÉS de crear el cliente
+    // (un perfil con contraseña la estrena al abrirse). Sin esto la bóveda volvía a la red con
+    // su llave nueva pero sin anunciar con qué se le sella, y lo que sus aparatos le mandan
+    // sellado (`docs/sealed-requests.md`) no tenía con qué abrirse.
+    if (comm && !enc && typeof commKey.encKeypair === 'function') {
+      enc = await commKey.encKeypair().catch((e) => { log('[vault] no transport encryption key: ' + e.message); return null })
+      if (enc) client.updateConfig?.({ myEncPub: enc.encPub, myEncPrivateKey: enc.privateKey })
+    }
     // ¿Nos nombra el acta? Con `cn` o sin él, lo que el proxio mira es la pertenencia.
     const isMember = comm && (record?.members || []).some((m) => m?.pub === comm)
 

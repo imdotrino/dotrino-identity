@@ -168,3 +168,28 @@ export const VAULT_PROTOCOL = 1
 
 /** Los protocolos que esta build entiende. Al añadir el 2, aquí van `[1, 2]`. */
 export const VAULT_SPEAKS = [1]
+
+/**
+ * LAS PETICIONES DE UN APARATO A SU BÓVEDA VAN SELLADAS (regla `encrypted`, dueño 2026-10-26:
+ * nada viaja en claro por la red). El aparato sella la petición ENTERA a la llave de cifrado
+ * del transporte de la bóveda (`sendSealed` del pilar, `@dotrino/identity/vault-seal`) y mete
+ * dentro de lo firmado la llave de un solo uso a la que se le sella la respuesta (`data.rek`).
+ * Diseño: `docs/sealed-requests.md`.
+ *
+ * Estos son los tipos que lo exigen: lo que pide un aparato con su firma. El emparejamiento,
+ * la entrada con contraseña y lo que se cruzan las bóvedas siguen su propio camino.
+ */
+export const SEALED_REQUEST_TYPES = Object.freeze([
+  MSG.SIGN, MSG.GET, MSG.STORE, MSG.CHECK, MSG.DEVICES, MSG.RENEW, MSG.SECRETS,
+  MSG.ADMIN, MSG.RENOUNCE, MSG.INCIDENT, MSG.REWRAP_OK
+])
+
+/**
+ * MIGRACIÓN — CADUCA EL 2026-12-15. Hasta esa fecha una petición de esos tipos que llega en
+ * claro (un cliente viejo) se atiende y se apunta en el log; desde esa fecha se rechaza con
+ * `request-unsealed`. Lo cubre `test/sealed-requests.test.mjs`. Quitar en cuanto pase.
+ */
+export const UNSEALED_REQUESTS_UNTIL = Date.UTC(2026, 11, 15)
+export const UNSEALED_REQUESTS_UNTIL_TEXT = '2026-12-15'
+/** ¿Todavía se atiende una petición en claro? (migración, ver arriba) */
+export const unsealedRequestsAllowed = (now = Date.now()) => now < UNSEALED_REQUESTS_UNTIL

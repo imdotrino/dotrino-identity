@@ -169,6 +169,11 @@ export class WebSocketProxyClient {
      *
      * Pass `sealing: { seal(msg, peerEncPub), open(envelope), isSealed(msg) }` to
      * plug the second case in. Without it, the built-in sealing is used.
+     *
+     * BOTH AT ONCE (0.47.0): a vault inside an app (the password extension) seals the app's
+     * own messages with `sealing` and still has to open what the ecosystem seals to its
+     * transport key with the pilar's envelope. With `myEncPrivateKey` next to `sealing`,
+     * the pilar envelope is opened too, and `sendSealed*(…, { pilar: true })` seals with it.
      */
     this.sealing = options.sealing || null
 
@@ -675,7 +680,12 @@ export class WebSocketProxyClient {
    * Seal a payload towards a peer's encryption key and send it. This is what an app
    * should use for anything that is not meant for the proxy's eyes.
    */
-  async sendSealed (toPubkeys, payload, { peerEncPub, ...opts } = {}) {
+  /**
+   * @param {string|string[]} toPubkeys
+   * @param {any} payload
+   * @param {{ peerEncPub?: string, pilar?: boolean, ephemeral?: boolean, quiet?: boolean, app?: string }} [options]
+   */
+  async sendSealed (toPubkeys, payload, { peerEncPub, pilar = false, ...opts } = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
     // Por pubkey el mensaje puede quedarse ESPERANDO en el proxio, y ahí se deja como mucho
     // 8 MB de archivo (parts.js). Lo que pasa de eso no se manda: se dice, y la app decide.
@@ -693,7 +703,7 @@ export class WebSocketProxyClient {
     // Con la llave puesta a mano se respeta tal cual: quien la pasa está diciendo que ya
     // sabe de quién es (se emparejaron), y un sobre vale para todos los destinatarios.
     if (peerEncPub) {
-      const sealPiece = await this._sealerFor(m.bin, peerEncPub, list.length === 1 ? list[0] : undefined)
+      const sealPiece = await this._sealerFor(m.bin, peerEncPub, list.length === 1 ? list[0] : undefined, pilar)
       for (const piece of pieces) this._sendByPubkeyRaw(list, await sealPiece(piece), opts)
       return
     }
@@ -705,7 +715,7 @@ export class WebSocketProxyClient {
     // sin forma de saber cuál mitad.
     const keys = await Promise.all(list.map(async (pk) => [pk, await this.encPubOf(pk)]))
     for (const [pk, encPub] of keys) {
-      const sealPiece = await this._sealerFor(m.bin, encPub, pk)
+      const sealPiece = await this._sealerFor(m.bin, encPub, pk, pilar)
       for (const piece of pieces) this._sendByPubkeyRaw([pk], await sealPiece(piece), opts)
     }
   }
@@ -721,9 +731,9 @@ export class WebSocketProxyClient {
    *
    * @param {string|string[]} toTokens
    * @param {any} payload
-   * @param {{ peerPubkey?:string, peerEncPub?:string }} opts
+   * @param {{ peerPubkey?:string, peerEncPub?:string, pilar?:boolean }} [opts]
    */
-  async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub } = /** @type {any} */ ({})) {
+  async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub, pilar = false } = /** @type {any} */ ({})) {
     const tokens = Array.isArray(toTokens) ? toTokens : [toTokens]
     if (!peerEncPub) {
       // Si la app no lo dice, lo dice el SALUDO: `helloTo` dejó apuntado de quién es
@@ -750,7 +760,7 @@ export class WebSocketProxyClient {
     // versión que ya se actualizó.
     if (m.bin) this._needPeerBinary(tokens)
     if (m.bin && !direct) this._needBinaryProxy()
-    const sealPiece = await this._sealerFor(m.bin, peerEncPub, peerPubkey)
+    const sealPiece = await this._sealerFor(m.bin, peerEncPub, peerPubkey, pilar)
     if (m.len <= size) {
       const envelope = await sealPiece(m.bin ? m.whole : payload)
       if (tokens.length === 1 && peerPubkey) { this._sendToTokenOrQueue(tokens[0], envelope, peerPubkey); return }
@@ -993,12 +1003,26 @@ export class WebSocketProxyClient {
     this._emit('peer_identity', from, msg.publickey)
   }
 
-  /** Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar. */
-  async _seal (payload, peerEncPub, peerPubkey) {
+  /**
+   * Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar.
+   * `pilar`: con el sobre del pilar aunque haya `sealing` (lo abre quien tenga la privada de
+   * `peerEncPub`, sin pasar por ninguna bóveda).
+   */
+  async _seal (payload, peerEncPub, peerPubkey, pilar = false) {
     if (!peerEncPub) throw errorWithCode('seal: missing peerEncPub', 'unsealed')
-    return this.sealing
+    return this.sealing && !pilar
       ? this.sealing.seal(payload, peerEncPub, { publickey: peerPubkey })
       : seal(payload, peerEncPub)
+  }
+
+  /** ¿Este sobre es de la bóveda de la app (`sealing`)? Si no, es el del pilar. */
+  _bySealing (env) { return !!this.sealing && this.sealing.isSealed(env) }
+
+  /** Abre un sobre con quien toca: la bóveda de la app o la llave del pilar. */
+  _openEnvelope (env, meta) {
+    if (this._bySealing(env)) return this.sealing.open(env, meta)
+    if (!this.myEncPrivateKey) throw errorWithCode('no encryption key to open a pilar envelope', 'unsealed')
+    return open(env, this.myEncPrivateKey)
   }
 
   /**
@@ -1006,10 +1030,10 @@ export class WebSocketProxyClient {
    * CEK para el mensaje entero, sellada una vez con el sellado de siempre, y cada pieza
    * cifrada como bytes con ella. Sin bytes, el sobre de texto de siempre por pieza.
    */
-  async _sealerFor (bin, peerEncPub, peerPubkey) {
-    if (!bin) return (piece) => this._seal(piece, peerEncPub, peerPubkey)
+  async _sealerFor (bin, peerEncPub, peerPubkey, pilar = false) {
+    if (!bin) return (piece) => this._seal(piece, peerEncPub, peerPubkey, pilar)
     const cek = await makeMessageKey()
-    const k = await this._seal({ cek }, peerEncPub, peerPubkey)
+    const k = await this._seal({ cek }, peerEncPub, peerPubkey, pilar)
     return async (bytes) => {
       const { iv, ct } = await encryptBytes(cek, bytes)
       return pack({ bv: BIN_SEALED, k, iv, ct })
@@ -1046,7 +1070,7 @@ export class WebSocketProxyClient {
     let p = this._msgKeys.get(id)
     if (!p) {
       p = (async () => {
-        const o = this.sealing ? await this.sealing.open(k, meta) : await open(k, this.myEncPrivateKey)
+        const o = await this._openEnvelope(k, meta)
         if (!o || typeof o.cek !== 'string') throw errorWithCode('the sealed key of a message has no key inside', 'bad-pack')
         return o.cek
       })()
@@ -1195,7 +1219,7 @@ export class WebSocketProxyClient {
       try { env = unpack(msg) } catch (_) { return false }
       return isBinSealed(env) && this._isSealed(env.k)
     }
-    return this.sealing ? this.sealing.isSealed(msg) : isSealed(msg)
+    return this.sealing ? (this.sealing.isSealed(msg) || (!!this.myEncPrivateKey && isSealed(msg))) : isSealed(msg)
   }
 
   sendByPubkey (toPubkeys, payload, opts = {}) {
@@ -1238,7 +1262,7 @@ export class WebSocketProxyClient {
           this._emit('error', { type: 'undecipherable', from, error: e })
           return
         }
-        const senderEncPub = this.sealing?.senderOf?.(env.k) || null
+        const senderEncPub = (this._bySealing(env.k) && this.sealing?.senderOf?.(env.k)) || null
         this._handOpened(from, opened, { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) })
         return
       }
@@ -1250,12 +1274,10 @@ export class WebSocketProxyClient {
         return
       }
       try {
-        const opened = this.sealing
-          ? await this.sealing.open(payload, meta)
-          : await open(payload, this.myEncPrivateKey)
+        const opened = await this._openEnvelope(payload, meta)
         // Quién selló (la llave de cifrado), si el sobre lo dice: es lo que autentica al
         // remitente, porque solo quien tiene esa privada pudo armarlo.
-        const senderEncPub = this.sealing?.senderOf?.(payload) || null
+        const senderEncPub = (this._bySealing(payload) && this.sealing?.senderOf?.(payload)) || null
         this._handOpened(from, opened, { ...meta, sealed: true, ...(senderEncPub ? { senderEncPub } : {}) })
       } catch (e) {
         // Sealed to somebody else, or tampered with. Staying quiet is the point.
