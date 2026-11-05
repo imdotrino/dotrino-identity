@@ -35,7 +35,11 @@ export const ENCPUB_V = 1
 /** Para quién vale este anuncio: un propósito, no un servidor. */
 export const ENCPUB_AUD = 'dotrino:encpub'
 
-/** Cuerpo canónico del anuncio. Lo que se firma, ni un campo más. */
+/**
+ * Cuerpo canónico del anuncio. Lo que se firma, ni un campo más.
+ * @param {{ publickey: string, encPub: string, ts?: number }} args
+ * @returns {import('./index.js').EncPubStatement['data']}
+ */
 export function encPubBody ({ publickey, encPub, ts = Date.now() }) {
   return { v: ENCPUB_V, op: 'encpub', aud: ENCPUB_AUD, publickey, encpub: encPub, ts }
 }
@@ -44,6 +48,9 @@ export function encPubBody ({ publickey, encPub, ts = Date.now() }) {
  * ¿Es esto una llave de cifrado P-256 y no cualquier string? Se comprueba de verdad
  * —igual que hace el acta— porque una llave mal formada no falla al guardarla: falla
  * mucho después, al intentar sellarle algo a alguien.
+ *
+ * @param {unknown} v
+ * @returns {v is string}
  */
 export function isEncPub (v) {
   if (typeof v !== 'string' || !v) return false
@@ -108,4 +115,5 @@ export async function readEncPubStatement (statement, { publickey } = /** @type 
 }
 
 /** Lo firmado, en texto canónico. Mismo orden en las dos puntas o las firmas no cuadran. */
+/** @param {unknown} data @returns {string} */
 export const encPubSigningText = (data) => canonicalStringify(data)

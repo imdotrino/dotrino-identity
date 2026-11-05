@@ -25,6 +25,35 @@ const HELLO_TAG = '__cc_hello__'
  */
 const SPEAKS = ['binary']
 
+/** @typedef {import('./index.js').WebSocketProxyClientOptions} WebSocketProxyClientOptions */
+/** @typedef {import('./index.js').SignFn} SignFn */
+/** @typedef {import('./index.js').TransportStats} TransportStats */
+/**
+ * Una trama JSON del proxio, de ida o de vuelta. Llega de la red: su forma la decide `type`.
+ * @typedef {Record<string, any>} Frame
+ */
+/**
+ * Lo que acompaña a un mensaje entregado a la app (`via`, `fromPubkey`, `sealed`…).
+ * @typedef {Record<string, any>} MessageMeta
+ */
+/** @typedef {(...args: any[]) => void} Handler */
+/**
+ * Una petición que espera su respuesta del proxio.
+ * @typedef {{ resolve: (data: Frame) => void, reject: (e: unknown) => void,
+ *   timer: ReturnType<typeof setTimeout>, expectedType: string, channelKey?: string }} PendingRequest
+ */
+/**
+ * Un mensaje por token que, si el token murió, sale por pubkey (`_tokenFailed`).
+ * @typedef {{ token: string, envelope: any, peerPubkey: string,
+ *   timer: ReturnType<typeof setTimeout>, queueFallback: boolean }} TokenWatch
+ */
+/**
+ * Un mensaje medido para sus topes: su paquete si lleva bytes, su JSON si no.
+ * @typedef {{ bin: true, whole: Uint8Array, len: number } | { bin: false, whole: string, len: number }} Measured
+ */
+/** El relevo TURN en `stats()`. @typedef {NonNullable<TransportStats['turn']>} TurnState */
+/** Un canal directo (WebRTC o Bluetooth): los dos tienen la misma forma. @typedef {WebRTCManager | BluetoothManager} DirectChannel */
+
 /**
  * Dotrino WebSocket proxy client.
  * Minimal API: connection + token + messages + channels (publish/list/count/disconnect)
@@ -48,6 +77,9 @@ const APP_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 /**
  * Valida un nombre de app (`messenger`, `vault`…). Lo que no tiene forma LANZA: un nombre mal
  * escrito haría que el timbre no sonara nunca en esa app, y eso no se ve.
+ *
+ * @param {unknown} app
+ * @returns {string | null}
  */
 function checkApp (app) {
   if (app == null) return null
@@ -58,6 +90,7 @@ function checkApp (app) {
 }
 
 export class WebSocketProxyClient {
+  /** @param {WebSocketProxyClientOptions} [options] */
   constructor (options = {}) {
     this.url = options.url || 'wss://proxy.dotrino.com'
     this.autoReconnect = options.autoReconnect !== false
@@ -121,7 +154,9 @@ export class WebSocketProxyClient {
      * pasó por `readEncPubStatement`, así que lo de dentro está atado a su identidad.
      * No se cachean los fallos: «hoy no la tengo» no es un hecho, es un momento.
      */
+    /** @type {Map<string, string>} */
     this._encPubs = new Map()
+    /** @type {Map<string, Promise<string>>} */
     this._encPubInflight = new Map()
 
     /**
@@ -135,14 +170,21 @@ export class WebSocketProxyClient {
      * Se vacía al reconectar: los tokens se reparten por conexión y los de antes ya no
      * son de nadie.
      */
+    /** @type {Map<string, string>} */
     this._tokenPubkeys = new Map()
     // Lo que dijo entender cada token en su saludo, y cada identidad (para lo que va por
     // pubkey). Sin saludo no se sabe, y entonces no se frena nada.
+    /** @type {Map<string, Set<string>>} */
     this._tokenSpeaks = new Map()
+    /** @type {Map<string, Set<string>>} */
     this._pubkeySpeaks = new Map()
+    /** @type {Set<string>} */
     this._helloSent = new Set()
 
-    /** Mi propia identidad en el cable, la que `identify` dejó atada a este token. */
+    /**
+     * Mi propia identidad en el cable, la que `identify` dejó atada a este token.
+     * @type {string | null}
+     */
     this.myPublickey = null
 
     /**
@@ -174,6 +216,8 @@ export class WebSocketProxyClient {
      * own messages with `sealing` and still has to open what the ecosystem seals to its
      * transport key with the pilar's envelope. With `myEncPrivateKey` next to `sealing`,
      * the pilar envelope is opened too, and `sendSealed*(…, { pilar: true })` seals with it.
+     *
+     * @type {import('./index.js').SealingBridge | null}
      */
     this.sealing = options.sealing || null
 
@@ -186,18 +230,26 @@ export class WebSocketProxyClient {
     this.enableHeartbeat = options.enableHeartbeat !== false
     this.heartbeatInterval = options.heartbeatInterval ?? 20000
     this.heartbeatTimeout = options.heartbeatTimeout ?? 8000
+    /** @type {ReturnType<typeof setInterval> | null} */
     this._hbTimer = null
+    /** @type {ReturnType<typeof setTimeout> | null} */
     this._hbDeadTimer = null
 
+    /** @type {WebSocket | null} */
     this.ws = null
+    /** @type {string | null} */
     this.token = null
     this._connected = false
     this._reconnectAttempts = 0
+    /** @type {ReturnType<typeof setTimeout> | null} */
     this._reconnectTimer = null
+    /** @type {Map<string, Set<Handler>>} */
     this._handlers = new Map()
-    this._pending = new Map() // messageId -> { resolve, reject, timer }
+    /** @type {Map<string, PendingRequest>} messageId -> { resolve, reject, timer } */
+    this._pending = new Map()
     this._nextId = 1
-    this._tokenWatch = new Map() // messageId -> { token, sobre, peerPubkey, timer, queueFallback }
+    /** @type {Map<string, TokenWatch>} messageId -> { token, sobre, peerPubkey, timer, queueFallback } */
+    this._tokenWatch = new Map()
     // Mensajes grandes que llegan en partes (parts.js). Uno que se queda a medias se DICE:
     // con él se pierde el mensaje entero, y eso no puede pasar callado.
     this._parts = new Reassembler({
@@ -205,8 +257,36 @@ export class WebSocketProxyClient {
     })
     // Las CEK de los mensajes con bytes ya abiertas, por su sobre: todas las partes de un
     // mensaje traen la misma, y abrirla es una vuelta a la bóveda. Pocas: un mensaje vivo.
+    /** @type {Map<string, Promise<string>>} */
     this._msgKeys = new Map()
     this._traffic = new TrafficStats()
+
+    // Lo que se rellena después (al conectar, al pedir TURN…). Declarado aquí para el
+    // chequeo de tipos; leerlo no cambia nada.
+    /** @type {boolean | undefined} */
+    this._closed // eslint-disable-line no-unused-expressions
+    /** @type {Set<string> | undefined} */
+    this._rtcTried // eslint-disable-line no-unused-expressions
+    /** @type {ReturnType<typeof setTimeout> | null | undefined} */
+    this._turnTimer // eslint-disable-line no-unused-expressions
+    /** @type {TurnState | undefined} */
+    this._turn // eslint-disable-line no-unused-expressions
+    /** @type {((token: string) => void) | null | undefined} */
+    this._connectResolve // eslint-disable-line no-unused-expressions
+    /** @type {((e: unknown) => void) | null | undefined} */
+    this._connectReject // eslint-disable-line no-unused-expressions
+    /** @type {string | undefined} */
+    this.instance // eslint-disable-line no-unused-expressions
+    /** @type {string | null | undefined} The proxy node this connection landed on (set on `connected`). */
+    this.node // eslint-disable-line no-unused-expressions
+    /** @type {string[] | undefined} */
+    this.peers // eslint-disable-line no-unused-expressions
+    /** @type {string[] | undefined} */
+    this.knownNodes // eslint-disable-line no-unused-expressions
+    /** @type {number | null | undefined} */
+    this.protocol // eslint-disable-line no-unused-expressions
+    /** @type {string[] | null | undefined} */
+    this.caps // eslint-disable-line no-unused-expressions
 
     this._rtc = this.enableWebRTC ? new WebRTCManager({
       getSelfToken: () => this.token,
@@ -273,20 +353,24 @@ export class WebSocketProxyClient {
    */
   _prepareBluetooth () {
     if (!this._ble || this._ble.available || this._bleStarting) return this._bleStarting
+    const ble = this._ble
     this._bleStarting = (async () => {
-      let adapter = this._bleOption
-      if (adapter === true) {
+      /** @type {import('./index.js').BluetoothAdapter | null} */
+      let adapter
+      if (this._bleOption === true) {
         const mod = './ble/bluez.js'
-        const { openBluez } = await import(/* @vite-ignore */ mod)
+        const { openBluez } = /** @type {typeof import('./ble/bluez.js')} */ (await import(/* @vite-ignore */ mod))
         adapter = await openBluez()
         if (!adapter) return
+      } else {
+        adapter = this._bleOption
       }
       // Cerrado mientras se abría el bus: el stop() de close() no lo vio, así que se cierra aquí.
-      if (this._closed) { if (this._bleOption === true) await adapter.stop().catch(() => {}); return }
-      await this._ble.start(adapter)
-      if (this._closed) await this._ble.stop().catch(() => {})
+      if (this._closed) { if (this._bleOption === true) await /** @type {import('./index.js').BluetoothAdapter} */ (adapter).stop().catch(() => {}); return }
+      await ble.start(/** @type {import('./index.js').BluetoothAdapter} */ (adapter))
+      if (this._closed) await ble.stop().catch(() => {})
     })().catch((e) => {
-      this._emit('error', { type: 'bluetooth_unavailable', error: e, code: e?.code || null })
+      this._emit('error', { type: 'bluetooth_unavailable', error: e, code: codeOf(e) })
     }).finally(() => { this._bleStarting = null })
     return this._bleStarting
   }
@@ -298,6 +382,8 @@ export class WebSocketProxyClient {
    * Anuncia `{kind, data}` por Bluetooth hasta que se llame a lo que devuelve
    * (docs/bluetooth.md §3). `kind: 'pair'` es la invitación de emparejar; `'contact'`, la
    * tarjeta de contacto. Lanza `no-bluetooth` si aquí no lo hay.
+   * @param {string} kind
+   * @param {string} data
    * @returns {() => void}
    */
   announceBluetooth (kind, data) {
@@ -308,6 +394,7 @@ export class WebSocketProxyClient {
   /**
    * Lo que anuncian por Bluetooth los aparatos de alrededor con ese `kind`. No necesita el
    * proxio. `onFound` avisa de cada uno según aparece.
+   * @param {{ kind: string, timeoutMs?: number, onFound?: (b: import('./index.js').BluetoothBeacon) => void }} opts
    * @returns {Promise<{kind: string, data: string}[]>}
    */
   async discoverBluetooth ({ kind, timeoutMs, onFound } = /** @type {any} */ ({})) {
@@ -316,7 +403,10 @@ export class WebSocketProxyClient {
     return this._ble.discover({ kind, timeoutMs, onFound })
   }
 
-  /** La red local (docs/lan.md), cargada una vez y solo si se pidió (`lan: true`, Node). */
+  /**
+   * La red local (docs/lan.md), cargada una vez y solo si se pidió (`lan: true`, Node).
+   * @returns {Promise<typeof import('./lan/mdns.js') | null>}
+   */
   async _lanModule () {
     if (!this._lanOption) return null
     const mod = './lan/mdns.js'
@@ -327,9 +417,12 @@ export class WebSocketProxyClient {
    * ANUNCIA CERCA: `{kind, data}` por cada medio que este cliente tenga, el Bluetooth y la red
    * local, hasta que se llame a lo que devuelve. Un medio que falla no tumba a los otros; si no
    * queda ninguno, lanza `no-nearby`.
+   * @param {string} kind
+   * @param {string} data
    * @returns {Promise<() => void>}
    */
   async announceNearby (kind, data) {
+    /** @type {Array<() => void>} */
     const stops = []
     if (this._ble) {
       await this._prepareBluetooth()
@@ -338,7 +431,7 @@ export class WebSocketProxyClient {
     const lan = await this._lanModule()
     if (lan) {
       try { stops.push(await lan.announceLan(kind, data)) } catch (e) {
-        this._emit('error', { type: 'lan_unavailable', error: e, code: e?.code || null })
+        this._emit('error', { type: 'lan_unavailable', error: e, code: codeOf(e) })
       }
     }
     if (!stops.length) throw errorWithCode('nearby: neither Bluetooth nor the local network is available here', 'no-nearby')
@@ -348,16 +441,20 @@ export class WebSocketProxyClient {
   /**
    * BUSCA CERCA, por los mismos medios y a la vez. Cada hallazgo lleva `via` (`'bluetooth'` o
    * `'lan'`); lo mismo visto por los dos medios sale una vez. Sin ningún medio, `no-nearby`.
+   * @param {{ kind: string, timeoutMs?: number, onFound?: (b: import('./index.js').NearbyBeacon) => void }} opts
    * @returns {Promise<{kind: string, data: string, via: 'bluetooth'|'lan'}[]>}
    */
   async discoverNearby ({ kind, timeoutMs = 8000, onFound } = /** @type {any} */ ({})) {
+    /** @type {import('./index.js').NearbyBeacon[]} */
     const found = []
-    const add = (via) => (f) => {
+    /** @param {'bluetooth' | 'lan'} via */
+    const add = (via) => (/** @type {{ kind: string, data: string }} */ f) => {
       if (found.some((x) => x.kind === f.kind && x.data === f.data)) return
       const item = { kind: f.kind, data: f.data, via }
       found.push(item)
       try { onFound?.(item) } catch (_) {}
     }
+    /** @type {Array<Promise<unknown>>} */
     const runs = []
     if (this._ble) {
       await this._prepareBluetooth()
@@ -366,7 +463,7 @@ export class WebSocketProxyClient {
     const lan = await this._lanModule()
     if (lan) {
       runs.push(lan.discoverLan({ kind, timeoutMs, onFound: add('lan') }).catch((e) => {
-        this._emit('error', { type: 'lan_unavailable', error: e, code: e?.code || null })
+        this._emit('error', { type: 'lan_unavailable', error: e, code: codeOf(e) })
         return null
       }))
     }
@@ -378,12 +475,13 @@ export class WebSocketProxyClient {
     return found
   }
 
+  /** @returns {Promise<string>} */
   connect () {
     this._closed = false
     this._rtc?.reopen()
     this._prepareBluetooth()
-    return new Promise((resolve, reject) => {
-      if (this._connected) return resolve(this.token)
+    return new Promise(/** @param {(token: string) => void} resolve @param {(e: unknown) => void} reject */ (resolve, reject) => {
+      if (this._connected) return resolve(/** @type {string} */ (this.token))
       // Un reintento que estaba esperando su turno sobra: este `connect()` ya abre uno.
       if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
       this._connectResolve = resolve
@@ -417,7 +515,10 @@ export class WebSocketProxyClient {
     this._rejectAllPending(errorWithCode('Connection closed', 'CONNECTION_CLOSED'))
   }
 
-  /** Corta en seco todo lo que esperaba respuesta, con su motivo. */
+  /**
+   * Corta en seco todo lo que esperaba respuesta, con su motivo.
+   * @param {Error} error
+   */
   _rejectAllPending (error) {
     const pending = [...this._pending.values()]
     this._pending.clear()
@@ -430,7 +531,10 @@ export class WebSocketProxyClient {
   /** Alias for close() to ease migration from older clients. */
   disconnect () { return this.close() }
 
-  /** Update connection options before (re)connecting. */
+  /**
+   * Update connection options before (re)connecting.
+   * @param {WebSocketProxyClientOptions} [options]
+   */
   updateConfig (options = {}) {
     if (options.url) this.url = options.url
     if (typeof options.autoReconnect === 'boolean') this.autoReconnect = options.autoReconnect
@@ -465,12 +569,19 @@ export class WebSocketProxyClient {
     }
   }
 
+  /**
+   * @param {import('./index.js').ProxyEvent | string} event
+   * @param {Handler} handler
+   * @returns {() => void}
+   */
   on (event, handler) {
-    if (!this._handlers.has(event)) this._handlers.set(event, new Set())
-    this._handlers.get(event).add(handler)
+    let set = this._handlers.get(event)
+    if (!set) { set = new Set(); this._handlers.set(event, set) }
+    set.add(handler)
     return () => this.off(event, handler)
   }
 
+  /** @param {import('./index.js').ProxyEvent | string} event @param {Handler} handler */
   off (event, handler) {
     const set = this._handlers.get(event)
     if (set) set.delete(handler)
@@ -479,6 +590,9 @@ export class WebSocketProxyClient {
   /**
    * Send a payload to one or many peer tokens.
    * The payload is JSON-stringified into the envelope's `message` field.
+   *
+   * @param {string | string[]} to
+   * @param {any} payload
    */
   send (to, payload) {
     // `requireSealed` vale para los DOS caminos dirigidos, no solo para el de pubkey
@@ -523,21 +637,23 @@ export class WebSocketProxyClient {
    * quemar CPU y señalización para nada. Si el canal se cae, `webrtc_close` lo desapunta y
    * el siguiente mensaje vuelve a intentarlo.
    */
+  /** @param {string[]} tokens */
   _upgradeDirect (tokens) {
     // El Bluetooth negocia en paralelo con WebRTC y deduplica solo (ble/manager.js).
     if (this._ble?.available) for (const t of tokens) if (!this._ble.isOpen(t)) this._ble.upgrade(t)
-    if (!this._rtc) return
-    this._rtcTried = this._rtcTried || new Set()
+    const rtc = this._rtc
+    if (!rtc) return
+    const tried = this._rtcTried = this._rtcTried || new Set()
     for (const t of tokens) {
-      if (this._rtcTried.has(t) || this._rtc.isOpen(t)) continue
-      this._rtcTried.add(t)
+      if (tried.has(t) || rtc.isOpen(t)) continue
+      tried.add(t)
       // La implementación se busca AQUÍ, justo antes de negociar, y no al conectar: esto ya
       // corre desatendido, así que la espera no se la come nadie. Lanzarlo desde `connect`
       // metía un microtask de más y descuadraba los tiempos de otras cosas — lo cazaron
       // las pruebas del protocolo, que fallaban solo al correr todas juntas.
       Promise.resolve()
         .then(() => this._prepareWebRTC())
-        .then(() => this._rtc.connect(t))
+        .then(() => /** @type {WebRTCManager} */ (this._rtc).connect(t))
         .catch(() => {})   // no poder ir directo no es un fallo: es el caso normal en internet
     }
   }
@@ -545,13 +661,19 @@ export class WebSocketProxyClient {
   /**
    * Force opening (or reusing) a WebRTC DataChannel to a peer.
    * Resolves once the channel is open. Rejects on failure.
+   * @param {string} token
+   * @returns {Promise<void>}
    */
   connectWebRTC (token) {
     if (!this._rtc) return Promise.reject(new Error('WebRTC disabled'))
     return this._rtc.connect(token)
   }
 
-  /** True if there is an open DataChannel to the given peer. */
+  /**
+   * True if there is an open DataChannel to the given peer.
+   * @param {string} token
+   * @returns {boolean}
+   */
   isWebRTCOpen (token) {
     return !!(this._rtc && this._rtc.isOpen(token))
   }
@@ -559,22 +681,31 @@ export class WebSocketProxyClient {
   /**
    * EL MEJOR CANAL ABIERTO, en el orden de la escalera (docs/bluetooth.md §1): WebRTC si va
    * directo, si no Bluetooth, si no WebRTC por TURN. False = por el proxio.
+   *
+   * @param {string} token
+   * @returns {DirectChannel | null}
    */
   _directFor (token) {
     const rtcOpen = !!this._rtc?.isOpen(token)
-    if (rtcOpen && this._rtc.peers?.get(token)?.route !== 'turn') return this._rtc
+    if (rtcOpen && this._rtc?.peers?.get(token)?.route !== 'turn') return this._rtc
     if (this._ble?.isOpen(token)) return this._ble
     if (rtcOpen) return this._rtc
     return null
   }
 
-  /** Manda por el mejor canal abierto; si no hay, deja que WebRTC empiece a negociar y da false. */
+  /**
+   * Manda por el mejor canal abierto; si no hay, deja que WebRTC empiece a negociar y da false.
+   * @param {string} token
+   * @param {string | Uint8Array} wire
+   * @returns {boolean}
+   */
   _tryDirect (token, wire) {
     const d = this._directFor(token)
     if (d) return d.trySend(token, wire)
     return this._rtc ? this._rtc.trySend(token, wire) : false
   }
 
+  /** @param {string} to @param {any} payload */
   _proxySendOne (to, payload) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
     this._sendRaw({
@@ -586,23 +717,33 @@ export class WebSocketProxyClient {
   /**
    * Publish self into a public channel.
    * @param {string} channelName
-   * @param {Object} [extraData] Extra fields baked into channel.data and signed.
+   * @param {Record<string, any>} [extraData] Extra fields baked into channel.data and signed.
+   * @returns {Promise<Frame>}
    */
   async publish (channelName, extraData = {}) {
     const channel = await buildSignedChannel(channelName, extraData)
     return this._request({ type: 'publish', channel }, 'published', 'channel')
   }
 
-  /** Unpublish self from a public channel. */
+  /**
+   * Unpublish self from a public channel.
+   * @param {string} channelName
+   * @returns {Promise<Frame>}
+   */
   async unpublish (channelName) {
     const channel = await buildSignedChannel(channelName)
     return this._request({ type: 'unpublish', channel }, 'unpublished', 'channel')
   }
 
-  /** List the tokens currently in a channel. */
+  /**
+   * List the tokens currently in a channel.
+   * @param {string} channelName
+   * @returns {Promise<import('./index.js').ChannelTokens>}
+   */
   async list (channelName) {
     const channel = await buildSignedChannel(channelName)
     const res = await this._request({ type: 'list', channel }, 'channel_list', 'channel')
+    /** @type {import('./index.js').ChannelTokens} */
     const tokens = res.tokens || []
     // Vacío pero con una bóveda despertándose detrás (websocket-proxy ≥ 1.7.0): quien lista
     // puede esperar unos segundos en vez de concluir que no hay nadie.
@@ -610,7 +751,10 @@ export class WebSocketProxyClient {
     return tokens
   }
 
-  /** Alias for list() to ease migration from older clients. */
+  /**
+   * Alias for list() to ease migration from older clients.
+   * @param {string} channelName
+   */
   listChannel (channelName) { return this.list(channelName) }
 
   /**
@@ -618,6 +762,9 @@ export class WebSocketProxyClient {
    * `peer_disconnected` events live WITHOUT being listed as a member (you won't
    * appear in others' list()). Ideal for a lobby that shows rooms in real time
    * without publishing itself as a phantom room. Resolves with the current tokens.
+   *
+   * @param {string} channelName
+   * @returns {Promise<string[]>}
    */
   async watch (channelName) {
     const channel = await buildSignedChannel(channelName)
@@ -625,21 +772,34 @@ export class WebSocketProxyClient {
     return res.tokens || []
   }
 
-  /** Stop watching a channel. */
+  /**
+   * Stop watching a channel.
+   * @param {string} channelName
+   * @returns {Promise<Frame>}
+   */
   async unwatch (channelName) {
     const channel = await buildSignedChannel(channelName)
     return this._request({ type: 'unwatch', channel }, 'unwatched', 'channel')
   }
 
-  /** List public channel names (optionally filtered by prefix). */
+  /**
+   * List public channel names (optionally filtered by prefix).
+   * @param {import('./index.js').ListChannelsOptions} [options]
+   * @returns {Promise<import('./index.js').ChannelEntry[]>}
+   */
   async listChannels (options = {}) {
+    /** @type {Frame} */
     const msg = { type: 'list_channels' }
     if (typeof options.prefix === 'string') msg.prefix = options.prefix
     const res = await this._request(msg, 'channels_list')
     return res.channels || []
   }
 
-  /** How many tokens are in a channel right now (no listing). */
+  /**
+   * How many tokens are in a channel right now (no listing).
+   * @param {string} channelName
+   * @returns {Promise<number>}
+   */
   async channelCount (channelName) {
     const res = await this._request(
       { type: 'channel_count', channel: channelName },
@@ -733,13 +893,13 @@ export class WebSocketProxyClient {
    * @param {any} payload
    * @param {{ peerPubkey?:string, peerEncPub?:string, pilar?:boolean }} [opts]
    */
-  async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub, pilar = false } = /** @type {any} */ ({})) {
+  async sendSealedTo (toTokens, payload, { peerPubkey, peerEncPub, pilar = false } = {}) {
     const tokens = Array.isArray(toTokens) ? toTokens : [toTokens]
     if (!peerEncPub) {
       // Si la app no lo dice, lo dice el SALUDO: `helloTo` dejó apuntado de quién es
       // cada token. Con más de uno no se adivina —cada identidad tiene su llave y un
       // solo sobre solo lo abriría una—, así que ahí se exige decirlo.
-      if (!peerPubkey && tokens.length === 1) peerPubkey = this.pubkeyOfToken(tokens[0])
+      if (!peerPubkey && tokens.length === 1) peerPubkey = this.pubkeyOfToken(tokens[0]) || undefined
       if (!peerPubkey) {
         throw errorWithCode(
           'sendSealedTo: nobody has said whose this token is — greet it (helloTo) or pass peerPubkey',
@@ -803,8 +963,9 @@ export class WebSocketProxyClient {
     const d = this._directFor(token)
     if (d && d === this._ble) return 'bluetooth'
     if (d) {
-      const peer = this._rtc.peers.get(token)
-      try { return (await this._rtc.probeRoute(peer)) || 'webrtc' } catch (_) { return 'webrtc' }
+      const rtc = /** @type {WebRTCManager} */ (this._rtc)
+      const peer = /** @type {import('./webrtc.js').PeerState} */ (rtc.peers.get(token))
+      try { return (await rtc.probeRoute(peer)) || 'webrtc' } catch (_) { return 'webrtc' }
     }
     return 'proxy'
   }
@@ -813,6 +974,12 @@ export class WebSocketProxyClient {
    * Una parte por token: por el canal directo esperando a que vacíe su búfer (sin eso, un
    * archivo grande lo desborda y el navegador cierra el canal), o por el proxio en vivo con
    * una pausa corta entre partes, para no chocar con su límite de mensajes por segundo.
+   *
+   * @param {string} token
+   * @param {string | Uint8Array} envelope
+   * @param {string} peerPubkey
+   * @param {boolean} queueFallback
+   * @param {boolean} [relayFallback]
    */
   async _sendPiece (token, envelope, peerPubkey, queueFallback, relayFallback = true) {
     const d = this._directFor(token)
@@ -856,6 +1023,11 @@ export class WebSocketProxyClient {
    * su pubkey: la cola de 24 h del proxio, que además timbra su teléfono. Y se avisa con
    * `token_gone` para que la app deje de usar ese token. No bloquea a nadie: se manda ya y
    * el arreglo, si hace falta, llega detrás.
+   *
+   * @param {string} token
+   * @param {any} envelope
+   * @param {string} peerPubkey
+   * @param {{ queueFallback?: boolean, skipDirect?: boolean }} [opts]
    */
   _sendToTokenOrQueue (token, envelope, peerPubkey, { queueFallback = true, skipDirect = false } = {}) {
     if (this.requireSealed && !this._isSealed(envelope)) {
@@ -877,7 +1049,10 @@ export class WebSocketProxyClient {
     this._upgradeDirect([token])
   }
 
-  /** `message_sent` con fallos: lo que iba a un token que ya no existe sale por pubkey. */
+  /**
+   * `message_sent` con fallos: lo que iba a un token que ya no existe sale por pubkey.
+   * @param {Frame} data
+   */
   _tokenFailed (data) {
     const w = data.id && this._tokenWatch.get(data.id)
     if (!w) return
@@ -890,7 +1065,7 @@ export class WebSocketProxyClient {
       this._emit('error', { type: 'client', error: 'the peer left in the middle of a message too big to wait in the proxy', code: 'too-big-for-queue', peerPubkey: w.peerPubkey })
       return
     }
-    try { this._sendByPubkeyRaw([w.peerPubkey], w.envelope) } catch (e) { this._emit('error', { type: 'client', error: e.message, code: e.code || null }) }
+    try { this._sendByPubkeyRaw([w.peerPubkey], w.envelope) } catch (e) { this._emit('error', { type: 'client', error: /** @type {{ message?: string }} */ (e).message, code: codeOf(e) }) }
   }
 
   // ---------- el saludo: de quién es este token ----------
@@ -912,6 +1087,8 @@ export class WebSocketProxyClient {
    * consigue que te sellen a una llave que no puedes abrir: el embustero se queda sin
    * leer, y nadie se queda suplantado. Quién firma de verdad lo dice el reto de la app,
    * o el `from_publickey` que pone el proxio cuando se enruta por pubkey.
+   *
+   * @param {string | string[]} to
    */
   helloTo (to) {
     if (!this.myPublickey) {
@@ -925,7 +1102,11 @@ export class WebSocketProxyClient {
     }
   }
 
-  /** De quién es este token, si alguien lo ha dicho. `null` es «todavía no lo sé». */
+  /**
+   * De quién es este token, si alguien lo ha dicho. `null` es «todavía no lo sé».
+   * @param {string} token
+   * @returns {string | null}
+   */
   pubkeyOfToken (token) {
     return this._tokenPubkeys.get(token) || null
   }
@@ -936,6 +1117,8 @@ export class WebSocketProxyClient {
    * `peer_identity` de vuelta. No autentica, y no hace falta: lo que se le mande va sellado a la
    * llave que ESA identidad anunció firmada. Espera a estar identificado, porque un saludo sin
    * identidad no dice nada.
+   * @param {string} token
+   * @param {number} [timeoutMs]
    * @returns {Promise<string|null>} la pubkey, o null si no contestó en `timeoutMs`
    */
   async whoIs (token, timeoutMs = 10000) {
@@ -944,15 +1127,19 @@ export class WebSocketProxyClient {
     const t0 = Date.now()
     while (!this.myPublickey && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 150))
     if (!this.myPublickey) return null
-    return new Promise((resolve) => {
+    return new Promise(/** @param {(pk: string | null) => void} resolve */ (resolve) => {
+      /** @param {string | null} pk */
       const done = (pk) => { off(); clearTimeout(timer); resolve(pk) }
-      const off = this.on('peer_identity', (t, pk) => { if (t === token) done(pk) })
+      const off = this.on('peer_identity', (/** @type {string} */ t, /** @type {string} */ pk) => { if (t === token) done(pk) })
       const timer = setTimeout(() => done(null), Math.max(1000, timeoutMs - (Date.now() - t0)))
       try { this.helloTo(token) } catch (_) { done(null) }
     })
   }
 
-  /** Olvidar un token (se fue, o se quiere volver a preguntar). Sin argumento, todos. */
+  /**
+   * Olvidar un token (se fue, o se quiere volver a preguntar). Sin argumento, todos.
+   * @param {string | null} [token]
+   */
   forgetToken (token) {
     if (token == null) { this._tokenPubkeys.clear(); this._helloSent.clear(); this._tokenSpeaks.clear(); return }
     this._tokenPubkeys.delete(token)
@@ -975,7 +1162,10 @@ export class WebSocketProxyClient {
     return set ? set.has(feature) : null
   }
 
-  /** Antes de mandar bytes: si alguno dijo que no los entiende, no sale nada y se dice. */
+  /**
+   * Antes de mandar bytes: si alguno dijo que no los entiende, no sale nada y se dice.
+   * @param {string[]} targets
+   */
   _needPeerBinary (targets) {
     for (const t of targets) {
       if (t && this.speaks(t, 'binary') === false) {
@@ -984,6 +1174,7 @@ export class WebSocketProxyClient {
     }
   }
 
+  /** @param {string} from @param {Frame} msg */
   _onHello (from, msg) {
     if (typeof msg.publickey !== 'string' || !msg.publickey) return
     const antes = this._tokenPubkeys.get(from)
@@ -995,7 +1186,7 @@ export class WebSocketProxyClient {
       return
     }
     this._tokenPubkeys.set(from, msg.publickey)
-    const speaks = new Set(Array.isArray(msg.speaks) ? msg.speaks.filter((x) => typeof x === 'string').slice(0, 32) : [])
+    const speaks = new Set(Array.isArray(msg.speaks) ? msg.speaks.filter((/** @type {unknown} */ x) => typeof x === 'string').slice(0, 32) : [])
     this._tokenSpeaks.set(from, speaks)
     this._pubkeySpeaks.set(msg.publickey, speaks)
     // Contestar UNA vez: el saludo queda simétrico sin rebotar para siempre.
@@ -1007,6 +1198,12 @@ export class WebSocketProxyClient {
    * Sella con lo que haya: la bóveda de la app (`sealing`) o las primitivas del pilar.
    * `pilar`: con el sobre del pilar aunque haya `sealing` (lo abre quien tenga la privada de
    * `peerEncPub`, sin pasar por ninguna bóveda).
+   *
+   * @param {any} payload
+   * @param {string | undefined} peerEncPub
+   * @param {string | undefined} peerPubkey
+   * @param {boolean} [pilar]
+   * @returns {Promise<any>}
    */
   async _seal (payload, peerEncPub, peerPubkey, pilar = false) {
     if (!peerEncPub) throw errorWithCode('seal: missing peerEncPub', 'unsealed')
@@ -1015,12 +1212,21 @@ export class WebSocketProxyClient {
       : seal(payload, peerEncPub)
   }
 
-  /** ¿Este sobre es de la bóveda de la app (`sealing`)? Si no, es el del pilar. */
+  /**
+   * ¿Este sobre es de la bóveda de la app (`sealing`)? Si no, es el del pilar.
+   * @param {any} env
+   * @returns {boolean}
+   */
   _bySealing (env) { return !!this.sealing && this.sealing.isSealed(env) }
 
-  /** Abre un sobre con quien toca: la bóveda de la app o la llave del pilar. */
+  /**
+   * Abre un sobre con quien toca: la bóveda de la app o la llave del pilar.
+   * @param {any} env
+   * @param {MessageMeta} [meta]
+   * @returns {Promise<any>}
+   */
   _openEnvelope (env, meta) {
-    if (this._bySealing(env)) return this.sealing.open(env, meta)
+    if (this._bySealing(env)) return /** @type {import('./index.js').SealingBridge} */ (this.sealing).open(env, meta)
     if (!this.myEncPrivateKey) throw errorWithCode('no encryption key to open a pilar envelope', 'unsealed')
     return open(env, this.myEncPrivateKey)
   }
@@ -1029,18 +1235,28 @@ export class WebSocketProxyClient {
    * Quién sella las piezas de UN mensaje hacia UN destinatario. Con bytes (sealing.js): una
    * CEK para el mensaje entero, sellada una vez con el sellado de siempre, y cada pieza
    * cifrada como bytes con ella. Sin bytes, el sobre de texto de siempre por pieza.
+   *
+   * @param {boolean} bin
+   * @param {string | undefined} peerEncPub
+   * @param {string | undefined} peerPubkey
+   * @param {boolean} [pilar]
+   * @returns {Promise<(piece: any) => Promise<any>>}
    */
   async _sealerFor (bin, peerEncPub, peerPubkey, pilar = false) {
     if (!bin) return (piece) => this._seal(piece, peerEncPub, peerPubkey, pilar)
     const cek = await makeMessageKey()
     const k = await this._seal({ cek }, peerEncPub, peerPubkey, pilar)
-    return async (bytes) => {
+    return async (/** @type {Uint8Array} */ bytes) => {
       const { iv, ct } = await encryptBytes(cek, bytes)
       return pack({ bv: BIN_SEALED, k, iv, ct })
     }
   }
 
-  /** Lo que mide un mensaje para sus topes: su paquete si lleva bytes, su JSON si no. */
+  /**
+   * Lo que mide un mensaje para sus topes: su paquete si lleva bytes, su JSON si no.
+   * @param {any} payload
+   * @returns {Measured}
+   */
   _measure (payload) {
     if (hasBinary(payload)) {
       const whole = pack(payload)
@@ -1050,7 +1266,11 @@ export class WebSocketProxyClient {
     return { bin: false, whole, len: whole.length }
   }
 
-  /** Cómo va por el cable: los bytes tal cual, el texto tal cual, y un objeto en JSON (o empaquetado, si lleva bytes). */
+  /**
+   * Cómo va por el cable: los bytes tal cual, el texto tal cual, y un objeto en JSON (o empaquetado, si lleva bytes).
+   * @param {any} payload
+   * @returns {string | Uint8Array}
+   */
   _wire (payload) {
     if (typeof payload === 'string' || payload instanceof Uint8Array) return payload
     if (hasBinary(payload)) return pack(payload)
@@ -1064,7 +1284,12 @@ export class WebSocketProxyClient {
     }
   }
 
-  /** La CEK de un mensaje con bytes, abriendo su sobre una vez por mensaje. */
+  /**
+   * La CEK de un mensaje con bytes, abriendo su sobre una vez por mensaje.
+   * @param {any} k
+   * @param {MessageMeta} meta
+   * @returns {Promise<string>}
+   */
   _openMessageKey (k, meta) {
     const id = JSON.stringify(k)
     let p = this._msgKeys.get(id)
@@ -1075,7 +1300,7 @@ export class WebSocketProxyClient {
         return o.cek
       })()
       this._msgKeys.set(id, p)
-      if (this._msgKeys.size > 64) this._msgKeys.delete(this._msgKeys.keys().next().value)
+      if (this._msgKeys.size > 64) this._msgKeys.delete(/** @type {string} */ (this._msgKeys.keys().next().value))
       p.catch(() => this._msgKeys.delete(id))
     }
     return p
@@ -1090,6 +1315,9 @@ export class WebSocketProxyClient {
    *
    * Lo llama `identify` solo cuando el cliente tiene `myEncPub`. Se expone aparte para el
    * caso de anunciar una llave nueva sin reconectar.
+   *
+   * @param {{ publickey: string, encPub: string, sign: SignFn }} args
+   * @returns {Promise<string>}
    */
   async announceEncPub ({ publickey, encPub, sign } = /** @type {any} */ ({})) {
     const statement = await buildEncPubStatement({ publickey, encPub, sign })
@@ -1110,6 +1338,9 @@ export class WebSocketProxyClient {
    *   · `no-encpub-support`  este proxio no sabe de esto (es viejo)
    *
    * Nunca devuelve `null` y nunca cae a «manda igual»: si no se puede sellar, no se manda.
+   *
+   * @param {string} publickey
+   * @returns {Promise<string>}
    */
   async encPubOf (publickey) {
     if (typeof publickey !== 'string' || !publickey) {
@@ -1137,6 +1368,10 @@ export class WebSocketProxyClient {
    * es «el proxio no tiene ninguna más nueva», no «no existe»: la bóveda sigue mandando.
    *
    * Lanza `no-acta-cache` si el proxio dice que no sabe de esto (es viejo).
+   *
+   * @param {string} profileId
+   * @param {{ sinceSeq?: number }} [opts]
+   * @returns {Promise<object[]>}
    */
   async getActas (profileId, { sinceSeq } = {}) {
     if (typeof profileId !== 'string' || !profileId) throw errorWithCode('getActas: missing profileId', 'bad-input')
@@ -1149,6 +1384,9 @@ export class WebSocketProxyClient {
    * Le deja al proxio un acta de la cuenta, para que otros aparatos se enteren sin preguntar
    * a la bóveda. Devuelve `{ stored }`: `false` es que ya la tenía o tiene más nuevas.
    * Lanza `bad-acta` si no la selló su cuenta y `no-acta-cache` si el proxio es viejo.
+   *
+   * @param {object} acta
+   * @returns {Promise<{ stored: boolean }>}
    */
   async putActa (acta) {
     if (!acta || typeof acta !== 'object') throw errorWithCode('putActa: missing acta', 'bad-input')
@@ -1164,6 +1402,7 @@ export class WebSocketProxyClient {
     }
   }
 
+  /** @param {string} publickey @returns {Promise<string>} */
   async _lookupEncPub (publickey) {
     // EL CAMINO MÁS DIRECTO PRIMERO. Si la app comparte acta con el destinatario, la llave
     // ya la tiene en la mano y firmada por el master: preguntársela a un servidor sería
@@ -1189,7 +1428,7 @@ export class WebSocketProxyClient {
     const res = await this._request({ type: 'enc-lookup', publickeys: [publickey] }, 'enc-lookup')
     // `samePubkey`, no `===`: el proxio guarda el string exacto con el que se anunció, y
     // la app puede tener el mismo JWK escrito de otra forma.
-    const statement = (res.keys || []).find((k) => samePubkey(k?.data?.publickey, publickey))
+    const statement = (res.keys || []).find((/** @type {any} */ k) => samePubkey(k?.data?.publickey, publickey))
     if (!statement) {
       throw errorWithCode('no encryption key announced for that identity — it cannot be sealed to yet', 'no-encpub')
     }
@@ -1200,19 +1439,28 @@ export class WebSocketProxyClient {
     return encPub
   }
 
-  /** Guardar una llave que ya viene firmada por su dueño (de un canal, de una invitación). */
+  /**
+   * Guardar una llave que ya viene firmada por su dueño (de un canal, de una invitación).
+   * @param {import('./index.js').EncPubStatement} statement
+   * @param {{ publickey: string }} args
+   * @returns {Promise<string>}
+   */
   async learnEncPub (statement, { publickey } = /** @type {any} */ ({})) {
     const encPub = await readEncPubStatement(statement, { publickey })
     this._encPubs.set(publickey, encPub)
     return encPub
   }
 
-  /** Olvidar lo aprendido de una identidad (rotó su llave, o se quiere volver a preguntar). */
+  /**
+   * Olvidar lo aprendido de una identidad (rotó su llave, o se quiere volver a preguntar).
+   * @param {string | null} [publickey]
+   */
   forgetEncPub (publickey) {
     if (publickey == null) this._encPubs.clear()
     else this._encPubs.delete(publickey)
   }
 
+  /** @param {any} msg @returns {boolean} */
   _isSealed (msg) {
     if (msg instanceof Uint8Array) {
       let env
@@ -1222,6 +1470,11 @@ export class WebSocketProxyClient {
     return this.sealing ? (this.sealing.isSealed(msg) || (!!this.myEncPrivateKey && isSealed(msg))) : isSealed(msg)
   }
 
+  /**
+   * @param {string | string[]} toPubkeys
+   * @param {any} payload
+   * @param {{ ephemeral?: boolean, quiet?: boolean, app?: string }} [opts]
+   */
   sendByPubkey (toPubkeys, payload, opts = {}) {
     if (this.requireSealed && !this._isSealed(payload)) {
       throw Object.assign(
@@ -1239,6 +1492,10 @@ export class WebSocketProxyClient {
    * receiving end still accepts plaintext, sending it that way bypasses the sealing
    * entirely — and a peer that never read anything could still push a forged payload
    * into the app.
+   *
+   * @param {string} from
+   * @param {any} payload
+   * @param {MessageMeta} meta
    */
   async _deliver (from, payload, meta) {
     // BYTES (binpack.js): un paquete. Si es un sobre binario se abre aquí; si no, es un
@@ -1246,7 +1503,7 @@ export class WebSocketProxyClient {
     if (payload instanceof Uint8Array) {
       let env
       try { env = unpack(payload) } catch (e) {
-        this._emit('error', { type: 'bad_pack', from, code: e.code || 'bad-pack', error: e })
+        this._emit('error', { type: 'bad_pack', from, code: codeOf(e) || 'bad-pack', error: e })
         return
       }
       if (isBinSealed(env)) {
@@ -1293,21 +1550,32 @@ export class WebSocketProxyClient {
     this._emit('message', from, payload, { ...meta, sealed: false })
   }
 
-  /** Lo ya abierto a la app: entero, o a rearmar si es una parte (parts.js). */
+  /**
+   * Lo ya abierto a la app: entero, o a rearmar si es una parte (parts.js).
+   * @param {string} from
+   * @param {any} opened
+   * @param {MessageMeta} fullMeta
+   */
   _handOpened (from, opened, fullMeta) {
     if (isPart(opened)) {
       // Se agrupa por quien selló: solo esa llave pudo armar cada parte.
       let whole
       try { whole = this._parts.add(fullMeta.senderEncPub || fullMeta.fromPubkey || from || '', opened) }
-      catch (e) { this._emit('error', { type: 'bad_part', from, code: e.code || 'bad-part', error: e }); return }
+      catch (e) { this._emit('error', { type: 'bad_part', from, code: codeOf(e) || 'bad-part', error: e }); return }
       if (whole !== null) this._emit('message', from, whole, { ...fullMeta, parts: opened.__dotrino_part.n })
       return
     }
     this._emit('message', from, opened, fullMeta)
   }
 
+  /**
+   * @param {string | string[]} toPubkeys
+   * @param {any} payload
+   * @param {{ ephemeral?: boolean, quiet?: boolean, app?: string }} [opts]
+   */
   _sendByPubkeyRaw (toPubkeys, payload, opts = {}) {
     const list = Array.isArray(toPubkeys) ? toPubkeys : [toPubkeys]
+    /** @type {Frame} */
     const msg = {
       to_publickey: list,
       message: this._wire(payload)
@@ -1337,9 +1605,10 @@ export class WebSocketProxyClient {
    * @returns {Promise<{code:string, expiresAt:number, node:string}>}
    */
   requestPairingCode (opts = {}) {
+    /** @type {Frame} */
     const msg = { type: 'pair-code' }
     if (opts.ttlMs) msg.ttlMs = opts.ttlMs
-    return this._request(msg, 'pair-code')
+    return /** @type {Promise<any>} */ (this._request(msg, 'pair-code'))
   }
 
   /**
@@ -1350,10 +1619,11 @@ export class WebSocketProxyClient {
    * toda la malla: un pregón se lo queda el primero que conteste, y así es como
    * un nodo hostil se mete en emparejamientos ajenos.
    *
-   * @returns {Promise<{ok:boolean, instance?:string, publickey?:string, error?:string}>}
+   * @param {string} code
+   * @returns {Promise<{ ok: boolean, instance?: string, publickey?: string | null, code?: string, error?: string }>}
    */
   redeemPairingCode (code) {
-    return this._request({ type: 'pair-redeem', code }, 'pair-redeem')
+    return /** @type {Promise<any>} */ (this._request({ type: 'pair-redeem', code }, 'pair-redeem'))
   }
 
   /**
@@ -1390,8 +1660,11 @@ export class WebSocketProxyClient {
    *
    * `sign` es lo que firma (normalmente `(d) => identity.signData(d)`); acepta tanto la
    * firma en texto como el paquete del vault.
+   *
+   * @param {{ publickey: string, sign: (data: any) => Promise<any>, cert?: any, acta?: any }} args
+   * @returns {Promise<{ publickey: string, queued_delivered: number }>}
    */
-  async identifyAs ({ publickey, sign, cert, acta } = {}) {
+  async identifyAs ({ publickey, sign, cert, acta } = /** @type {any} */ ({})) {
     if (typeof sign !== 'function') throw new Error('identifyAs requires sign(data)')
     if (!publickey) throw new Error('identifyAs requires publickey')
     if (!this.token) throw new Error('identifyAs: not connected yet (no token)')
@@ -1410,21 +1683,26 @@ export class WebSocketProxyClient {
     return this.identify({ data, signature, cert, acta, sign })
   }
 
+  /**
+   * @param {{ data: any, signature: string, cert?: any, acta?: any, sign?: (data: any) => Promise<any> }} envelope
+   * @returns {Promise<{ publickey: string, queued_delivered: number }>}
+   */
   identify ({ data, signature, cert, acta, sign }) {
     if (!data || !signature) throw new Error('identify requires {data, signature}')
+    /** @type {Frame} */
     const msg = { type: 'identify', data, signature }
     if (this.app) msg.app = this.app
     if (cert) msg.cert = cert // "una identidad": el proxy bindea este token también bajo tu maestra M
     // Acta de perfil: el proxy la verifica (va firmada) y bindea también el `profileId`, así
     // escribirle a la PERSONA llega a cualquiera de sus dispositivos. Ver acta-de-perfil.md.
     if (acta) msg.acta = acta
-    const done = this._request(msg, 'identified')
+    const done = /** @type {Promise<{ publickey: string, queued_delivered: number }>} */ (this._request(msg, 'identified'))
     // Mi identidad en el cable, para poder decirla en el saludo sin que la app la
     // repita. Se apunta al pedirlo y no al confirmarlo: si la identificación falla,
     // el saludo tampoco sale (el proxio no reparte a una conexión sin identidad).
     this.myPublickey = data.publickey
     if (this._rtc && typeof sign === 'function' && data.publickey) {
-      done.then(() => this.enableTurn({ publicKey: data.publickey, sign })).catch(() => {})
+      done.then(() => this.enableTurn({ publicKey: data.publickey, sign: /** @type {SignFn} */ (sign) })).catch(() => {})
     }
     // ANUNCIAR LA LLAVE DE CIFRADO, y por detrás. Identificarse es lo que da dirección a
     // esta identidad; anunciar su llave es lo que hace que alguien pueda sellarle sin
@@ -1433,12 +1711,12 @@ export class WebSocketProxyClient {
     // quiera escribirnos.
     if (typeof sign === 'function' && data.publickey && this.myEncPub) {
       done
-        .then(() => this.announceEncPub({ publickey: data.publickey, encPub: this.myEncPub, sign }))
+        .then(() => this.announceEncPub({ publickey: data.publickey, encPub: /** @type {string} */ (this.myEncPub), sign: /** @type {SignFn} */ (sign) }))
         .catch((e) => {
           // Se dice en voz alta: sin anuncio nadie podrá sellarnos, y el síntoma llega
           // días después y del otro lado («no puedo escribirte»). Callarlo es justo el
           // fallo mudo que el ecosistema paga caro.
-          this._emit('error', { type: 'encpub_announce_failed', error: e, code: e?.code || null })
+          this._emit('error', { type: 'encpub_announce_failed', error: e, code: codeOf(e) })
         })
     }
     return done
@@ -1451,12 +1729,10 @@ export class WebSocketProxyClient {
    * usa solo desde apps Dotrino y no como relay abierto). Las credenciales
    * expiran solas (TTL corto) y hay cuota por pubkey/hora.
    *
-   * @param {Object} opts
-   * @param {string} opts.publicKey  Pubkey JWK string del vault (la de identify).
-   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign  Firma del vault (id.signData).
-   * @returns {Promise<{enabled:boolean, iceServers:any[]|null, expiresAt:number|null}>}
+   * @param {import('./index.js').TurnCredentialsOptions} opts
+   * @returns {Promise<import('./index.js').TurnCredentials>}
    */
-  async getTurnCredentials ({ publicKey, sign } = {}) {
+  async getTurnCredentials ({ publicKey, sign } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function') {
       throw new Error('getTurnCredentials requires { publicKey, sign }')
     }
@@ -1479,10 +1755,10 @@ export class WebSocketProxyClient {
    * Afecta a las conexiones P2P NUEVAS (los peers ya negociados conservan su
    * configuración). Llamalo después de `identify`.
    *
-   * @param {Object} opts  Igual que getTurnCredentials ({ publicKey, sign }).
+   * @param {import('./index.js').TurnCredentialsOptions} opts  Igual que getTurnCredentials ({ publicKey, sign }).
    * @returns {Promise<boolean>} true si TURN quedó activo.
    */
-  async enableTurn ({ publicKey, sign } = {}) {
+  async enableTurn ({ publicKey, sign } = /** @type {any} */ ({})) {
     if (!this._rtc) throw new Error('WebRTC is disabled in this client')
     if (this._turnTimer) {
       clearTimeout(this._turnTimer)
@@ -1491,8 +1767,9 @@ export class WebSocketProxyClient {
     let res
     try {
       res = await this.getTurnCredentials({ publicKey, sign })
-    } catch (e) {
-      if (e?.status !== 429) throw e
+    } catch (err) {
+      const e = /** @type {{ status?: number, retryAfterMs?: number, code?: string } | null | undefined} */ (err)
+      if (e?.status !== 429) throw err
       // 429: EL PROXIO DICE «AHORA NO» (tope diario de tráfico, cuota por hora, o no puede
       // leer el consumo). No es un fallo: se sigue por el proxio, que es el escalón que
       // siempre funciona. Se quita el relevo que hubiera (sus credenciales ya no se
@@ -1500,9 +1777,9 @@ export class WebSocketProxyClient {
       // proxio dice que se puede — si no, un aparato que pasó por un día con el tope
       // alcanzado se quedaría sin relevo hasta su siguiente reconexión.
       this._rtc.setIceServers(DEFAULT_ICE_SERVERS)
-      const retryAfterMs = Math.max(60000, Number(e.retryAfterMs) || 0)
-      this._turn = { active: false, code: e.code || null, retryAt: Date.now() + retryAfterMs }
-      this._emit('turn_unavailable', { code: e.code || null, retryAfterMs })
+      const retryAfterMs = Math.max(60000, Number(e?.retryAfterMs) || 0)
+      this._turn = { active: false, code: e?.code || null, retryAt: Date.now() + retryAfterMs }
+      this._emit('turn_unavailable', { code: e?.code || null, retryAfterMs })
       this._turnTimer = setTimeout(() => {
         this._turnTimer = null
         this.enableTurn({ publicKey, sign }).catch(() => {})
@@ -1535,7 +1812,7 @@ export class WebSocketProxyClient {
 
   /**
    * Consultar la config de Web Push del proxy.
-   * @returns {Promise<{enabled:boolean, vapidPublicKey:string|null}>}
+   * @returns {Promise<import('./index.js').PushConfig>}
    */
   async getPushConfig () {
     const res = await this._request({ type: 'push-config' }, 'push-config')
@@ -1559,16 +1836,10 @@ export class WebSocketProxyClient {
    * vite-plugin-pwa/Workbox): inyectá los handlers de push en ese SW con
    * `importScripts` y llamá enablePush() sin swPath para no clobbear el scope.
    *
-   * @param {Object} opts
-   * @param {string} opts.publicKey  Pubkey JWK string del vault (la de identify).
-   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign  Firma del vault (id.signData).
-   * @param {string} [opts.vapidPublicKey]  VAPID pública; si falta se pide al proxy.
-   * @param {ServiceWorkerRegistration} [opts.registration]  SW ya registrado a reutilizar.
-   * @param {string} [opts.swPath]  Ruta de un SW a registrar (apps sin SW propio).
-   * @param {string} [opts.swScope]  Scope del SW (solo con swPath).
+   * @param {import('./index.js').EnablePushOptions} opts
    * @returns {Promise<PushSubscription>}
    */
-  async enablePush ({ publicKey, sign, vapidPublicKey, registration, swPath, swScope } = {}) {
+  async enablePush ({ publicKey, sign, vapidPublicKey, registration, swPath, swScope } = /** @type {any} */ ({})) {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
       throw new Error('Service Worker is not supported in this environment')
     }
@@ -1611,9 +1882,10 @@ export class WebSocketProxyClient {
    * Registrar el TOKEN DE PUSH de una app nativa (FCM en Android; APNs más adelante) bajo
    * esta pubkey, en vez de una PushSubscription del navegador. El proxy lo usa para el
    * mismo timbre sin contenido. Firma del vault, igual que enablePush.
-   * @param {{ publicKey:string, sign:Function, token:string, kind?:'fcm' }} opts
+   * @param {{ publicKey:string, sign:SignFn, token:string, kind?:'fcm' }} opts
+   * @returns {Promise<{ kind: 'fcm', token: string }>}
    */
-  async registerPushToken ({ publicKey, sign, token, kind = 'fcm' } = {}) {
+  async registerPushToken ({ publicKey, sign, token, kind = 'fcm' } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function' || !token) throw new Error('registerPushToken requires { publicKey, sign, token }')
     const data = { op: 'push-subscribe', publickey: publicKey, subscription: JSON.stringify({ kind, token }), ts: Date.now(), ...this._appField() }
     const signature = await normalizeSignature(sign, data)
@@ -1639,9 +1911,10 @@ export class WebSocketProxyClient {
    * escribe un servicio cuando la bóveda no contesta. Un proxio que no anuncia `wake-self` lo
    * guardaría para la cuenta y le quitaría el timbre a la bóveda, así que ahí no se manda.
    *
-   * @param {{ publicKey:string, sign:Function, url:string, acta:object, channel?:string, self?:boolean }} opts
+   * @param {{ publicKey:string, sign:SignFn, url:string, acta:object, channel?:string, self?:boolean }} opts
+   * @returns {Promise<{ kind: 'wake', url: string, profile: string | null }>}
    */
-  async registerWake ({ publicKey, sign, url, acta, channel, self = false } = {}) {
+  async registerWake ({ publicKey, sign, url, acta, channel, self = false } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function' || !url || !acta) throw errorWithCode('registerWake requires { publicKey, sign, url, acta }', 'bad-args')
     if (self && channel) throw errorWithCode('registerWake: a self wake has no channel', 'bad-args')
     if (self && !(Array.isArray(this.caps) && this.caps.includes('wake-self'))) throw errorWithCode('registerWake: this proxy does not support a wake for the device key (needs websocket-proxy >= 1.8.0)', 'no-wake-self-support')
@@ -1653,13 +1926,9 @@ export class WebSocketProxyClient {
 
   /**
    * Desactivar Web Push: cancela la PushSubscription local y la borra del proxy.
-   * @param {Object} opts
-   * @param {string} opts.publicKey  Pubkey JWK string del vault.
-   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign  Firma del vault.
-   * @param {ServiceWorkerRegistration} [opts.registration]  SW a usar (default: el activo).
-   * @param {string} [opts.swPath]  Ruta del SW si se registró uno propio.
+   * @param {import('./index.js').DisablePushOptions} opts
    */
-  async disablePush ({ publicKey, sign, registration, swPath } = {}) {
+  async disablePush ({ publicKey, sign, registration, swPath } = /** @type {any} */ ({})) {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       try {
         const reg = registration ||
@@ -1682,17 +1951,12 @@ export class WebSocketProxyClient {
    * self-only: el target es siempre la pubkey que firma (no se puede programar
    * a terceros). One-shot (`when`) o recurrente (`cron` + `tz`).
    *
-   * @param {Object} opts
-   * @param {string} opts.publicKey  Pubkey JWK string del vault.
-   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign  Firma del vault.
-   * @param {Date|number} [opts.when]  One-shot: instante futuro (Date o epoch ms).
-   * @param {string} [opts.cron]  Recurrente: expresión cron (5 campos).
-   * @param {string} [opts.tz]    Timezone IANA para el cron (ej. 'America/Argentina/Buenos_Aires').
-   * @param {object} [opts.payload]  Datos extra opcionales para la notificación (ej. { title }).
+   * @param {import('./index.js').SchedulePushOptions} opts
    * @returns {Promise<{ jobId:number, nextFire:number }>}
    */
-  async schedulePush ({ publicKey, sign, when, cron, tz, payload } = {}) {
+  async schedulePush ({ publicKey, sign, when, cron, tz, payload } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function') throw new Error('schedulePush requires { publicKey, sign }')
+    /** @type {{ cron?: string, tz?: string, fireAt?: number, payload?: object }} */
     const spec = {}
     if (cron) {
       spec.cron = cron
@@ -1713,12 +1977,9 @@ export class WebSocketProxyClient {
 
   /**
    * Cancelar un push programado propio.
-   * @param {Object} opts
-   * @param {string} opts.publicKey
-   * @param {(data:any)=>Promise<string|{signature:string}>} opts.sign
-   * @param {number} opts.jobId
+   * @param {{ publicKey: string, sign: SignFn, jobId: number }} opts
    */
-  async cancelScheduledPush ({ publicKey, sign, jobId } = {}) {
+  async cancelScheduledPush ({ publicKey, sign, jobId } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function') throw new Error('cancelScheduledPush requires { publicKey, sign }')
     const data = { op: 'cancel-push', publickey: publicKey, jobId, ts: Date.now() }
     const signature = await normalizeSignature(sign, data)
@@ -1728,9 +1989,10 @@ export class WebSocketProxyClient {
 
   /**
    * Listar los push programados propios.
-   * @returns {Promise<Array<{ jobId:number, app:string|null, nextFire:number, cron:string|null, tz:string|null, payload:object|null }>>}
+   * @param {{ publicKey: string, sign: SignFn }} opts
+   * @returns {Promise<import('./index.js').ScheduledPush[]>}
    */
-  async listScheduledPushes ({ publicKey, sign } = {}) {
+  async listScheduledPushes ({ publicKey, sign } = /** @type {any} */ ({})) {
     if (!publicKey || typeof sign !== 'function') throw new Error('listScheduledPushes requires { publicKey, sign }')
     const data = { op: 'list-pushes', publickey: publicKey, ts: Date.now() }
     const signature = await normalizeSignature(sign, data)
@@ -1738,7 +2000,11 @@ export class WebSocketProxyClient {
     return res.jobs || []
   }
 
-  /** Tear down the logical pair with a peer (both sides get notified). */
+  /**
+   * Tear down the logical pair with a peer (both sides get notified).
+   * @param {string} targetToken
+   * @returns {Promise<Frame>}
+   */
   async disconnectFrom (targetToken) {
     return this._request(
       { type: 'disconnect', target: targetToken },
@@ -1746,12 +2012,19 @@ export class WebSocketProxyClient {
     )
   }
 
-  /** Public key in JWK string form, useful as a stable identity. */
+  /**
+   * Public key in JWK string form, useful as a stable identity.
+   * @returns {Promise<string>}
+   */
   getPublicKey () {
     return getPublicKeyJwk()
   }
 
-  /** Sign arbitrary data with the local private key (base64 signature). */
+  /**
+   * Sign arbitrary data with the local private key (base64 signature).
+   * @param {any} data
+   * @returns {Promise<string>}
+   */
   sign (data) {
     return signData(data)
   }
@@ -1834,6 +2107,7 @@ export class WebSocketProxyClient {
   }
 
   // El intento no abrió ni falló a tiempo: se suelta y se trata como un cierre fallido.
+  /** @param {WebSocket} ws */
   _onConnectTimeout (ws) {
     if (ws !== this.ws || this._connected) return
     this.ws = null   // a partir de acá, los eventos tardíos de `ws` se ignoran
@@ -1911,13 +2185,16 @@ export class WebSocketProxyClient {
   // Con los valores por defecto: 3–6 s, 3–9 s, 3–15 s, 3–27 s y de ahí 3–33 s. El mínimo
   // fijo es para el caso normal (una caída corta de la red), que vuelve enseguida; el azar
   // reparte a los que se cayeron juntos.
+  /** @param {number} attempt @returns {number} */
   _reconnectWait (attempt) {
     const base = Math.max(0, this.reconnectDelay)
     const window = Math.min(Math.max(0, this.reconnectMaxDelay), base * 2 ** Math.max(0, attempt - 1))
     return base + Math.random() * window
   }
 
+  /** @param {string | ArrayBuffer | Uint8Array} raw */
   _handleFrame (raw) {
+    /** @type {Frame} */
     let data
     if (typeof raw === 'string') {
       try { data = JSON.parse(raw) } catch (e) {
@@ -1930,7 +2207,7 @@ export class WebSocketProxyClient {
         const { header, body } = decodeFrame(raw)
         data = { ...header, message: body }
       } catch (e) {
-        this._emit('error', { type: 'parse_error', code: e.code || 'bad-frame', error: e })
+        this._emit('error', { type: 'parse_error', code: codeOf(e) || 'bad-frame', error: e })
         return
       }
     }
@@ -1947,7 +2224,8 @@ export class WebSocketProxyClient {
         // son de TODO el ecosistema y no tienen dueño natural (la lista pública
         // de salas): se pregunta en cada nodo y se mezcla, en vez de designar a
         // uno como árbitro. Son públicos: van en cada instancia y en /peers.
-        this.peers = Array.isArray(data.peers) ? data.peers : []
+        const peers = Array.isArray(data.peers) ? data.peers : []
+        this.peers = peers
         // QUÉ SABE HACER ESTE PROXIO, dicho por él al conectar (§14: una incompatibilidad
         // que no se anuncia se vive como silencio). `caps` ausente = proxio anterior a que
         // esto existiera: no se da por hecho nada, se pregunta igual y contesta la
@@ -1955,11 +2233,11 @@ export class WebSocketProxyClient {
         this.protocol = Number.isInteger(data.protocol) ? data.protocol : null
         this.caps = Array.isArray(data.caps) ? data.caps : null
         /** Este nodo + los que conoce, sin repetidos. */
-        this.knownNodes = [this.node, ...this.peers].filter((n, i, a) => n && a.indexOf(n) === i)
-        this.token = this.instance
+        this.knownNodes = /** @type {string[]} */ ([this.node, ...peers].filter((n, i, a) => n && a.indexOf(n) === i))
+        this.token = /** @type {string} */ (this.instance)
         this._emit('token', this.token)
         if (this._connectResolve) {
-          this._connectResolve(this.token)
+          this._connectResolve(/** @type {string} */ (this.token))
           this._connectResolve = null
           this._connectReject = null
         }
@@ -2069,6 +2347,7 @@ export class WebSocketProxyClient {
     }
   }
 
+  /** @param {Frame} frame */
   _sendRaw (frame) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw errorWithCode('WebSocket not connected', 'NOT_CONNECTED')
@@ -2086,7 +2365,11 @@ export class WebSocketProxyClient {
     this._countOut(frame, text)
   }
 
-  /** Cuenta un frame que sale por el proxio, y a quién iba. */
+  /**
+   * Cuenta un frame que sale por el proxio, y a quién iba.
+   * @param {Frame} frame
+   * @param {string | Uint8Array} text
+   */
   _countOut (frame, text) {
     this._traffic.frame('out', utf8Length(text))
     if (typeof frame.message !== 'string' && !(frame.message instanceof Uint8Array)) return
@@ -2109,6 +2392,8 @@ export class WebSocketProxyClient {
    *
    * Los bytes son de payload (UTF-8), no del cable: las cabeceras de TLS/DTLS no se ven
    * desde aquí.
+   *
+   * @returns {Promise<TransportStats>}
    */
   async stats () {
     const t = this._traffic
@@ -2152,8 +2437,14 @@ export class WebSocketProxyClient {
     }
   }
 
+  /**
+   * @param {Frame} frame
+   * @param {string} expectedType
+   * @param {string} [channelKey]
+   * @returns {Promise<Frame>}
+   */
   _request (frame, expectedType, channelKey) {
-    return new Promise((resolve, reject) => {
+    return new Promise(/** @param {(data: Frame) => void} resolve @param {(e: unknown) => void} reject */ (resolve, reject) => {
       const id = `req_${this._nextId++}`
       const out = { ...frame, id }
       const timer = setTimeout(() => {
@@ -2171,31 +2462,34 @@ export class WebSocketProxyClient {
     })
   }
 
+  /** @param {Frame} data @param {string} actualType */
   _resolvePending (data, actualType) {
     const id = data.id
-    if (!id || !this._pending.has(id)) return
-    const entry = this._pending.get(id)
+    const entry = id ? this._pending.get(id) : undefined
+    if (!id || !entry) return
     if (entry.expectedType && entry.expectedType !== actualType) return
     clearTimeout(entry.timer)
     this._pending.delete(id)
     entry.resolve(data)
   }
 
+  /** @param {Frame} data */
   _rejectPending (data) {
     const id = data.id
-    if (!id || !this._pending.has(id)) return
-    const entry = this._pending.get(id)
+    const entry = id ? this._pending.get(id) : undefined
+    if (!id || !entry) return
     clearTimeout(entry.timer)
     this._pending.delete(id)
     // Con su `code`: quien llama distingue los casos por él, no por la frase (que el proxio
     // puede cambiar o traducir). Antes se perdía aquí y solo quedaba comparar el texto.
-    const e = errorWithCode(data.error || 'Server error', data.code || null)
+    const e = /** @type {Error & { code: string, status?: number, retryAfterMs?: number }} */ (errorWithCode(data.error || 'Server error', data.code || null))
     // «Ahora no» (429) y cuánto esperar, cuando el proxio lo dice.
     if (data.status) e.status = data.status
     if (data.retry_after_ms) e.retryAfterMs = data.retry_after_ms
     entry.reject(e)
   }
 
+  /** @param {string} event @param {...any} args */
   _emit (event, ...args) {
     const set = this._handlers.get(event)
     if (!set) return
@@ -2207,6 +2501,11 @@ export class WebSocketProxyClient {
 
 // El callback de firma del vault devuelve `string` o `{ signature }` (id.signData
 // devuelve un objeto). Normalizamos a string base64.
+/**
+ * @param {SignFn} sign
+ * @param {any} data
+ * @returns {Promise<string>}
+ */
 async function normalizeSignature (sign, data) {
   const out = await sign(data)
   const sig = typeof out === 'string' ? out : (out && out.signature)
@@ -2216,6 +2515,7 @@ async function normalizeSignature (sign, data) {
 
 // Convierte la VAPID pública (base64url) al Uint8Array que espera
 // pushManager.subscribe({ applicationServerKey }).
+/** @param {string} base64String @returns {Uint8Array<ArrayBuffer>} */
 function urlBase64ToUint8Array (base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
@@ -2223,4 +2523,13 @@ function urlBase64ToUint8Array (base64String) {
   const output = new Uint8Array(raw.length)
   for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i)
   return output
+}
+
+/**
+ * El `code` de un error, si lo trae (es el contrato, no la frase). `null` si no.
+ * @param {unknown} e
+ * @returns {string | null}
+ */
+function codeOf (e) {
+  return /** @type {{ code?: string } | null | undefined} */ (e)?.code || null
 }

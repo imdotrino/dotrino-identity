@@ -17,7 +17,19 @@ const STORAGE_KEY = 'dotrino.proxy-client.keypair'
 const DB_NAME = 'dotrino.proxy-client'
 const DB_STORE = 'keypair'
 
+/**
+ * El par de llaves de este cliente.
+ * @typedef {{ privateKey: CryptoKey, publicKey: CryptoKey, publicJwk: JsonWebKey }} Keypair
+ */
+/**
+ * Dónde se guarda el par (`setKeypairStore`).
+ * @typedef {{ get (): Promise<Partial<Keypair> | null | undefined> | Partial<Keypair> | null | undefined,
+ *   set (pair: Keypair): Promise<void> | void }} KeypairStore
+ */
+
+/** @type {Keypair | null} */
 let cachedKeypair = null
+/** @type {KeypairStore | null} */
 let injectedStore = null
 let injectedExtractable = false
 
@@ -30,6 +42,9 @@ let injectedExtractable = false
  * need it and is safer without, but a store that serializes to disk or to text has
  * to export the private key as a JWK, and that throws on a non-extractable key. Pass
  * `{ extractable: true }` for those.
+ *
+ * @param {KeypairStore | null} store
+ * @param {{ extractable?: boolean }} [opts]
  */
 export function setKeypairStore (store, { extractable = false } = {}) {
   injectedStore = store
@@ -37,6 +52,7 @@ export function setKeypairStore (store, { extractable = false } = {}) {
   cachedKeypair = null
 }
 
+/** @returns {Promise<IDBDatabase>} */
 function idb () {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1)
@@ -48,6 +64,12 @@ function idb () {
   })
 }
 
+/**
+ * @param {IDBDatabase} db
+ * @param {IDBTransactionMode} mode
+ * @param {(store: IDBObjectStore) => IDBRequest} fn
+ * @returns {Promise<any>}
+ */
 function idbRequest (db, mode, fn) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, mode)
@@ -57,6 +79,7 @@ function idbRequest (db, mode, fn) {
   })
 }
 
+/** @type {KeypairStore} */
 const indexedDbStore = {
   async get () {
     const db = await idb()
@@ -86,12 +109,14 @@ function localStorageWorks () {
   }
 }
 
+/** @returns {KeypairStore | null} */
 function fallbackStore () {
   if (injectedStore) return injectedStore
   if (!localStorageWorks() && typeof indexedDB !== 'undefined') return indexedDbStore
   return null
 }
 
+/** @returns {Promise<Keypair>} */
 async function loadOrCreate () {
   if (cachedKeypair) return cachedKeypair
 
@@ -128,7 +153,7 @@ async function loadOrCreate () {
       // and every peer that knows this device by its public key stops recognising
       // it — the exact failure this whole path exists to prevent. A silent catch
       // here means finding out days later, from the other side.
-      console.error('[proxy-client] could not persist the keypair: %s', e?.message || e)
+      console.error('[proxy-client] could not persist the keypair: %s', /** @type {{ message?: string } | null | undefined} */ (e)?.message || e)
       console.error('[proxy-client] identity will NOT survive a restart. If the store serializes, pass { extractable: true } to setKeypairStore.')
     }
     cachedKeypair = entry
@@ -173,6 +198,7 @@ async function loadOrCreate () {
 
 /**
  * Returns the public key as a JWK string (what the proxy stores in data.publickey).
+ * @returns {Promise<string>}
  */
 export async function getPublicKeyJwk () {
   const { publicJwk } = await loadOrCreate()
@@ -181,6 +207,8 @@ export async function getPublicKeyJwk () {
 
 /**
  * Sign the canonical JSON of `data` and return base64 signature.
+ * @param {unknown} data
+ * @returns {Promise<string>}
  */
 export async function signData (data) {
   const { privateKey } = await loadOrCreate()
@@ -206,6 +234,10 @@ export async function signData (data) {
  * Ojo con lo que esto NO cambia: el proxio enruta por el STRING exacto, así que la
  * dirección a la que se escribe sigue siendo la que te dio la app. Esto es para DECIDIR
  * si dos referencias hablan de la misma identidad, no para reemplazar una por otra.
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
  */
 export function samePubkey (a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false
@@ -262,12 +294,14 @@ export async function verifyData (publickeyJwkStr, data, signatureB64) {
   }
 }
 
+/** @param {Uint8Array} bytes @returns {string} */
 function bufferToBase64 (bytes) {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
   return btoa(binary)
 }
 
+/** @param {string} b64 @returns {Uint8Array<ArrayBuffer>} */
 function base64ToBuffer (b64) {
   const bin = atob(b64)
   const out = new Uint8Array(bin.length)
@@ -277,6 +311,9 @@ function base64ToBuffer (b64) {
 
 /**
  * Build the {data, signature} envelope for a channel name.
+ * @param {string} channelName
+ * @param {Record<string, unknown>} [extraData]
+ * @returns {Promise<{ data: Record<string, unknown> & { name: string, publickey: string }, signature: string }>}
  */
 export async function buildSignedChannel (channelName, extraData = {}) {
   const publickey = await getPublicKeyJwk()

@@ -23,6 +23,41 @@
 
 import * as W from './wire.js'
 
+/** @typedef {import('../index.js').BluetoothAdapter} BluetoothAdapter */
+/** @typedef {Awaited<ReturnType<BluetoothAdapter['connect']>>} Link */
+/** @typedef {{ id: string }} Device */
+
+/**
+ * Una negociación (y después el canal) con un token. Los campos que son `null` al nacer se
+ * rellenan según avanza `state`: `key`, `role` y `tag` desde `keyed`; `link` (central) o
+ * `central` (periférico) desde que hay enlace.
+ * @typedef {{
+ *   token: string,
+ *   state: 'new' | 'offered' | 'keyed' | 'open' | 'failed' | 'closed',
+ *   role: 'central' | 'peripheral' | null,
+ *   eph: { privateKey: CryptoKey, epub: string } | null,
+ *   key: CryptoKey | null,
+ *   theirBid: string | null,
+ *   myBid: string | null,
+ *   tag: Uint8Array | null,
+ *   link: Link | null,
+ *   central: string | null,
+ *   chunk: number,
+ *   sendCtr: number,
+ *   recvCtr: number,
+ *   pending: number,
+ *   queue: Promise<void>,
+ *   recvChain: Promise<void>,
+ *   timer: ReturnType<typeof setTimeout> | null,
+ *   failedAt: number,
+ * }} BlePeer
+ */
+
+/**
+ * Un central conectado a nosotros (lado periférico).
+ * @typedef {{ rx: InstanceType<typeof W.Reassembler>, peer: BlePeer | null, pendingHello: Uint8Array | null, chain: Promise<unknown> }} Central
+ */
+
 const FAIL_RETRY_MS = 60_000
 const SEEN_TTL_MS = 60_000
 
@@ -36,35 +71,52 @@ export class BluetoothManager {
    * @param {(dir: 'in'|'out', token: string, bytes: number, route: 'bluetooth') => void} [opts.count]
    */
   constructor (opts) {
+    /** @type {((from: string) => boolean) | null} */
     this.acceptFrom = null
     this.getSelfToken = opts.getSelfToken
     this.signalSend = opts.signalSend
     this.deliverMessage = opts.deliverMessage
     this.emit = opts.emit
     this.count = typeof opts.count === 'function' ? opts.count : null
+    /** @type {BluetoothAdapter | null} */
     this.adapter = null
+    /** @type {string | null} */
     this.bid = null
+    /** @type {Uint8Array} */
     this.beacon = new Uint8Array(0)
-    this.peers = new Map()      // token -> estado de la negociación / canal
-    this.centrals = new Map()   // centralId -> { rx, peer, chain } (lado periférico)
-    this.wanted = new Map()     // bid -> peer que buscamos en el aire (lado central)
-    this._seen = new Map()      // deviceId -> { bid, at }
+    /** @type {Map<string, BlePeer>} token -> estado de la negociación / canal */
+    this.peers = new Map()
+    /** @type {Map<string, Central>} centralId -> { rx, peer, chain } (lado periférico) */
+    this.centrals = new Map()
+    /** @type {Map<string, BlePeer>} bid -> peer que buscamos en el aire (lado central) */
+    this.wanted = new Map()
+    /** @type {Map<string, { bid: string | null, at: number }>} deviceId -> { bid, at } */
+    this._seen = new Map()
+    /** @type {Set<string>} */
     this._probing = new Set()
+    /** @type {Set<(dev: Device) => void>} */
     this._scanListeners = new Set()
+    /** @type {(() => Promise<void>) | null} */
     this._stopScan = null
+    /** @type {Promise<void> | null} */
     this._scanStarting = null
+    /** @type {Promise<void> | null} */
+    this._scanStopping = null
+    /** @type {Promise<unknown>} */
     this._connectLock = Promise.resolve()
+    /** @type {ReturnType<typeof setInterval> | null} */
     this._rotate = null
   }
 
   /** Hay Bluetooth en marcha en este proceso. */
   get available () { return !!this.adapter }
 
+  /** @param {BluetoothAdapter} adapter */
   async start (adapter) {
     if (this.adapter) return
     this.bid = W.randomBid()
     await adapter.start({
-      hello: () => W.encodeHello(this.bid),
+      hello: () => W.encodeHello(/** @type {string} */ (this.bid)),
       beacon: () => this.beacon,
       onWrite: (centralId, bytes) => this._onWrite(centralId, bytes),
       onDisconnect: (centralId) => this._onCentralGone(centralId),
@@ -86,7 +138,12 @@ export class BluetoothManager {
 
   // ---------- señalización ----------
 
-  /** True si era una trama de este escalón (se consume aunque no haya Bluetooth). */
+  /**
+   * True si era una trama de este escalón (se consume aunque no haya Bluetooth).
+   * @param {string} from
+   * @param {any} parsed
+   * @returns {boolean}
+   */
   handleIncoming (from, parsed) {
     if (!parsed || typeof parsed !== 'object' || parsed.t !== W.BLE_TAG) return false
     if (this.acceptFrom && !this.acceptFrom(from)) return true
@@ -100,7 +157,10 @@ export class BluetoothManager {
     return true
   }
 
-  /** Empieza a negociar con `token` si no hay nada en curso. Sin esperas y sin errores. */
+  /**
+   * Empieza a negociar con `token` si no hay nada en curso. Sin esperas y sin errores.
+   * @param {string} token
+   */
   upgrade (token) {
     if (!this.adapter || !this.getSelfToken()) return
     const p = this.peers.get(token)
@@ -109,15 +169,18 @@ export class BluetoothManager {
     this._offer(token).catch((e) => this.emit('error', { type: 'bluetooth_offer', error: e, peer: token }))
   }
 
+  /** @param {string} token */
   async _offer (token) {
     const p = this._newPeer(token)
-    p.eph = await W.makeEphemeral()
+    const eph = await W.makeEphemeral()
+    p.eph = eph
     p.state = 'offered'
     p.myBid = this.bid
     this._timer(p, W.ANSWER_TIMEOUT_MS)
-    this.signalSend(token, { t: W.BLE_TAG, kind: 'offer', bid: p.myBid, epub: p.eph.epub })
+    this.signalSend(token, { t: W.BLE_TAG, kind: 'offer', bid: p.myBid, epub: eph.epub })
   }
 
+  /** @param {string} from @param {{ kind?: string, bid: string, epub: string }} msg */
   async _handleSignal (from, msg) {
     let p = this.peers.get(from)
     if (msg.kind === 'offer') {
@@ -127,9 +190,10 @@ export class BluetoothManager {
       } else {
         if (p) this._drop(p)
         p = this._newPeer(from)
-        p.eph = await W.makeEphemeral()
+        const eph = await W.makeEphemeral()
+        p.eph = eph
         p.myBid = this.bid
-        this.signalSend(from, { t: W.BLE_TAG, kind: 'answer', bid: p.myBid, epub: p.eph.epub })
+        this.signalSend(from, { t: W.BLE_TAG, kind: 'answer', bid: p.myBid, epub: eph.epub })
       }
     } else if (msg.kind === 'answer') {
       if (!p || p.state !== 'offered') return
@@ -138,47 +202,50 @@ export class BluetoothManager {
     }
     const self = this.getSelfToken()
     if (!self) return this._fail(p)
-    p.key = await W.deriveKey(p.eph.privateKey, msg.epub, self, from)
+    p.key = await W.deriveKey(/** @type {NonNullable<BlePeer['eph']>} */ (p.eph).privateKey, msg.epub, self, from)
     p.eph = null
     p.theirBid = msg.bid
     p.role = self > from ? 'central' : 'peripheral'
     // Los trozos de `tx` llevan la etiqueta del CENTRAL (docs §5): BlueZ notifica a todos.
-    p.tag = W.tagOf(p.role === 'central' ? p.myBid : p.theirBid)
+    p.tag = W.tagOf(/** @type {string} */ (p.role === 'central' ? p.myBid : p.theirBid))
     p.state = 'keyed'
     this._timer(p, W.FIND_TIMEOUT_MS)
     if (p.role === 'peripheral') this._retryHellos()
     if (p.role === 'central') {
-      this.wanted.set(p.theirBid, p)
+      this.wanted.set(msg.bid, p)
+      const peer = p
       this._addScan(this._onFoundForPeers).catch((e) => {
         this.emit('error', { type: 'bluetooth_scan', error: e })
-        this._fail(p)
+        this._fail(peer)
       })
     }
   }
 
   // ---------- lado central ----------
 
+  /** @param {Device} dev */
   _onFoundForPeers = (dev) => {
     if (!this.wanted.size || this._probing.has(dev.id)) return
     const seen = this._seen.get(dev.id)
-    if (seen && Date.now() - seen.at < SEEN_TTL_MS && !this.wanted.has(seen.bid)) return
+    if (seen && Date.now() - seen.at < SEEN_TTL_MS && !this.wanted.has(/** @type {string} */ (seen.bid))) return
     this._probing.add(dev.id)
     this._withConnectLock(async () => {
+      /** @type {Link | null} */
       let link = null
       try {
-        link = await this.adapter.connect(dev)
+        link = await /** @type {BluetoothAdapter} */ (this.adapter).connect(dev)
         const bid = W.decodeHello(await link.read(W.HELLO_UUID))
         this._seen.set(dev.id, { bid, at: Date.now() })
         const p = bid ? this.wanted.get(bid) : null
         if (!p || p.state !== 'keyed') { await link.close(); return }
-        this.wanted.delete(bid)
+        this.wanted.delete(/** @type {string} */ (bid))
         if (!this.wanted.size) this._removeScan(this._onFoundForPeers)
         await this._attachLink(p, link)
         link = null   // ya es del canal: se cierra con él
       } catch (e) {
         // Se sigue buscando, pero se DICE: es un aparato de Dotrino (anuncia el servicio) que no
         // se dejó leer o se fue a mitad, y callarlo es dejar un canal que no abre sin un porqué.
-        this.emit('error', { type: 'bluetooth_probe', device: dev.id, error: e, code: e?.code || null })
+        this.emit('error', { type: 'bluetooth_probe', device: dev.id, error: e, code: /** @type {{ code?: string } | null | undefined} */ (e)?.code || null })
         if (link) await link.close().catch(() => {})
       } finally {
         this._probing.delete(dev.id)
@@ -186,41 +253,51 @@ export class BluetoothManager {
     })
   }
 
+  /** @param {BlePeer} p @param {Link} link */
   async _attachLink (p, link) {
     p.link = link
     p.chunk = link.chunk
     link.onClose(() => this._closed(p))
     const rx = new W.Reassembler(W.TAG_BYTES)
-    await link.subscribe((chunk) => { if (W.hasTag(chunk, p.tag)) this._onChunk(p, rx, chunk) })
+    await link.subscribe((chunk) => { if (W.hasTag(chunk, /** @type {Uint8Array} */ (p.tag))) this._onChunk(p, rx, chunk) })
     this._sendRecord(p, W.TYPE_HELLO, W.encodeText(this.getSelfToken() || ''))
   }
 
+  /** @param {BlePeer} p @param {InstanceType<typeof W.Reassembler>} rx @param {Uint8Array} chunk */
   _onChunk (p, rx, chunk) {
+    /** @type {Uint8Array | null} */
     let rec
     try { rec = rx.push(chunk) } catch (_) { return this._closed(p) }
-    if (rec) p.recvChain = p.recvChain.then(() => this._onRecord(p, rec))
+    if (rec) { const r = rec; p.recvChain = p.recvChain.then(() => this._onRecord(p, r)) }
   }
 
   // ---------- lado periférico ----------
 
+  /** @param {string} centralId @param {Uint8Array} bytes */
   _onWrite (centralId, bytes) {
     let c = this.centrals.get(centralId)
     if (!c) { c = { rx: new W.Reassembler(), peer: null, pendingHello: null, chain: Promise.resolve() }; this.centrals.set(centralId, c) }
+    const central = c
+    /** @type {Uint8Array | null} */
     let rec
-    try { rec = c.rx.push(bytes) } catch (_) { this.centrals.delete(centralId); if (c.peer) this._closed(c.peer); return }
+    try { rec = central.rx.push(bytes) } catch (_) { this.centrals.delete(centralId); if (central.peer) this._closed(central.peer); return }
     if (!rec) return
-    c.chain = c.chain.then(() => c.peer ? this._onRecord(c.peer, rec) : this._identify(centralId, c, rec))
+    const r = rec
+    central.chain = central.chain.then(() => central.peer ? this._onRecord(central.peer, r) : this._identify(centralId, central, r))
   }
 
-  /** Quién se conectó: la llave que descifra su saludo dice de qué negociación es. */
+  /**
+   * Quién se conectó: la llave que descifra su saludo dice de qué negociación es.
+   * @param {string} centralId @param {Central} c @param {Uint8Array} rec
+   */
   async _identify (centralId, c, rec) {
     for (const p of this.peers.values()) {
       if (p.role !== 'peripheral' || p.state !== 'keyed' || p.central != null) continue
       let r
-      try { r = await W.openRecord(p.key, W.DIR_TO_PERIPHERAL, 0, rec) } catch (_) { continue }
+      try { r = await W.openRecord(/** @type {CryptoKey} */ (p.key), W.DIR_TO_PERIPHERAL, 0, /** @type {Uint8Array<ArrayBuffer>} */ (rec)) } catch (_) { continue }
       if (r.type !== W.TYPE_HELLO || W.decodeText(r.body) !== p.token) continue
       p.central = centralId
-      p.chunk = this.adapter.chunkFor(centralId)
+      p.chunk = /** @type {BluetoothAdapter} */ (this.adapter).chunkFor(centralId)
       p.recvCtr = 1
       c.peer = p
       this._sendRecord(p, W.TYPE_HELLO, W.encodeText(this.getSelfToken() || ''))
@@ -242,6 +319,7 @@ export class BluetoothManager {
     }
   }
 
+  /** @param {string} centralId */
   _onCentralGone (centralId) {
     const c = this.centrals.get(centralId)
     this.centrals.delete(centralId)
@@ -250,12 +328,13 @@ export class BluetoothManager {
 
   // ---------- registros ----------
 
+  /** @param {BlePeer} p @param {Uint8Array} rec */
   async _onRecord (p, rec) {
     if (p.state === 'closed' || p.state === 'failed') return
     const dir = p.role === 'central' ? W.DIR_TO_CENTRAL : W.DIR_TO_PERIPHERAL
     let r
     try {
-      r = await W.openRecord(p.key, dir, p.recvCtr, rec)
+      r = await W.openRecord(/** @type {CryptoKey} */ (p.key), dir, p.recvCtr, /** @type {Uint8Array<ArrayBuffer>} */ (rec))
       p.recvCtr++
     } catch (_) {
       this.emit('error', { type: 'bluetooth_bad_record', peer: p.token })
@@ -279,32 +358,38 @@ export class BluetoothManager {
     }
   }
 
+  /** @param {BlePeer} p @param {number} type @param {Uint8Array} body */
   _sendRecord (p, type, body) {
     const dir = p.role === 'central' ? W.DIR_TO_PERIPHERAL : W.DIR_TO_CENTRAL
     p.pending += body.length
     p.queue = p.queue.then(async () => {
       if (p.state === 'closed' || p.state === 'failed') return
-      const rec = await W.sealRecord(p.key, dir, p.sendCtr++, type, body)
+      const rec = await W.sealRecord(/** @type {CryptoKey} */ (p.key), dir, p.sendCtr++, type, body)
       for (const chunk of W.toChunks(rec, p.chunk, p.role === 'central' ? null : p.tag)) {
-        if (p.role === 'central') await p.link.write(chunk)
-        else await this.adapter.notify(p.central, chunk)
+        if (p.role === 'central') await /** @type {Link} */ (p.link).write(chunk)
+        else await /** @type {BluetoothAdapter} */ (this.adapter).notify(/** @type {string} */ (p.central), chunk)
       }
     }).catch(() => this._closed(p)).finally(() => { p.pending -= body.length })
   }
 
   // ---------- envío ----------
 
+  /** @param {string} to @param {string | Uint8Array} wire @returns {boolean} */
   trySend (to, wire) {
     const p = this.peers.get(to)
     if (!p || p.state !== 'open') return false
+    const body = typeof wire === 'string' ? W.encodeText(wire) : wire
     const isText = typeof wire === 'string'
-    const body = isText ? W.encodeText(wire) : wire
     this._sendRecord(p, isText ? W.TYPE_TEXT : W.TYPE_BINARY, body)
     this.count?.('out', to, body.length, 'bluetooth')
     return true
   }
 
-  /** Como `trySend`, esperando a que baje lo pendiente: para las partes de un mensaje grande. */
+  /**
+   * Como `trySend`, esperando a que baje lo pendiente: para las partes de un mensaje grande.
+   * @param {string} to @param {string | Uint8Array} wire @param {number} [highWater]
+   * @returns {Promise<boolean>}
+   */
   async sendDirect (to, wire, highWater = 256 * 1024) {
     const p = this.peers.get(to)
     if (!p || p.state !== 'open') return false
@@ -315,9 +400,12 @@ export class BluetoothManager {
     return this.trySend(to, wire)
   }
 
+  /** @param {string} to @returns {boolean} */
   isOpen (to) { return this.peers.get(to)?.state === 'open' }
 
+  /** @returns {Map<string, 'bluetooth' | 'failed' | 'connecting'>} */
   describe () {
+    /** @type {Map<string, 'bluetooth' | 'failed' | 'connecting'>} */
     const out = new Map()
     for (const p of this.peers.values()) {
       out.set(p.token, p.state === 'open' ? 'bluetooth' : p.state === 'failed' ? 'failed' : 'connecting')
@@ -325,6 +413,7 @@ export class BluetoothManager {
     return out
   }
 
+  /** @param {string} to */
   closePeer (to) {
     const p = this.peers.get(to)
     if (p) this._closed(p)
@@ -337,6 +426,9 @@ export class BluetoothManager {
   /**
    * Pone `{kind, data}` en `beacon` (docs/bluetooth.md §3) hasta que se llame a lo que
    * devuelve. Lanza `no-bluetooth` si aquí no hay Bluetooth: quien anuncia tiene que saberlo.
+   *
+   * @param {string} kind @param {string} data
+   * @returns {() => void}
    */
   announce (kind, data) {
     if (!this.adapter) throw Object.assign(new Error('bluetooth: not available here'), { code: 'no-bluetooth' })
@@ -349,18 +441,23 @@ export class BluetoothManager {
    * Busca en el aire durante `timeoutMs` lo que otros anuncian con `kind`. No necesita el
    * proxio. `onFound` avisa de cada uno según aparece; la promesa devuelve todos.
    * @param {{ kind: string, timeoutMs?: number, onFound?: (b: {kind: string, data: string}) => void }} opts
+   * @returns {Promise<Array<{ kind: string, data: string }>>}
    */
   async discover ({ kind, timeoutMs = 8000, onFound }) {
     if (!this.adapter) throw Object.assign(new Error('bluetooth: not available here'), { code: 'no-bluetooth' })
+    /** @type {Array<{ kind: string, data: string }>} */
     const found = []
+    /** @type {Set<string>} */
     const done = new Set()
+    /** @param {Device} dev */
     const listener = (dev) => {
       if (done.has(dev.id)) return
       done.add(dev.id)
       this._withConnectLock(async () => {
+        /** @type {Link | null} */
         let link = null
         try {
-          link = await this.adapter.connect(dev)
+          link = await /** @type {BluetoothAdapter} */ (this.adapter).connect(dev)
           const b = W.decodeBeacon(await link.read(W.BEACON_UUID))
           if (b && b.kind === kind && !found.some((f) => f.data === b.data)) {
             found.push(b)
@@ -382,7 +479,9 @@ export class BluetoothManager {
 
   // ---------- internos ----------
 
+  /** @param {string} token @returns {BlePeer} */
   _newPeer (token) {
+    /** @type {BlePeer} */
     const p = {
       token, state: 'new', role: null, eph: null, key: null, theirBid: null, myBid: null, tag: null,
       link: null, central: null, chunk: 20, sendCtr: 0, recvCtr: 0, pending: 0,
@@ -392,12 +491,15 @@ export class BluetoothManager {
     return p
   }
 
+  /** @param {BlePeer} p @param {number} ms */
   _timer (p, ms) {
     if (p.timer) clearTimeout(p.timer)
-    p.timer = setTimeout(() => { if (p.state !== 'open') this._fail(p) }, ms)
-    p.timer.unref?.()
+    const t = setTimeout(() => { if (p.state !== 'open') this._fail(p) }, ms)
+    p.timer = t
+    t.unref?.()
   }
 
+  /** @param {BlePeer} p */
   _open (p) {
     if (p.timer) clearTimeout(p.timer)
     p.timer = null
@@ -405,6 +507,7 @@ export class BluetoothManager {
     this.emit('bluetooth_open', p.token)
   }
 
+  /** @param {BlePeer} p */
   _fail (p) {
     if (p.state === 'closed') return
     this._release(p)
@@ -412,6 +515,7 @@ export class BluetoothManager {
     p.failedAt = Date.now()
   }
 
+  /** @param {BlePeer} p */
   _closed (p) {
     if (p.state === 'closed') return
     const wasOpen = p.state === 'open'
@@ -422,11 +526,13 @@ export class BluetoothManager {
   }
 
   /** Quita una negociación sin avisar: la reemplaza otra del mismo token. */
+  /** @param {BlePeer} p */
   _drop (p) {
     this._release(p)
     p.state = 'closed'
   }
 
+  /** @param {BlePeer} p */
   _release (p) {
     if (p.timer) clearTimeout(p.timer)
     p.timer = null
@@ -444,12 +550,17 @@ export class BluetoothManager {
     }
   }
 
+  /**
+   * @param {() => Promise<void>} fn
+   * @returns {Promise<void>}
+   */
   _withConnectLock (fn) {
     const run = this._connectLock.then(fn, fn)
     this._connectLock = run.catch(() => {})
     return run
   }
 
+  /** @param {(dev: Device) => void} listener */
   async _addScan (listener) {
     this._scanListeners.add(listener)
     if (this._stopScan) return
@@ -457,7 +568,7 @@ export class BluetoothManager {
       // Una búsqueda que se está parando todavía ocupa el adaptador: BlueZ contesta `InProgress`
       // a la siguiente si no se espera a que acabe (dos `discover` seguidos).
       const stopping = this._scanStopping || Promise.resolve()
-      this._scanStarting = stopping.then(() => this.adapter.scan((dev) => {
+      this._scanStarting = stopping.then(() => /** @type {BluetoothAdapter} */ (this.adapter).scan((dev) => {
         for (const l of [...this._scanListeners]) l(dev)
       })).then((stop) => {
         this._stopScan = stop
@@ -468,6 +579,7 @@ export class BluetoothManager {
     await this._scanStarting
   }
 
+  /** @param {((dev: Device) => void) | null} listener */
   _removeScan (listener) {
     if (listener) this._scanListeners.delete(listener)
     if (this._scanListeners.size || !this._stopScan) return

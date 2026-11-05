@@ -19,19 +19,29 @@
  */
 import { listTransports, PATHS } from './stats.js'
 
+/** @typedef {import('./index.js').TransportStats} TransportStats */
+/** @typedef {import('./index.js').PeerTraffic} PeerTraffic */
+/** @typedef {import('./index.js').TrafficByPath} TrafficByPath */
+
+/**
+ * @param {PeerTraffic[]} peers
+ * @param {'bytesIn' | 'bytesOut'} dir
+ * @returns {TrafficByPath}
+ */
 const sum = (peers, dir) => {
   const t = { proxy: 0, direct: 0, turn: 0, webrtc: 0, bluetooth: 0 }
   for (const p of peers) for (const k of PATHS) t[k] += p[dir][k]
   return t
 }
 
+/** @param {string} prefix @param {TrafficByPath} o */
 const pairs = (prefix, o) => PATHS.map((k) => `${prefix}.${k}=${o[k]}`).join(' ')
 
 /**
  * Las líneas de UN cliente, a partir de lo que devuelve `client.stats()`.
  * La primera es el resumen; después, una por conexión.
  *
- * @param {object} s lo que devuelve `client.stats()` (`TransportStats` en los tipos)
+ * @param {TransportStats} s lo que devuelve `client.stats()`
  * @param {{ label?: string }} [opts]
  * @returns {string[]}
  */
@@ -42,10 +52,12 @@ export function formatStats (s, opts = {}) {
   // (`unanswered`), igual que en el informe del topbar y de las apps nativas.
   // `unknown`: quien nos escribió, nunca recibió respuesta y no sabemos su llave (otro aparato
   // sondeando qué máquinas están encendidas). Tampoco es una conexión.
+  /** @param {PeerTraffic} p */
   const isUnknown = (p) => p.msgsIn > 0 && !(p.msgsOut > 0) && !p.pubkey
   const unknown = s.peers.filter(isUnknown)
   const talking = s.peers.filter((p) => p.msgsIn > 0 && !isUnknown(p))
   const silent = s.peers.filter((p) => !(p.msgsIn > 0))
+  /** @type {Record<string, number>} */
   const routes = {}
   for (const p of talking) routes[p.route] = (routes[p.route] || 0) + 1
   const routeList = Object.keys(routes).sort().map((r) => `${r}=${routes[r]}`).join(',') || 'none'
@@ -75,9 +87,9 @@ export function formatStats (s, opts = {}) {
  *   `flush` escribe ya (si cambió algo); `stop` escribe una última vez y para.
  */
 export function logStats (opts = {}) {
-  const log = opts.log || ((line) => console.log(line))
+  const log = opts.log || (/** @param {string} line */ (line) => console.log(line))
   const everyMs = opts.everyMs || 5 * 60 * 1000
-  /** cliente → lo último que se escribió de él */
+  /** @type {WeakMap<object, string>} cliente → lo último que se escribió de él */
   const last = new WeakMap()
 
   const flush = async () => {
@@ -88,7 +100,7 @@ export function logStats (opts = {}) {
         lines = formatStats(await client.stats(), opts)
       } catch (e) {
         // No poder leer NO es «no hubo tráfico»: se dice, para que no parezca silencio.
-        lines = [`${opts.label ? `[net] ${opts.label}` : '[net]'} could not read stats: ${e?.message || e}`]
+        lines = [`${opts.label ? `[net] ${opts.label}` : '[net]'} could not read stats: ${/** @type {{ message?: string } | null | undefined} */ (e)?.message || e}`]
       }
       const text = lines.join('\n')
       if (last.get(client) === text) continue
@@ -108,9 +120,11 @@ export function logStats (opts = {}) {
 }
 
 /** Bytes para el informe de texto: `B`, `KB` con un decimal, `MB` con dos. */
+/** @param {number} n */
 const rBytes = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
+/** @param {TrafficByPath | null | undefined} o */
 const rPaths = (o) => {
-  const parts = PATHS.filter((k) => (o?.[k] || 0) > 0).map((k) => `${k} ${rBytes(o[k])}`)
+  const parts = PATHS.filter((k) => (o?.[k] || 0) > 0).map((k) => `${k} ${rBytes(/** @type {TrafficByPath} */ (o)[k])}`)
   return parts.length ? parts.join(', ') : '0 B'
 }
 
@@ -119,10 +133,14 @@ const rPaths = (o) => {
  * aparato apagado al que se le mandó un ping no se le llama conexión. `unknown`: quien nos
  * escribió, nunca recibió respuesta y no sabemos su llave. Tampoco es una conexión.
  *
- * @param {Array<object>} peers `TransportStats.peers`
+ * @param {PeerTraffic[]} peers `TransportStats.peers`
+ * @returns {{ talking: PeerTraffic[], silent: { count: number, bytesOut: number, msgsOut: number },
+ *   unknown: { count: number, bytesIn: number, msgsIn: number } }}
  */
 export function splitPeers (peers) {
+  /** @param {TrafficByPath | null | undefined} o */
   const total = (o) => PATHS.reduce((n, k) => n + (o?.[k] || 0), 0)
+  /** @type {PeerTraffic[]} */
   const talking = []
   const silent = { count: 0, bytesOut: 0, msgsOut: 0 }
   const unknown = { count: 0, bytesIn: 0, msgsIn: 0 }
@@ -138,7 +156,7 @@ export function splitPeers (peers) {
  * (que va a un log en disco y por eso calla la llave), este se enseña en pantalla a quien lo
  * pidió, y dice con quién es cada conexión.
  *
- * @param {Array<object>} list lo que devolvió `client.stats()` de cada cliente (o `{ url, error }`)
+ * @param {Array<TransportStats | { url: string, error: string }>} list lo que devolvió `client.stats()` de cada cliente (o `{ url, error }`)
  * @param {{ label?: (pubkey: string) => string | Promise<string>, now?: Date }} [opts]
  *   `label`: cómo se nombra un aparato a partir de su llave (su id `AB12-CD34`, su nombre).
  *   Sin él, o si falla, sale `?`: nunca un trozo de la llave.
@@ -148,8 +166,10 @@ export async function netReport (list, opts = {}) {
   const now = opts.now || new Date()
   let out = `Dotrino network stats · ${now.toISOString().replace(/\.\d{3}Z$/, 'Z')}\n`
   if (!list.length) out += '(no transports)\n'
-  for (const s of list) {
-    if (s.error) { out += `Proxy ${s.url} | error: ${s.error}\n`; continue }
+  for (const entry of list) {
+    const error = /** @type {{ error?: string }} */ (entry).error
+    if (error) { out += `Proxy ${entry.url} | error: ${error}\n`; continue }
+    const s = /** @type {TransportStats} */ (entry)
     const hhmm = new Date(s.since).toTimeString().slice(0, 8)
     out += `Proxy ${s.url}${s.app ? ` | app=${s.app}` : ''}${s.node ? ` | node=${s.node}` : ''} | ${s.connected ? 'connected' : 'disconnected'} | since ${hhmm}\n`
     out += `  proxy total: in ${rBytes(s.proxy.bytesIn)} / out ${rBytes(s.proxy.bytesOut)} (frames ${s.proxy.framesIn ?? '?'}/${s.proxy.framesOut ?? '?'})\n`

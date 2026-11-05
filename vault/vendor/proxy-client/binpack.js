@@ -32,7 +32,11 @@ const FRAME_VERSION = 0x01
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-/** Bytes, sin importar de qué vista vengan (`Buffer`, `ArrayBuffer`, `Uint8Array`). */
+/**
+ * Bytes, sin importar de qué vista vengan (`Buffer`, `ArrayBuffer`, `Uint8Array`).
+ * @param {unknown} v
+ * @returns {Uint8Array | null}
+ */
 export function asBytes (v) {
   if (v instanceof Uint8Array) return v
   if (v instanceof ArrayBuffer) return new Uint8Array(v)
@@ -40,7 +44,11 @@ export function asBytes (v) {
   return null
 }
 
-/** ¿Lleva bytes este valor, a cualquier profundidad? Es lo que decide texto o binario. */
+/**
+ * ¿Lleva bytes este valor, a cualquier profundidad? Es lo que decide texto o binario.
+ * @param {any} v
+ * @returns {boolean}
+ */
 export function hasBinary (v) {
   if (v instanceof Uint8Array || v instanceof ArrayBuffer) return true
   if (Array.isArray(v)) return v.some(hasBinary)
@@ -50,11 +58,16 @@ export function hasBinary (v) {
   return false
 }
 
-/** Un objeto con bytes dentro → un solo `Uint8Array`. */
+/**
+ * Un objeto con bytes dentro → un solo `Uint8Array`.
+ * @param {unknown} obj
+ * @returns {Uint8Array}
+ */
 export function pack (obj) {
+  /** @type {Uint8Array[]} */
   const blobs = []
   let off = 0
-  const json = JSON.stringify(obj, function (k, v) {
+  const json = JSON.stringify(obj, /** @this {any} @param {string} k @param {unknown} v */ function (k, v) {
     // `this[k]` es el valor antes de `toJSON`: un Buffer de Node se convertiría en
     // `{ type: 'Buffer', data: [...] }` y aquí lo queremos como bytes.
     const b = asBytes(this[k])
@@ -74,11 +87,14 @@ export function pack (obj) {
   return out
 }
 
+/** @param {unknown} b @returns {b is Uint8Array} */
 export const isPacked = (b) => b instanceof Uint8Array && b.length >= 5 && b[0] === PACK_MAGIC
 
 /**
  * Un paquete → el objeto, con sus bytes como `Uint8Array` (vistas sobre `bytes`, sin copiar).
  * Lanza con `code: 'bad-pack'` si no es un paquete o una referencia se sale de él.
+ * @param {Uint8Array | ArrayBuffer | ArrayBufferView} bytes
+ * @returns {any}
  */
 export function unpack (bytes) {
   const b = asBytes(bytes)
@@ -88,6 +104,7 @@ export function unpack (bytes) {
   const area = b.subarray(5 + len)
   let obj
   try { obj = JSON.parse(dec.decode(b.subarray(5, 5 + len))) } catch (_) { throw errorWithCode('packed message header is not JSON', 'bad-pack') }
+  /** @param {any} v @returns {any} */
   const revive = (v) => {
     if (Array.isArray(v)) return v.map(revive)
     if (!v || typeof v !== 'object') return v
@@ -99,6 +116,7 @@ export function unpack (bytes) {
       }
       return area.subarray(ref[0], ref[0] + ref[1])
     }
+    /** @type {Record<string, unknown>} */
     const out = {}
     for (const k of Object.keys(v)) out[k] = revive(v[k])
     return out
@@ -106,7 +124,11 @@ export function unpack (bytes) {
   return revive(obj)
 }
 
-/** Une varios trozos de bytes en uno. */
+/**
+ * Une varios trozos de bytes en uno.
+ * @param {Uint8Array[]} list
+ * @returns {Uint8Array}
+ */
 export function concatBytes (list) {
   const out = new Uint8Array(list.reduce((a, b) => a + b.byteLength, 0))
   let p = 0
@@ -114,7 +136,12 @@ export function concatBytes (list) {
   return out
 }
 
-/** La trama binaria del proxio: la cabecera de texto de siempre, y el `message` en crudo. */
+/**
+ * La trama binaria del proxio: la cabecera de texto de siempre, y el `message` en crudo.
+ * @param {Record<string, unknown>} header
+ * @param {Uint8Array} body
+ * @returns {Uint8Array}
+ */
 export function encodeFrame (header, body) {
   const head = enc.encode(JSON.stringify(header))
   const out = new Uint8Array(5 + head.length + body.byteLength)
@@ -125,7 +152,11 @@ export function encodeFrame (header, body) {
   return out
 }
 
-/** El inverso: `{ header, body }`. Lanza con `code: 'bad-frame'` si no es una trama válida. */
+/**
+ * El inverso: `{ header, body }`. Lanza con `code: 'bad-frame'` si no es una trama válida.
+ * @param {unknown} data
+ * @returns {{ header: Record<string, any>, body: Uint8Array }}
+ */
 export function decodeFrame (data) {
   const b = asBytes(data)
   if (!b || b.length < 5 || b[0] !== FRAME_VERSION) throw errorWithCode('not a binary frame of a known version', 'bad-frame')

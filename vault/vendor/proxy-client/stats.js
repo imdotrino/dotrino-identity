@@ -18,7 +18,11 @@
  *   bluetooth el escalón del Bluetooth (docs/bluetooth.md)
  */
 
-/** Longitud en bytes UTF-8 de un string, sin reservar un buffer por mensaje. */
+/**
+ * Longitud en bytes UTF-8 de un string, sin reservar un buffer por mensaje.
+ * @param {any} s un string, o algo con `byteLength` o `size` (bytes, un Blob)
+ * @returns {number}
+ */
 export function utf8Length (s) {
   if (typeof s !== 'string') {
     if (s && typeof s.byteLength === 'number') return s.byteLength
@@ -36,19 +40,33 @@ export function utf8Length (s) {
   return n
 }
 
+/** @typedef {import('./index.js').TrafficByPath} TrafficByPath */
+/** Lo que se cuenta de una conexión; la ruta se le añade al leerlo (`client.stats()`). */
+/** @typedef {Omit<import('./index.js').PeerTraffic, 'route'>} PeerCounters */
+/** @typedef {keyof TrafficByPath} TrafficPath */
+
+/** @type {TrafficPath[]} */
 export const PATHS = ['proxy', 'direct', 'turn', 'webrtc', 'bluetooth']
 
+/** @returns {TrafficByPath} */
 const zeros = () => ({ proxy: 0, direct: 0, turn: 0, webrtc: 0, bluetooth: 0 })
 
 export class TrafficStats {
   constructor () {
     this.since = Date.now()
     this.proxy = { bytesIn: 0, bytesOut: 0, framesIn: 0, framesOut: 0 }
-    /** clave (`t:<token>` | `k:<pubkey>`) → contadores de esa conexión */
+    /**
+     * clave (`t:<token>` | `k:<pubkey>`) → contadores de esa conexión
+     * @type {Map<string, PeerCounters>}
+     */
     this.peers = new Map()
   }
 
-  /** Un frame entero del WebSocket del proxio. */
+  /**
+   * Un frame entero del WebSocket del proxio.
+   * @param {'in'|'out'} dir
+   * @param {number} bytes
+   */
   frame (dir, bytes) {
     if (dir === 'in') { this.proxy.bytesIn += bytes; this.proxy.framesIn++ } else { this.proxy.bytesOut += bytes; this.proxy.framesOut++ }
   }
@@ -56,7 +74,7 @@ export class TrafficStats {
   /**
    * Un mensaje dirigido a (o venido de) una conexión.
    * @param {'in'|'out'} dir
-   * @param {'proxy'|'direct'|'turn'|'webrtc'|'bluetooth'} path
+   * @param {TrafficPath} path
    * @param {{ token?: string|null, pubkey?: string|null }} who
    * @param {number} bytes
    */
@@ -89,8 +107,9 @@ export async function routeOf (pc) {
   let report
   try { report = await pc.getStats() } catch (_) { return null }
   if (!report || typeof report.forEach !== 'function') return null
+  /** @type {Map<string, any>} */
   const byId = new Map()
-  report.forEach((s) => { if (s && s.id) byId.set(s.id, s) })
+  report.forEach(/** @param {any} s */ (s) => { if (s && s.id) byId.set(s.id, s) })
   let pair = null
   // El par vigente lo dice el transporte; si no, el que está nominado y funcionando.
   for (const s of byId.values()) {
@@ -105,6 +124,7 @@ export async function routeOf (pc) {
   const local = byId.get(pair.localCandidateId)
   const remote = byId.get(pair.remoteCandidateId)
   if (!local && !remote) return null
+  /** @param {any} c */
   const typeOf = (c) => c && (c.candidateType || c.type)
   return typeOf(local) === 'relay' || typeOf(remote) === 'relay' ? 'turn' : 'direct'
 }
@@ -117,9 +137,12 @@ export async function routeOf (pc) {
  */
 const REGISTRY = Symbol.for('dotrino.transports')
 
+/** @returns {Set<import('./index.js').WebSocketProxyClient>} */
 function registry () {
-  if (!globalThis[REGISTRY]) globalThis[REGISTRY] = new Set()
-  return globalThis[REGISTRY]
+  const g = /** @type {Record<symbol, Set<import('./index.js').WebSocketProxyClient> | undefined>} */ (/** @type {unknown} */ (globalThis))
+  let r = g[REGISTRY]
+  if (!r) { r = new Set(); g[REGISTRY] = r }
+  return r
 }
 
 function notify () {
@@ -128,6 +151,7 @@ function notify () {
   }
 }
 
+/** @param {import('./index.js').WebSocketProxyClient} client */
 export function registerTransport (client) {
   const r = registry()
   if (r.has(client)) return
@@ -135,11 +159,15 @@ export function registerTransport (client) {
   notify()
 }
 
+/** @param {import('./index.js').WebSocketProxyClient} client */
 export function unregisterTransport (client) {
   if (registry().delete(client)) notify()
 }
 
-/** Los clientes registrados en esta página (o proceso). */
+/**
+ * Los clientes registrados en esta página (o proceso).
+ * @returns {import('./index.js').WebSocketProxyClient[]}
+ */
 export function listTransports () {
   return [...registry()]
 }

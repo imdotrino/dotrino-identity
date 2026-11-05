@@ -38,12 +38,14 @@ function subtle () {
   return s
 }
 
+/** @param {Uint8Array} bytes @returns {string} */
 export function b64u (bytes) {
   let s = ''
   for (const b of bytes) s += String.fromCharCode(b)
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+/** @param {string} str @returns {Uint8Array<ArrayBuffer>} */
 export function unb64u (str) {
   const s = String(str).replace(/-/g, '+').replace(/_/g, '/')
   const bin = atob(s + '='.repeat((4 - s.length % 4) % 4))
@@ -52,15 +54,21 @@ export function unb64u (str) {
   return out
 }
 
+/** @returns {string} */
 export function randomBid () {
   return b64u(globalThis.crypto.getRandomValues(new Uint8Array(BID_BYTES)))
 }
 
 // ---------- características de solo lectura ----------
 
+/** @param {string} bid @returns {Uint8Array} */
 export function encodeHello (bid) { return enc.encode(JSON.stringify({ v: 1, bid })) }
 
-/** El `bid` de un `hello` leído, o null si no es de esta versión. */
+/**
+ * El `bid` de un `hello` leído, o null si no es de esta versión.
+ * @param {Uint8Array} bytes
+ * @returns {string | null}
+ */
 export function decodeHello (bytes) {
   try {
     const o = JSON.parse(dec.decode(bytes))
@@ -68,6 +76,7 @@ export function decodeHello (bytes) {
   } catch (_) { return null }
 }
 
+/** @param {string} kind @param {string} data @returns {Uint8Array} */
 export function encodeBeacon (kind, data) {
   if (typeof kind !== 'string' || !kind || typeof data !== 'string') {
     throw Object.assign(new Error('bluetooth: announce needs a kind and a string'), { code: 'bad-beacon' })
@@ -79,7 +88,11 @@ export function encodeBeacon (kind, data) {
   return bytes
 }
 
-/** `{kind, data}` de un `beacon` leído, o null si está vacío o no se entiende. */
+/**
+ * `{kind, data}` de un `beacon` leído, o null si está vacío o no se entiende.
+ * @param {Uint8Array | null | undefined} bytes
+ * @returns {{ kind: string, data: string } | null}
+ */
 export function decodeBeacon (bytes) {
   if (!bytes || !bytes.length) return null
   try {
@@ -93,7 +106,11 @@ export const KIND_CONTACT = 'contact'
 export const CONTACT_NICK_MAX = 40
 export const CONTACT_NICK_MAX_BYTES = 60
 
-/** El apodo recortado a 40 unidades UTF-16 y 60 bytes UTF-8, por puntos de código enteros: así cabe en el beacon. */
+/**
+ * El apodo recortado a 40 unidades UTF-16 y 60 bytes UTF-8, por puntos de código enteros: así cabe en el beacon.
+ * @param {unknown} nickname
+ * @returns {string}
+ */
 export function trimNick (nickname) {
   let out = ''
   let bytes = 0
@@ -111,6 +128,9 @@ export function trimNick (nickname) {
  * `#to=` del messenger, `to=<publickey en base64url>&nick=<apodo>`. La `publickey` es la cadena
  * JWK tal cual la escribe la identidad. El apodo va recortado con `trimNick` y codificado como
  * `encodeURIComponent` (lo que no es `A-Za-z0-9-_.!~*'()` va en %XX de sus bytes UTF-8).
+ *
+ * @param {{ publickey: string, nickname?: string }} card
+ * @returns {string}
  */
 export function encodeContact ({ publickey, nickname = '' }) {
   if (typeof publickey !== 'string' || !publickey) {
@@ -120,9 +140,14 @@ export function encodeContact ({ publickey, nickname = '' }) {
   return 'to=' + b64u(enc.encode(publickey)) + (nick ? '&nick=' + encodeURIComponent(nick) : '')
 }
 
-/** `{ publickey, nickname }` de una tarjeta anunciada, o null si no se entiende. */
+/**
+ * `{ publickey, nickname }` de una tarjeta anunciada, o null si no se entiende.
+ * @param {unknown} data
+ * @returns {{ publickey: string, nickname: string } | null}
+ */
 export function decodeContact (data) {
   if (typeof data !== 'string') return null
+  /** @param {string} k */
   const param = (k) => { const m = data.match(new RegExp('(?:^|&)' + k + '=([^&]*)')); return m ? m[1] : null }
   try {
     const to = param('to')
@@ -137,13 +162,21 @@ export function decodeContact (data) {
 
 // ---------- llave del canal ----------
 
+/** @returns {Promise<{ privateKey: CryptoKey, epub: string }>} */
 export async function makeEphemeral () {
   const kp = await subtle().generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
   const raw = new Uint8Array(await subtle().exportKey('raw', kp.publicKey))
   return { privateKey: kp.privateKey, epub: b64u(raw) }
 }
 
-/** La llave AES del canal (docs/bluetooth.md §4). El orden de los tokens no depende de quién llama. */
+/**
+ * La llave AES del canal (docs/bluetooth.md §4). El orden de los tokens no depende de quién llama.
+ * @param {CryptoKey} privateKey
+ * @param {string} theirEpub
+ * @param {string} tokenA
+ * @param {string} tokenB
+ * @returns {Promise<CryptoKey>}
+ */
 export async function deriveKey (privateKey, theirEpub, tokenA, tokenB) {
   const s = subtle()
   const pub = await s.importKey('raw', unb64u(theirEpub), { name: 'ECDH', namedCurve: 'P-256' }, false, [])
@@ -157,6 +190,7 @@ export async function deriveKey (privateKey, theirEpub, tokenA, tokenB) {
 
 // ---------- registros ----------
 
+/** @param {number} dir @param {number | bigint} counter @returns {Uint8Array<ArrayBuffer>} */
 function nonce (dir, counter) {
   const n = new Uint8Array(12)
   n[0] = dir
@@ -164,6 +198,11 @@ function nonce (dir, counter) {
   return n
 }
 
+/**
+ * @param {CryptoKey} key @param {number} dir @param {number | bigint} counter
+ * @param {number} type @param {Uint8Array} body
+ * @returns {Promise<Uint8Array>}
+ */
 export async function sealRecord (key, dir, counter, type, body) {
   const plain = new Uint8Array(1 + body.length)
   plain[0] = type
@@ -171,24 +210,39 @@ export async function sealRecord (key, dir, counter, type, body) {
   return new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv: nonce(dir, counter) }, key, plain))
 }
 
-/** `{type, body}`, o lanza si no lo selló esa llave con ese contador. */
+/**
+ * `{type, body}`, o lanza si no lo selló esa llave con ese contador.
+ * @param {CryptoKey} key @param {number} dir @param {number | bigint} counter
+ * @param {Uint8Array<ArrayBuffer>} record
+ * @returns {Promise<{ type: number, body: Uint8Array }>}
+ */
 export async function openRecord (key, dir, counter, record) {
   const plain = new Uint8Array(await subtle().decrypt({ name: 'AES-GCM', iv: nonce(dir, counter) }, key, record))
   if (!plain.length) throw new Error('bluetooth: empty record')
   return { type: plain[0], body: plain.subarray(1) }
 }
 
+/** @param {string} str @returns {Uint8Array} */
 export function encodeText (str) { return enc.encode(str) }
+/** @param {Uint8Array} bytes @returns {string} */
 export function decodeText (bytes) { return dec.decode(bytes) }
 
 // ---------- trozos ----------
 
 export const TAG_BYTES = 4
 
-/** La etiqueta de los trozos hacia un central: los 4 primeros bytes de su `bid` (docs §5). */
+/**
+ * La etiqueta de los trozos hacia un central: los 4 primeros bytes de su `bid` (docs §5).
+ * @param {string} bid
+ * @returns {Uint8Array}
+ */
 export function tagOf (bid) { return unb64u(bid).subarray(0, TAG_BYTES) }
 
-/** True si el trozo de `tx` lleva esa etiqueta. */
+/**
+ * True si el trozo de `tx` lleva esa etiqueta.
+ * @param {Uint8Array} chunk @param {Uint8Array} tag
+ * @returns {boolean}
+ */
 export function hasTag (chunk, tag) {
   if (chunk.length < 1 + TAG_BYTES) return false
   for (let i = 0; i < TAG_BYTES; i++) if (chunk[1 + i] !== tag[i]) return false
@@ -198,10 +252,14 @@ export function hasTag (chunk, tag) {
 /**
  * Parte un registro en trozos de `chunk` bytes de valor GATT, cabecera incluida. Con `tag`
  * (hacia un central, `tx`) la cabecera lleva la etiqueta detrás de las banderas.
+ *
+ * @param {Uint8Array} record @param {number} chunk @param {Uint8Array | null} [tag]
+ * @returns {Uint8Array[]}
  */
 export function toChunks (record, chunk, tag = null) {
   const head = 1 + (tag ? TAG_BYTES : 0)
   const room = Math.max(1, chunk - head)
+  /** @type {Uint8Array[]} */
   const out = []
   let i = 0
   do {
@@ -219,7 +277,14 @@ export function toChunks (record, chunk, tag = null) {
 /** Rearma registros de trozos que llegan en orden. `push` devuelve el registro entero, o null. */
 export class Reassembler {
   /** @param {number} [skip]  bytes de cabecera tras las banderas (la etiqueta, en `tx`) */
-  constructor (skip = 0) { this.skip = skip; this.parts = []; this.size = 0 }
+  constructor (skip = 0) {
+    this.skip = skip
+    /** @type {Uint8Array[]} */
+    this.parts = []
+    this.size = 0
+  }
+
+  /** @param {Uint8Array | null | undefined} chunk @returns {Uint8Array | null} */
   push (chunk) {
     if (!chunk || chunk.length < 1 + this.skip) return null
     const body = chunk.subarray(1 + this.skip)

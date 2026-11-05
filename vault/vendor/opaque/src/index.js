@@ -20,7 +20,23 @@
 import * as wasm from '../build/opaque.js'
 import wasmBytes from '../build/wasm-bytes.js'
 
+/**
+ * @typedef {'bad-input'|'login-failed'|'protocol'|'internal'} OpaqueErrorCode
+ *
+ * @typedef {object} Identifiers   bound to the exchange; both ends must pass the same ones
+ * @property {string} [client]
+ * @property {string} [server]
+ *
+ * Every field below is base64url. Fields marked optional are still required at run time:
+ * a missing one throws `bad-input`, which is why they are typed as optional here.
+ */
+
+/** An error with a stable `code` (see the list at the top of this file). */
 export class OpaqueError extends Error {
+  /**
+   * @param {OpaqueErrorCode} code
+   * @param {string} message
+   */
   constructor (code, message) {
     super(message)
     this.name = 'OpaqueError'
@@ -38,18 +54,30 @@ function init () {
 
 const CODE = /^(bad-input|login-failed|protocol): ([\s\S]*)$/
 
+/**
+ * @template {unknown[]} A
+ * @template R
+ * @param {(...args: A) => R} fn
+ * @param {A} args
+ * @returns {R}
+ */
 function call (fn, ...args) {
   init()
   try {
     return fn(...args)
   } catch (e) {
-    const msg = String(e?.message ?? e)
+    const msg = String(/** @type {{ message?: unknown } | null | undefined} */ (e)?.message ?? e)
     const m = CODE.exec(msg)
-    if (m) throw new OpaqueError(m[1], m[2])
+    if (m) throw new OpaqueError(/** @type {OpaqueErrorCode} */ (m[1]), m[2])
     throw new OpaqueError('internal', msg)
   }
 }
 
+/**
+ * @param {string} name
+ * @param {unknown} v
+ * @returns {string}
+ */
 function need (name, v) {
   if (typeof v !== 'string' || !v) throw new OpaqueError('bad-input', `${name} is required`)
   return v
@@ -58,6 +86,9 @@ function need (name, v) {
 /**
  * Los identificadores que se atan al intercambio. Si se usan, las DOS puntas tienen que
  * pasar los mismos; si no casan, el inicio falla como una contraseña equivocada.
+ *
+ * @param {Identifiers} identifiers
+ * @returns {[string|undefined, string|undefined]}
  */
 function idents (identifiers) {
   if (identifiers == null || typeof identifiers !== 'object') throw new OpaqueError('bad-input', 'identifiers must be an object')
@@ -68,55 +99,101 @@ function idents (identifiers) {
   return [client, server]
 }
 
-/** La suite y sus parámetros. Se guarda junto a cada registro. */
+/**
+ * La suite y sus parámetros. Se guarda junto a cada registro.
+ *
+ * @returns {string}
+ */
 export function suiteId () {
   return call(wasm.suiteId)
 }
 
 export const server = {
-  /** La preparación del servidor: SECRETA, una por bóveda. Sin ella no se puede comprobar nada. */
+  /**
+   * La preparación del servidor: SECRETA, una por bóveda. Sin ella no se puede comprobar nada.
+   *
+   * @returns {string}
+   */
   createSetup () {
     return call(wasm.serverCreateSetup)
   },
+  /**
+   * @param {{ setup?: string }} [args]
+   * @returns {string}
+   */
   publicKey ({ setup } = {}) {
     return call(wasm.serverPublicKey, need('setup', setup))
   },
+  /**
+   * @param {{ setup?: string, request?: string, credentialId?: string }} [args]
+   * @returns {string}   the response for the client
+   */
   registrationResponse ({ setup, request, credentialId } = {}) {
     return call(wasm.serverRegistrationResponse, need('setup', setup), need('request', request), need('credentialId', credentialId))
   },
-  /** Lo que se guarda del usuario (el «registro»). */
+  /**
+   * Lo que se guarda del usuario (el «registro»).
+   *
+   * @param {{ upload?: string }} [args]
+   * @returns {string}   the record
+   */
   registrationFinish ({ upload } = {}) {
     return call(wasm.serverRegistrationFinish, need('upload', upload))
   },
   /**
    * `record` tiene que venir SIEMPRE: el registro, o `null` si el usuario no existe. Con
    * `null` responde igual, así que desde fuera no se sabe qué usuarios hay.
+   *
+   * @param {{ setup?: string, record?: string|null, request?: string, credentialId?: string, identifiers?: Identifiers }} [args]
+   * @returns {{ state: string, response: string }}
    */
   loginStart ({ setup, record, request, credentialId, identifiers = {} } = {}) {
     if (record !== null && (typeof record !== 'string' || !record)) {
       throw new OpaqueError('bad-input', 'record must be the stored record, or null for an unknown user')
     }
-    return call(wasm.serverLoginStart, need('setup', setup), record ?? undefined, need('request', request), need('credentialId', credentialId), ...idents(identifiers))
+    return /** @type {{ state: string, response: string }} */ (call(wasm.serverLoginStart, need('setup', setup), record ?? undefined, need('request', request), need('credentialId', credentialId), ...idents(identifiers)))
   },
+  /**
+   * @param {{ state?: string, finalization?: string, identifiers?: Identifiers }} [args]
+   * @returns {{ sessionKey: string }}
+   */
   loginFinish ({ state, finalization, identifiers = {} } = {}) {
-    return call(wasm.serverLoginFinish, need('state', state), need('finalization', finalization), ...idents(identifiers))
+    return /** @type {{ sessionKey: string }} */ (call(wasm.serverLoginFinish, need('state', state), need('finalization', finalization), ...idents(identifiers)))
   },
 }
 
 export const client = {
+  /**
+   * @param {{ password?: string }} [args]
+   * @returns {{ state: string, request: string }}
+   */
   registrationStart ({ password } = {}) {
-    return call(wasm.clientRegistrationStart, need('password', password))
+    return /** @type {{ state: string, request: string }} */ (call(wasm.clientRegistrationStart, need('password', password)))
   },
-  /** Devuelve `upload` (para el servidor) y `exportKey`, que solo sale de la contraseña. */
+  /**
+   * Devuelve `upload` (para el servidor) y `exportKey`, que solo sale de la contraseña.
+   *
+   * @param {{ state?: string, response?: string, password?: string, identifiers?: Identifiers }} [args]
+   * @returns {{ upload: string, exportKey: string, serverPublicKey: string }}
+   */
   registrationFinish ({ state, response, password, identifiers = {} } = {}) {
-    return call(wasm.clientRegistrationFinish, need('state', state), need('response', response), need('password', password), ...idents(identifiers))
+    return /** @type {{ upload: string, exportKey: string, serverPublicKey: string }} */ (call(wasm.clientRegistrationFinish, need('state', state), need('response', response), need('password', password), ...idents(identifiers)))
   },
+  /**
+   * @param {{ password?: string }} [args]
+   * @returns {{ state: string, request: string }}
+   */
   loginStart ({ password } = {}) {
-    return call(wasm.clientLoginStart, need('password', password))
+    return /** @type {{ state: string, request: string }} */ (call(wasm.clientLoginStart, need('password', password)))
   },
-  /** Devuelve `finalization` (para el servidor), `sessionKey` y el mismo `exportKey` del registro. */
+  /**
+   * Devuelve `finalization` (para el servidor), `sessionKey` y el mismo `exportKey` del registro.
+   *
+   * @param {{ state?: string, response?: string, password?: string, identifiers?: Identifiers }} [args]
+   * @returns {{ finalization: string, sessionKey: string, exportKey: string, serverPublicKey: string }}
+   */
   loginFinish ({ state, response, password, identifiers = {} } = {}) {
-    return call(wasm.clientLoginFinish, need('state', state), need('response', response), need('password', password), ...idents(identifiers))
+    return /** @type {{ finalization: string, sessionKey: string, exportKey: string, serverPublicKey: string }} */ (call(wasm.clientLoginFinish, need('state', state), need('response', response), need('password', password), ...idents(identifiers)))
   },
 }
 

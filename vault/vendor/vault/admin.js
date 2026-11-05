@@ -241,7 +241,10 @@ export function createAdminDesk ({
       // VER UNA PRIVADA (`varsDesk.reveal`). Antes que las demás de variables porque aquí no
       // viaja ningún destino en claro: va dentro del sobre, y la política es de la bóveda.
       if (data.op === 'var.reveal.begin' || data.op === 'var.reveal') {
-        if (!vars || typeof vars.reveal !== 'function') return { ok: false, error: 'admin: this vault cannot show a private variable (update it)' }
+        // Se comprueba el método que se va a llamar. Antes se miraba siempre `reveal`, y una
+        // bóveda sin `revealBegin` reventaba con un TypeError en vez de decirlo.
+        const method = data.op === 'var.reveal.begin' ? 'revealBegin' : 'reveal'
+        if (!vars || typeof vars[method] !== 'function') return { ok: false, error: 'admin: this vault cannot show a private variable (update it)' }
         try {
           const result = data.op === 'var.reveal.begin'
             ? await vars.revealBegin({ caller: chk.device, by })

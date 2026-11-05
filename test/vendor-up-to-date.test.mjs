@@ -61,7 +61,9 @@ test('el import map resuelve todo lo que el vendor importa por nombre', async ()
   const desnudos = new Set()
   for (const v of VENDORED) {
     for (const f of FILES.get(v)) {
-      const code = await readFile(join(here, v.to, f), 'utf8')
+      // Sin los comentarios: un tipo JSDoc (`typeof import('./ble/bluez.js')`) no se carga, y
+      // los módulos solo de Node se importan por variable a propósito para no viajar aquí.
+      const code = (await readFile(join(here, v.to, f), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '')
       for (const m of code.matchAll(/(?:from|import)\s*\(?\s*['"](@[^'"]+)['"]/g)) desnudos.add(m[1])
     }
   }
@@ -82,7 +84,9 @@ test('cada import relativo de lo vendorizado está en la copia', async () => {
   const faltan = []
   for (const v of VENDORED) {
     for (const f of FILES.get(v)) {
-      const code = await readFile(join(here, v.to, f), 'utf8')
+      // Sin los comentarios: un tipo JSDoc (`typeof import('./ble/bluez.js')`) no se carga, y
+      // los módulos solo de Node se importan por variable a propósito para no viajar aquí.
+      const code = (await readFile(join(here, v.to, f), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '')
       for (const m of code.matchAll(/(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
         const dest = join(here, v.to, dirname(f), m[1])
         if (!dest.startsWith(join(here, v.to)) ) continue   // fuera de la copia: lo resuelve el import map

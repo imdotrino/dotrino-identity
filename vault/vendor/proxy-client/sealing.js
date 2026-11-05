@@ -21,12 +21,27 @@ const ECDH = { name: 'ECDH', namedCurve: 'P-256' }
 
 const VERSION = 1
 
+/**
+ * Lo que se usa de `@dotrino/identity/content`. Se declara aquí porque ese subpath no
+ * publica tipos.
+ * @typedef {{
+ *   wrapForMember (args: { cek: string, memberEncPub: string }): Promise<any>,
+ *   openWrap (args: { wrap: any, myEncPrivateKey: CryptoKey }): Promise<string>,
+ *   makeContentKey?: () => Promise<string>,
+ *   encryptBytesWithCek?: (args: { cek: string, bytes: Uint8Array }) => Promise<{ iv: Uint8Array, ct: Uint8Array }>,
+ *   decryptBytesWithCek?: (args: { cek: string, iv: Uint8Array, ct: Uint8Array }) => Promise<Uint8Array>,
+ * }} SealingPrimitives
+ */
+
+/** @type {SealingPrimitives | null} */
 let primitives = null
 
+/** @returns {Promise<SealingPrimitives>} */
 async function crypto_ () {
   if (primitives) return primitives
   try {
-    primitives = await import('@dotrino/identity/content')
+    // @ts-expect-error -- `@dotrino/identity/content` no publica declaraciones de tipos (dependencia).
+    primitives = /** @type {SealingPrimitives} */ (await import('@dotrino/identity/content'))
   } catch (e) {
     throw new Error(
       'sealing requires @dotrino/identity (peer dependency) — install it, or pass ' +
@@ -35,12 +50,18 @@ async function crypto_ () {
   return primitives
 }
 
-/** Inject the primitives instead of resolving `@dotrino/identity` (bundlers, tests). */
+/**
+ * Inject the primitives instead of resolving `@dotrino/identity` (bundlers, tests).
+ * @param {SealingPrimitives} mod
+ */
 export function setSealingPrimitives (mod) {
   primitives = mod
 }
 
-/** A durable encryption keypair for this device. Its public half goes in the pairing code. */
+/**
+ * A durable encryption keypair for this device. Its public half goes in the pairing code.
+ * @returns {Promise<{ privateKey: CryptoKey, publicKey: CryptoKey, encPub: string }>}
+ */
 export async function makeEncKeypair () {
   const pair = await globalThis.crypto.subtle.generateKey(ECDH, true, ['deriveBits'])
   const pub = await globalThis.crypto.subtle.exportKey('jwk', pair.publicKey)
@@ -51,15 +72,22 @@ export async function makeEncKeypair () {
   }
 }
 
+/** @param {JsonWebKey} jwk @returns {Promise<CryptoKey>} */
 export async function importEncPrivate (jwk) {
   return globalThis.crypto.subtle.importKey('jwk', jwk, ECDH, true, ['deriveBits'])
 }
 
+/** @param {CryptoKey} privateKey @returns {Promise<JsonWebKey>} */
 export async function exportEncPrivate (privateKey) {
   return globalThis.crypto.subtle.exportKey('jwk', privateKey)
 }
 
-/** Seal a message towards a peer's encryption public key. */
+/**
+ * Seal a message towards a peer's encryption public key.
+ * @param {unknown} message
+ * @param {string} peerEncPub
+ * @returns {Promise<{ v: number, sealed: any }>}
+ */
 export async function seal (message, peerEncPub) {
   if (!peerEncPub) throw new Error('seal: missing peer encryption key')
   const { wrapForMember } = await crypto_()
@@ -67,7 +95,12 @@ export async function seal (message, peerEncPub) {
   return { v: VERSION, sealed }
 }
 
-/** Open a message sealed to me. Throws if it is not mine or was tampered with. */
+/**
+ * Open a message sealed to me. Throws if it is not mine or was tampered with.
+ * @param {any} envelope
+ * @param {CryptoKey} myEncPrivateKey
+ * @returns {Promise<any>}
+ */
 export async function open (envelope, myEncPrivateKey) {
   if (!isSealed(envelope)) throw new Error('open: not a sealed envelope')
   if (!myEncPrivateKey) throw new Error('open: missing my encryption key')
@@ -75,6 +108,7 @@ export async function open (envelope, myEncPrivateKey) {
   return JSON.parse(await openWrap({ wrap: envelope.sealed, myEncPrivateKey }))
 }
 
+/** @param {any} msg @returns {boolean} */
 export function isSealed (msg) {
   return !!msg && msg.v === VERSION && !!msg.sealed?.ct && !!msg.sealed?.epk
 }
@@ -104,7 +138,7 @@ export function isSealed (msg) {
  *
  * @param {any} identity cualquiera de los dos dialectos
  * @param {{ app?: string }} [opts]
- * @returns {{ seal:Function, open:Function, isSealed:Function }}
+ * @returns {Required<import('./index.js').SealingBridge>}
  */
 export function identitySealing (identity, { app = 'dotrino' } = {}) {
   // El dialecto se decide UNA vez, por lo que el objeto expone, y no por el resultado de
@@ -119,6 +153,7 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
   }
 
   const myEncPub = () => (iframe ? identity.getEncryptionPubkey() : identity.encryptionPubkey())
+  /** @param {string} from @param {any} envelope @returns {Promise<string>} */
   const openEnvelope = async (from, envelope) => {
     const r = iframe
       ? await identity.decrypt(from, null, envelope)
@@ -131,6 +166,7 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
   }
 
   return {
+    /** @param {unknown} msg @param {string} peerEncPub @param {{ publickey?: string }} [opts] */
     async seal (msg, peerEncPub, { publickey } = {}) {
       if (!peerEncPub) throw errorWithCode('no encryption key for the other side', 'unsealed')
       // Destinatarios como OBJETOS, y CON SU `publickey`: `encrypt` expande cada uno a
@@ -148,6 +184,7 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
       }
       return { app, sealed, from: await myEncPub() }
     },
+    /** @param {any} env */
     async open (env) { return JSON.parse(await openEnvelope(env.from, env.sealed)) },
     /**
      * La llave de cifrado de QUIEN SELLÓ. El sobre de la bóveda es ECDH entre la llave de
@@ -155,7 +192,9 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
      * es lo que dice de quién viene de verdad (el token no lo dice, y el saludo no
      * autentica). La app la compara con la que conoce de su contacto.
      */
+    /** @param {any} env */
     senderOf: (env) => (typeof env?.from === 'string' ? env.from : null),
+    /** @param {any} m */
     isSealed: (m) => !!m && m.app === app && !!m.sealed,
   }
 }
@@ -176,26 +215,38 @@ export function identitySealing (identity, { app = 'dotrino' } = {}) {
  */
 export const BIN_SEALED = 1
 
+/** @param {any} env @returns {boolean} */
 export function isBinSealed (env) {
   return !!env && env.bv === BIN_SEALED && !!env.k && typeof env.k === 'object' &&
     env.iv instanceof Uint8Array && env.ct instanceof Uint8Array
 }
 
-/** Una CEK nueva para un mensaje con bytes. */
+/**
+ * Una CEK nueva para un mensaje con bytes.
+ * @returns {Promise<string>}
+ */
 export async function makeMessageKey () {
   const { makeContentKey } = await crypto_()
   if (typeof makeContentKey !== 'function') throw errorWithCode('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
   return makeContentKey()
 }
 
-/** Cifra `bytes` con la CEK y devuelve los campos del sobre (`iv`, `ct`). */
+/**
+ * Cifra `bytes` con la CEK y devuelve los campos del sobre (`iv`, `ct`).
+ * @param {string} cek @param {Uint8Array} bytes
+ * @returns {Promise<{ iv: Uint8Array, ct: Uint8Array }>}
+ */
 export async function encryptBytes (cek, bytes) {
   const { encryptBytesWithCek } = await crypto_()
   if (typeof encryptBytesWithCek !== 'function') throw errorWithCode('sealing bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')
   return encryptBytesWithCek({ cek, bytes })
 }
 
-/** Descifra el `ct` de un sobre binario con su CEK ya abierta. */
+/**
+ * Descifra el `ct` de un sobre binario con su CEK ya abierta.
+ * @param {string} cek @param {{ iv: Uint8Array, ct: Uint8Array }} env
+ * @returns {Promise<Uint8Array>}
+ */
 export async function decryptBytes (cek, env) {
   const { decryptBytesWithCek } = await crypto_()
   if (typeof decryptBytesWithCek !== 'function') throw errorWithCode('opening bytes needs @dotrino/identity >= 0.117.0', 'no-bytes-sealing')

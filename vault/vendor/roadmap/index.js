@@ -23,6 +23,37 @@ import { satisfies } from '@dotrino/compat/ranges'
 import { MANIFESTS } from './manifests.js'
 
 /**
+ * @typedef {object} Product  la ficha de un producto en el registro
+ * @property {string} repo                     `imdotrino/<repo>`
+ * @property {string|null} [npm]               el nombre en npm (`null` si no se publica ahí)
+ * @property {string} current                  la versión que el registro da por vigente
+ * @property {number} protocol                 el entero del cable (`@dotrino/compat`)
+ * @property {Record<string, string|string[]>} requires  rango que exige de cada pieza
+ * @property {string} [deprecated]             por qué se retiró, si se retiró
+ */
+
+/**
+ * @typedef {object} BrokenEntry  una versión (o rango) marcada rota
+ * @property {string} product
+ * @property {string|string[]} versions
+ * @property {string} [why]
+ * @property {string} [fix]
+ */
+
+/**
+ * @typedef {object} Manifest
+ * @property {string} manifest
+ * @property {number} seq
+ * @property {string} issued
+ * @property {string} [note]
+ * @property {Record<string, Product>} products
+ * @property {BrokenEntry[]} broken
+ */
+
+/** @type {Readonly<Record<string, Manifest>>} */
+const REGISTRY = MANIFESTS
+
+/**
  * NADA DE DISCO, y esto costó un binario que no arrancaba.
  *
  * La primera versión leía los JSON con `fileURLToPath(import.meta.url)` calculado AL
@@ -34,31 +65,56 @@ import { MANIFESTS } from './manifests.js'
  * (`src/manifests.js`, generado desde `manifests/*.json`).
  */
 
-/** Los manifiestos que trae esta versión. Hay uno («dotrino») y caben varios. */
+/**
+ * Los manifiestos que trae esta versión. Hay uno («dotrino») y caben varios.
+ * @returns {string[]}
+ */
 export function manifestNames () {
-  return Object.keys(MANIFESTS).sort()
+  return Object.keys(REGISTRY).sort()
 }
 
 /**
  * Un manifiesto por nombre. LANZA si no está: quien pregunta por un registro que no existe
  * tiene un error, y devolverle un objeto vacío lo convertiría en «todo compatible».
+ * @param {string} [name]
+ * @returns {Manifest}
  */
 export function loadManifest (name = 'dotrino') {
-  const m = Object.hasOwn(MANIFESTS, String(name)) ? MANIFESTS[String(name)] : null
+  const m = Object.hasOwn(REGISTRY, String(name)) ? REGISTRY[String(name)] : null
   if (!m) throw new Error(`roadmap: there is no manifest called "${name}"`)
   return m
 }
 
-/** Los productos que el registro conoce. */
+/**
+ * Los productos que el registro conoce.
+ * @param {Manifest|null|undefined} m
+ * @returns {string[]}
+ */
 export const products = (m) => Object.keys(m?.products || {}).sort()
 
-/** La ficha de un producto, o `null` si el registro no lo conoce. */
+/**
+ * La ficha de un producto, o `null` si el registro no lo conoce.
+ * @param {Manifest|null|undefined} m
+ * @param {string} product
+ * @returns {Product|null}
+ */
 export const productOf = (m, product) => m?.products?.[product] || null
 
-/** La versión que el registro da por vigente. `null` si no lo conoce. */
+/**
+ * La versión que el registro da por vigente. `null` si no lo conoce.
+ * @param {Manifest|null|undefined} m
+ * @param {string} product
+ * @returns {string|null}
+ */
 export const currentOf = (m, product) => productOf(m, product)?.current || null
 
-/** El rango que `product` necesita de `peer`, o `null` si no exige nada. */
+/**
+ * El rango que `product` necesita de `peer`, o `null` si no exige nada.
+ * @param {Manifest|null|undefined} m
+ * @param {string} product
+ * @param {string} peer
+ * @returns {string|string[]|null}
+ */
 export function requirementFor (m, product, peer) {
   const p = productOf(m, product)
   if (!p) return null
@@ -75,6 +131,9 @@ export function requirementFor (m, product, peer) {
  *
  * Si el registro no conoce al producto que pregunta, es `false`: preguntar por quien no
  * está en el registro no puede salir que sí.
+ * @param {Manifest|null|undefined} m
+ * @param {{ product: string, peer: string, version: string }} q
+ * @returns {{ ok: boolean, reason: string }}
  */
 export function meets (m, { product, peer, version }) {
   if (!productOf(m, product)) {
@@ -86,10 +145,27 @@ export function meets (m, { product, peer, version }) {
   return { ok: false, reason: `${product} needs ${peer} ${range} and this one is ${version}` }
 }
 
-/** La lista de rotas del registro, lista para pasarla a `check` de `@dotrino/compat`. */
+/**
+ * La lista de rotas del registro, lista para pasarla a `check` de `@dotrino/compat`.
+ * @param {Manifest|null|undefined} m
+ * @returns {BrokenEntry[]}
+ */
 export const brokenOf = (m) => Array.isArray(m?.broken) ? m.broken : []
 
-/** Lo que el administrador enseña: qué versión debería ir cada pieza, según el registro. */
+/**
+ * @typedef {object} Summary
+ * @property {string|null} manifest
+ * @property {number|null} seq
+ * @property {string|null} issued
+ * @property {{ product: string, current: string|null, protocol: number|null, requires: Record<string, string|string[]> }[]} products
+ * @property {BrokenEntry[]} broken
+ */
+
+/**
+ * Lo que el administrador enseña: qué versión debería ir cada pieza, según el registro.
+ * @param {Manifest|null|undefined} m
+ * @returns {Summary}
+ */
 export function summary (m) {
   return {
     manifest: m?.manifest || null,

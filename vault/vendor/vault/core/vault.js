@@ -2943,6 +2943,16 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     })
   }
   function scheduleDeviceNotice (pub) { schedule('dev:' + pub, () => notifyDeviceChange(pub)) }
+  /**
+   * El aviso del cajón que se tocó: el de un namespace o el de un aparato. `varsDesk` escribe en
+   * los dos, y avisaba siempre al namespace —con `ns` null cuando el cajón era de un aparato—,
+   * así que el aparato no se enteraba de que su configuración había cambiado.
+   */
+  function noticeFor (ns, pub) {
+    if (ns) return scheduleNotice(ns)
+    if (!pub) throw new Error('vars: a drawer needs its ns or its device pub')
+    scheduleDeviceNotice(pub)
+  }
 
   function schedule (key, fn) {
     clearTimeout(pendingNotices.get(key))
@@ -3450,7 +3460,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           await checkAuthor(owner, key, sealed, caller, { allowOverwrite: ask })
           await checkRecipients(owner, sealed.wraps, !!isPublic)
           await secrets.putSealed(owner, key, sealed, { by: who, public: isPublic })
-          audit('secret.set', { ns: ns || null, key, sealed: true }); scheduleNotice(ns)
+          audit('secret.set', { ns: ns || null, key, sealed: true }); noticeFor(ns, pub)
           await settleDebts(owner)
         }
         // Comprobado ANTES de dejarlo en espera: un sobre malo falla al guardarlo, no cinco
@@ -3522,7 +3532,7 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
           await secrets.putSealed(owner, it.key, it.sealed, { by: who, public: !!it.public })
           keys.push(it.key)
         }
-        audit('secret.setMany', { ns: ns || null, keys }); scheduleNotice(ns)
+        audit('secret.setMany', { ns: ns || null, keys }); noticeFor(ns, pub)
         await settleDebts(owner)
       }
       const pending = await holdWrite({ caller, ns, pub, keys: items.map((it) => it.key), apply, ask })
@@ -5128,7 +5138,8 @@ export async function startVault ({ platform, proxyUrl, log = console.log, onEnr
     // La bóveda de contraseñas (`passwords.js`). Aquí SÍ se lista: es donde está la
     // llave. Lo que no puede es listarla un aparato.
     passwordDevices,
-    passwordsVault: () => passwords?.vault || null,
+    // (Aquí estaba `passwordsVault`, que siempre daba null: el mostrador sellado ya no tiene
+    // `vault` —no hay llave que guardar— y nadie lo llamaba. Quitado, no arreglado.)
     // La política de las contraseñas, para quien atiende su propio almacén (la extensión).
     passwordsNeedApproval,
     approvePasswordRequest,

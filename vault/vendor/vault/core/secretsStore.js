@@ -1448,7 +1448,10 @@ export function openSecretsStore (disk, { sealer = null, recipients = null, sign
         dev: {},
         recovery: { pub: pair.pub, priv: await sealer.sealMaster(pair.priv, keyOr(adminKey)) },
         // El histórico empieza aquí: de lo de antes no se guardó ninguna versión previa.
-        history: []
+        history: [],
+        // Las lápidas se conservan. Faltaba el campo, y el primer `delete` tras convertir
+        // reventaba en `_drop` (`data.deleted[owner]` sobre `undefined`) hasta reiniciar.
+        deleted: data.deleted
       }
       const antes = {}
       const noKey = {}

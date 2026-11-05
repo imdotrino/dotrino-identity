@@ -66,7 +66,11 @@ export function partId () {
   return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
 }
 
-/** Las partes (ya como objetos para sellar) de un JSON de `json.length` > `size`. */
+/**
+ * Las partes (ya como objetos para sellar) de un JSON de `json.length` > `size`.
+ * @param {string} json @param {number} size
+ * @returns {Array<{ [PART_TAG]: { id: string, i: number, n: number }, d: string }>}
+ */
 export function splitParts (json, size) {
   const n = Math.ceil(json.length / size)
   const id = partId()
@@ -78,6 +82,8 @@ export function splitParts (json, size) {
 /**
  * Las partes de un paquete de `bytes.length` > `size`, cada una ya empaquetada (lista para
  * cifrar como bytes). El rearmado une los trozos y desempaqueta el resultado.
+ * @param {Uint8Array} bytes @param {number} size
+ * @returns {Uint8Array[]}
  */
 export function splitBinParts (bytes, size) {
   const n = Math.ceil(bytes.byteLength / size)
@@ -87,6 +93,7 @@ export function splitBinParts (bytes, size) {
   return out
 }
 
+/** @param {any} o @returns {boolean} */
 export const isPart = (o) => !!(o && typeof o === 'object' && o[PART_TAG])
 
 /**
@@ -94,8 +101,16 @@ export const isPart = (o) => !!(o && typeof o === 'object' && o[PART_TAG])
  * mientras falten, y lanza con `code` si la parte no vale (se dice: una parte mala no puede
  * desaparecer en silencio, porque el mensaje entero se pierde con ella).
  */
+/**
+ * Un mensaje a medio rearmar.
+ * @typedef {{ n: number, bin: boolean, got: Array<string | Uint8Array>, count: number,
+ *   chars: number, timer: ReturnType<typeof setTimeout> | null }} PendingParts
+ */
+
 export class Reassembler {
+  /** @param {{ onExpire?: (info: { id: string, parts: number, missing: number }) => void }} [opts] */
   constructor ({ onExpire = () => {} } = {}) {
+    /** @type {Map<string, PendingParts>} */
     this._open = new Map()
     this._chars = 0
     this._onExpire = onExpire
@@ -134,7 +149,11 @@ export class Reassembler {
     if (a.timer) clearTimeout(a.timer)
     if (a.count === a.n) {
       this._drop(key)
-      try { return a.bin ? unpack(concatBytes(a.got)) : JSON.parse(a.got.join('')) }
+      try {
+        return a.bin
+          ? unpack(concatBytes(/** @type {Uint8Array[]} */ (a.got)))
+          : JSON.parse(a.got.join(''))
+      }
       catch (_) { throw errorWithCode('a message in parts did not join into a message', 'bad-part') }
     }
     a.timer = setTimeout(() => {
@@ -146,6 +165,7 @@ export class Reassembler {
     return null
   }
 
+  /** @param {string} key */
   _drop (key) {
     const a = this._open.get(key)
     if (!a) return

@@ -501,10 +501,12 @@ export function createLoginDesk ({ load, save, now = () => Date.now(), opaque = 
 export async function createPasswordLogin ({ user, password, label, caps, begin, finish, opaque = opaqueClientePorDefecto } = {}) {
   if (!isValidUser(user)) throw Object.assign(new Error('invalid user name'), { code: 'bad-user' })
   if (typeof password !== 'string' || !password) throw Object.assign(new Error('a password is required'), { code: 'no-password' })
-  const start = opaque.registrationStart({ password })
+  // `opaque` se inyecta, y el resto de este archivo ya lo espera con `await`: una
+  // implementación asíncrona devolvía aquí una promesa y `start.request` salía `undefined`.
+  const start = await opaque.registrationStart({ password })
   const begun = await begin({ user, request: start.request })
   // La bóveda contesta con su mitad; el registro se termina AQUÍ, con la contraseña.
-  const fin = opaque.registrationFinish({ state: start.state, response: begun.response, password })
+  const fin = await opaque.registrationFinish({ state: start.state, response: begun.response, password })
   const device = await makeDeviceKey({ label })
   const enc = await makeDeviceEncKey()
   const blob = await sealDeviceKeys(fin.exportKey, { sign: device.privateJwk, enc: enc.encPrivateJwk })

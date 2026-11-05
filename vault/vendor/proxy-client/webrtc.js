@@ -47,19 +47,47 @@ const RTC_TAG = '__cc_rtc__'
  * Si no hay ninguno, WebRTC queda apagado y se sigue por el proxio. Eso no es un fallo:
  * es el escalón 4, que siempre funciona.
  */
+/** @type {typeof RTCPeerConnection | null} */
 let _PC = null
 let _PCLookedUp = false
 
 /**
+ * El estado de un canal con una punta (por token). `pc` es un `RTCPeerConnection` del
+ * navegador o uno de Node con el mismo contrato (`@dotrino/webrtc`/werift).
+ * @typedef {{
+ *   remote: string,
+ *   pc: RTCPeerConnection | null,
+ *   dc: RTCDataChannel | null,
+ *   makingOffer: boolean,
+ *   ignoreOffer: boolean,
+ *   negotiating: boolean,
+ *   failed: boolean,
+ *   polite: boolean,
+ *   pendingCandidates: RTCIceCandidateInit[],
+ *   openWaiters: Array<{ resolve: () => void, reject: (e: Error) => void }>,
+ *   route?: 'direct' | 'turn',
+ *   wasOpened?: boolean,
+ *   closing?: boolean,
+ *   busy?: number,
+ * }} PeerState
+ */
+
+/** La señal que viaja por el proxio. @typedef {{ kind: 'start' } | { kind: 'sdp', sdp: RTCSessionDescriptionInit | null } | { kind: 'ice', candidate: RTCIceCandidateInit }} RtcSignal */
+
+/**
  * Si este canal sirve AHORA para mandar: abierto Y con la conexión de debajo `connected`. Un
  * canal abierto sobre una conexión `disconnected` acepta `send()` y lo pierde.
+ * @param {PeerState | null | undefined} peer
+ * @returns {peer is PeerState & { dc: RTCDataChannel, pc: RTCPeerConnection }}
  */
 export function usable (peer) {
   return !!(peer && peer.dc && peer.dc.readyState === 'open' && peer.pc && peer.pc.connectionState === 'connected')
 }
 
+/** @param {typeof RTCPeerConnection | null} impl */
 export function setPeerConnection (impl) { _PC = impl; _PCLookedUp = true }
 
+/** @returns {typeof RTCPeerConnection | null} */
 export function resolvePeerConnection () {
   if (_PCLookedUp) return _PC
   _PCLookedUp = true
@@ -70,6 +98,7 @@ export function resolvePeerConnection () {
 /**
  * Busca una implementación para Node. Es ASÍNCRONO —importar un paquete lo es— así que se
  * llama una vez al arrancar, no en medio de una negociación.
+ * @returns {Promise<typeof RTCPeerConnection | null>}
  */
 export async function loadNodePeerConnection () {
   if (_PCLookedUp && _PC) return _PC
@@ -116,13 +145,16 @@ export async function pinTurnToIPv4 (iceServers, opts = {}) {
     // las apps de navegador, donde `node:dns` no existe (y donde no se llega hasta aquí).
     const mod = 'node:dns'
     const dns = await import(mod)
-    lookup = async (host) => (await dns.promises.lookup(host, { family: 4 })).address
+    lookup = async (/** @type {string} */ host) => (await dns.promises.lookup(host, { family: 4 })).address
   }
+  /** @type {Map<string, Promise<string | null>>} */
   const cache = new Map()
+  /** @param {string} url @returns {Promise<string>} */
   const pin = async (url) => {
     const m = /^(turn:)([^:?[\]]+)((?::\d+)?(?:\?.*)?)$/i.exec(String(url).trim())
     if (!m || /^[\d.]+$/.test(m[2])) return url
-    if (!cache.has(m[2])) cache.set(m[2], lookup(m[2]).catch(() => null))
+    const look = /** @type {(host: string) => Promise<string>} */ (lookup)
+    if (!cache.has(m[2])) cache.set(m[2], look(m[2]).catch(() => null))
     const ip = await cache.get(m[2])
     return ip ? m[1] + ip + m[3] : url
   }
@@ -143,9 +175,10 @@ export class WebRTCManager {
    * @param {(event: string, ...args: any[]) => void} opts.emit
    * @param {(dir: 'in'|'out', token: string, bytes: number, route: 'direct'|'turn'|'webrtc') => void} [opts.count]
    *        cuenta el tráfico que va por el canal (ver stats.js)
-   * @param {{iceServers?: any[]}} [opts.config]
+   * @param {{iceServers?: RTCIceServer[]} | null} [opts.config]
    */
   constructor (opts) {
+    /** @type {((from: string) => boolean) | null} */
     this.acceptFrom = null   // ver `handleIncoming`: lo pone quien monta el cliente
     this.getSelfToken = opts.getSelfToken
     this.signalSend = opts.signalSend
@@ -153,7 +186,8 @@ export class WebRTCManager {
     this.emit = opts.emit
     this.count = typeof opts.count === 'function' ? opts.count : null
     this.iceServers = (opts.config && opts.config.iceServers) || DEFAULT_ICE_SERVERS
-    this.peers = new Map() // remoteToken -> PeerState
+    /** @type {Map<string, PeerState>} remoteToken -> PeerState */
+    this.peers = new Map()
     this.closed = false    // `closeAll()`: no se abre nada más hasta `reopen()`
   }
 
@@ -173,6 +207,10 @@ export class WebRTCManager {
    *
    * `acceptFrom` lo decide quien monta el cliente: la bóveda solo acepta a MIEMBROS DE SU
    * ACTA. Sin política se mantiene lo de antes, para no romper a quien ya dependía de ello.
+   *
+   * @param {string} from
+   * @param {any} parsed
+   * @returns {boolean}
    */
   handleIncoming (from, parsed) {
     if (!parsed || typeof parsed !== 'object' || parsed.t !== RTC_TAG) return false
@@ -190,13 +228,18 @@ export class WebRTCManager {
    * Try to send the given JSON payload over a DataChannel.
    * Returns true if it was sent P2P; false if the caller should fall back
    * to the proxy. Also opportunistically starts the connection negotiation.
+   *
+   * @param {string} to
+   * @param {string | Uint8Array} payloadString
+   * @returns {boolean}
    */
   trySend (to, payloadString) {
     if (this.closed) return false
     const peer = this._ensurePeer(to)
     if (usable(peer)) {
       try {
-        peer.dc.send(payloadString)
+        // `send` tiene una sobrecarga por tipo y no acepta la unión; el canal lleva las dos.
+        peer.dc.send(/** @type {string} */ (payloadString))
         this.count?.('out', to, utf8Length(payloadString), peer.route || 'webrtc')
         return true
       } catch (_) {
@@ -212,17 +255,23 @@ export class WebRTCManager {
    * mensaje grande: soltarlas todas de golpe desborda el búfer del canal, el navegador lo
    * cierra y el resto se pierde. Devuelve false si el canal no está (o se cerró), y quien
    * llama sigue por el proxio.
+   *
+   * @param {string} to
+   * @param {string | Uint8Array} payloadString
+   * @param {number} [highWater]
+   * @returns {Promise<boolean>}
    */
   async sendDirect (to, payloadString, highWater = 1024 * 1024) {
     const peer = this.peers.get(to)
-    const dc = peer && peer.dc
     if (!usable(peer)) return false
+    const dc = peer.dc
     while (dc.bufferedAmount > highWater) {
       await new Promise((r) => setTimeout(r, 15))
       if (!usable(peer)) return false
     }
     try {
-      dc.send(payloadString)
+      // `send` tiene una sobrecarga por tipo y no acepta la unión; el canal lleva las dos.
+      dc.send(/** @type {string} */ (payloadString))
       this.count?.('out', to, utf8Length(payloadString), peer.route || 'webrtc')
       return true
     } catch (_) {
@@ -230,13 +279,17 @@ export class WebRTCManager {
     }
   }
 
-  /** Optional: explicitly preconnect to a peer. */
+  /**
+   * Optional: explicitly preconnect to a peer.
+   * @param {string} to
+   * @returns {Promise<void>}
+   */
   connect (to) {
     if (this.closed) return Promise.reject(new Error('WebRTC closed'))
     const peer = this._ensurePeer(to)
     if (usable(peer)) return Promise.resolve()
     if (!peer.negotiating) this._startNegotiation(peer).catch(() => {})
-    return new Promise((resolve, reject) => {
+    return new Promise(/** @param {() => void} resolve @param {(e: Error) => void} reject */ (resolve, reject) => {
       peer.openWaiters.push({ resolve, reject })
     })
   }
@@ -248,6 +301,8 @@ export class WebRTCManager {
    * abrirse después no los cierra nadie. El proceso no sale nunca: así se colgaron las
    * pruebas de la bóveda en CI (0.186.0 y 0.186.1). Por eso, con una descripción en vuelo,
    * la conexión se cierra al terminar esta, que ya ha reunido todo.
+   *
+   * @param {string} to
    */
   closePeer (to) {
     const peer = this.peers.get(to)
@@ -263,15 +318,22 @@ export class WebRTCManager {
     for (const t of Array.from(this.peers.keys())) this.closePeer(t)
   }
 
+  /** @param {PeerState} peer */
   _closePC (peer) {
     try { if (peer.pc) peer.pc.close() } catch (_) {}
   }
 
-  /** Una descripción (local o remota) en vuelo: mientras dure, cerrar espera a que acabe. */
+  /**
+   * Una descripción (local o remota) en vuelo: mientras dure, cerrar espera a que acabe.
+   * @template T
+   * @param {PeerState} peer
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
   async _describe (peer, fn) {
     peer.busy = (peer.busy || 0) + 1
     try { return await fn() } finally {
-      peer.busy--
+      peer.busy = (peer.busy || 1) - 1
       if (peer.closing && !peer.busy) this._closePC(peer)
     }
   }
@@ -280,12 +342,18 @@ export class WebRTCManager {
    * Reemplaza la lista de ICE servers para las PRÓXIMAS conexiones (los peers
    * ya negociados conservan la suya). Lo usa `client.enableTurn()` para
    * inyectar las credenciales TURN temporales del proxy.
+   *
+   * @param {RTCIceServer[]} list
    */
   setIceServers (list) {
     if (Array.isArray(list) && list.length) this.iceServers = list
   }
 
-  /** Pregunta a ICE por dónde va el canal y lo apunta en `peer.route`. */
+  /**
+   * Pregunta a ICE por dónde va el canal y lo apunta en `peer.route`.
+   * @param {PeerState} peer
+   * @returns {Promise<'direct' | 'turn' | null>}
+   */
   async probeRoute (peer) {
     const r = await routeOf(peer.pc)
     if (r) peer.route = r
@@ -295,8 +363,11 @@ export class WebRTCManager {
   /**
    * El estado de cada canal, para las estadísticas: `connecting` mientras se negocia,
    * `direct`/`turn`/`webrtc` con el canal abierto, `failed` si no salió.
+   *
+   * @returns {Promise<Map<string, 'connecting' | 'failed' | 'direct' | 'turn' | 'webrtc' | null>>}
    */
   async describe () {
+    /** @type {Map<string, 'connecting' | 'failed' | 'direct' | 'turn' | 'webrtc' | null>} */
     const out = new Map()
     for (const peer of this.peers.values()) {
       const open = usable(peer)
@@ -306,12 +377,14 @@ export class WebRTCManager {
     return out
   }
 
+  /** @param {string} to @returns {boolean} */
   isOpen (to) {
     return usable(this.peers.get(to))
   }
 
   // ---------- internals ----------
 
+  /** @param {string} remoteToken @returns {PeerState} */
   _ensurePeer (remoteToken) {
     let peer = this.peers.get(remoteToken)
     if (peer) return peer
@@ -331,12 +404,14 @@ export class WebRTCManager {
     return peer
   }
 
+  /** @param {string} remoteToken @returns {boolean} */
   _isPolite (remoteToken) {
     const self = this.getSelfToken()
     if (!self) return false
     return self < remoteToken
   }
 
+  /** @param {PeerState} peer @returns {RTCPeerConnection} */
   _createPC (peer) {
     const PC = resolvePeerConnection()
     if (!PC) throw new Error('no WebRTC here: install `werift` for Node, or run this in a browser')
@@ -383,16 +458,17 @@ export class WebRTCManager {
     return pc
   }
 
+  /** @param {PeerState} peer */
   async _startNegotiation (peer) {
     if (peer.negotiating) return
     peer.negotiating = true
     try {
-      if (!peer.pc) this._createPC(peer)
+      const pc = peer.pc || this._createPC(peer)
       // Caller side creates the data channel; the other end gets it via
       // `ondatachannel`. The token comparison decides who initiates.
       const self = this.getSelfToken()
       if (self && self > peer.remote && !peer.dc) {
-        const dc = peer.pc.createDataChannel('cc', { ordered: true })
+        const dc = pc.createDataChannel('cc', { ordered: true })
         this._attachDC(peer, dc)
       } else if (self && self < peer.remote && !peer.dc) {
         // EL QUE NO CREA EL CANAL TIENE QUE PEDIRLO. Sin un canal nuevo no hay nada que
@@ -409,6 +485,7 @@ export class WebRTCManager {
     }
   }
 
+  /** @param {PeerState} peer @param {RTCDataChannel} dc */
   _attachDC (peer, dc) {
     peer.dc = dc
     // Los bytes como ArrayBuffer: un Blob se lee de forma asíncrona y desordenaría las partes.
@@ -442,6 +519,7 @@ export class WebRTCManager {
     }
   }
 
+  /** @param {PeerState} peer */
   _failPeer (peer) {
     peer.failed = true
     peer.negotiating = false
@@ -451,13 +529,14 @@ export class WebRTCManager {
     for (const w of waiters) w.reject(err)
   }
 
+  /** @param {PeerState} peer @param {RtcSignal} body */
   _signal (peer, body) {
     this.signalSend(peer.remote, { t: RTC_TAG, ...body })
   }
 
+  /** @param {PeerState} peer @param {any} msg */
   async _handleSignal (peer, msg) {
-    if (!peer.pc) this._createPC(peer)
-    const pc = peer.pc
+    const pc = peer.pc || this._createPC(peer)
 
     if (msg.kind === 'start') {
       // El otro quiere ir directo y el canal lo creamos nosotros (ver `_startNegotiation`).

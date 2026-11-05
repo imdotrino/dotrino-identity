@@ -18,10 +18,14 @@ export { encodeContact, decodeContact, KIND_PAIR, KIND_CONTACT } from './ble/wir
 
 import { WebSocketProxyClient } from './client.js'
 
+/** @type {WebSocketProxyClient | null} */
 let _singleton = null
 /**
  * Singleton helper. Returns the same instance across calls.
  * Useful in apps that want a single global client.
+ *
+ * @param {import('./index.js').WebSocketProxyClientOptions} [options]
+ * @returns {WebSocketProxyClient}
  */
 export function getWebSocketProxyClient (options) {
   if (!_singleton) _singleton = new WebSocketProxyClient(options)
