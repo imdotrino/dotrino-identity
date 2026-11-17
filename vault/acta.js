@@ -171,7 +171,7 @@ const conCampoSellador = (acta) => Number(acta?.v) < V_SIN_CAMPO_SELLADOR
  * el rol de master, que no se delega. Así un dispositivo con `admin` robado hace daño
  * acotado y **reversible** (se le revoca), en vez de poder dejarte fuera de tu cuenta.
  */
-export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
+export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica', 'terminal', 'desktop'])
 
 /** Capacidades de un DISPOSITIVO (sin CN): acceso a todo lo del usuario. */
 /**
@@ -214,8 +214,16 @@ export const CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 
  * Y va EN EL ACTA, no en una marca local de una máquina: así lo respeta cualquier bóveda
  * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
  * sin acordarse de un segundo registro escondido.
+ *
+ * `terminal` es ABRIR CONSOLAS en las máquinas de la cuenta que corren el agente de Dotrino
+ * Terminal, y `desktop` es USAR EL ESCRITORIO de las que corren el de Dotrino Remote Desktop
+ * (dueño, 2026-11-16, tras una auditoría de seguridad). Antes bastaba `sign`, así que
+ * cualquier aparato que firmara por ti tenía una shell en todas tus máquinas. Los agentes
+ * piden el permiso ADEMÁS de `sign`. Los dos conceden, no restringen (ver `checkShape`): un
+ * lector viejo los ignora y niega, que es el lado estricto. No tienen scope de certificado,
+ * como `unattended`: los mira el agente en el acta.
  */
-export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica'])
+export const DEVICE_CAPS = Object.freeze(['sign', 'store', 'read', 'admin', 'approve', 'passwords', 'sealer', 'unattended', 'replica', 'terminal', 'desktop'])
 
 /**
  * Lo que recibe un dispositivo recién emparejado. `admin` **no está**: no se

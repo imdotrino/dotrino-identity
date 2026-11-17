@@ -23,7 +23,12 @@ const HELLO_TAG = '__cc_hello__'
  * que no se le mandan: se lanza `peer-no-binary` y la app lo enseña. La idea del dueño es que
  * todo pase a binario con el tiempo, y esta lista es por donde se sabrá quién ya puede.
  */
-const SPEAKS = ['binary']
+// Lo que este cliente entiende, y lo dice al saludar (`helloTo`):
+//  - `binary`: tramas con bytes (0.36.0).
+//  - `parts`: rearma también lo que llega EN CLARO en partes (0.49.0). Lo sellado se rearma
+//    desde 0.33.0; esto es lo que deja trocear a `send` y `sendToOrQueue`, que llevan lo que la
+//    app ya cifró por su cuenta (el canal de `@dotrino/remote-agent`).
+const SPEAKS = ['binary', 'parts']
 
 /** @typedef {import('./index.js').WebSocketProxyClientOptions} WebSocketProxyClientOptions */
 /** @typedef {import('./index.js').SignFn} SignFn */
@@ -250,6 +255,8 @@ export class WebSocketProxyClient {
     this._nextId = 1
     /** @type {Map<string, TokenWatch>} messageId -> { token, sobre, peerPubkey, timer, queueFallback } */
     this._tokenWatch = new Map()
+    /** @type {Map<string, Promise<void>>} token → lo que todavía sale hacia él en partes (send) */
+    this._outChains = new Map()
     // Mensajes grandes que llegan en partes (parts.js). Uno que se queda a medias se DICE:
     // con él se pierde el mensaje entero, y eso no puede pasar callado.
     this._parts = new Reassembler({
@@ -605,6 +612,20 @@ export class WebSocketProxyClient {
         'unsealed')
     }
     const tokens = Array.isArray(to) ? to : [to]
+    // UNO GRANDE, EN PARTES, A QUIEN LO ENTIENDE (0.49.0): lo que pasa de lo que admite el camino
+    // de ese token sale troceado (parts.js) si su saludo dijo `parts`. Y lo que va detrás a un
+    // token que está recibiendo partes espera su turno: si no, adelantaría al grande.
+    const now = this._queueBehindParts(tokens, payload)
+    if (!now.length) return
+    this._sendNow(now, payload)
+  }
+
+  /**
+   * Lo de `send` que ya no espera a nadie: por el mejor canal de cada token, entero.
+   * @param {string[]} tokens
+   * @param {any} payload
+   */
+  _sendNow (tokens, payload) {
     const messageStr = this._wire(payload)
     if (!this._rtc && !this._ble) {
       this._sendRaw({ to: tokens, message: messageStr })
@@ -1010,7 +1031,71 @@ export class WebSocketProxyClient {
     if (!token || !peerPubkey) {
       throw errorWithCode('sendToOrQueue: needs the token and whose it is (peerPubkey)', 'no-peer-identity')
     }
+    if (!this._queueBehindParts([token], payload, peerPubkey).length) return
     this._sendToTokenOrQueue(token, payload, peerPubkey)
+  }
+
+  /**
+   * TROCEAR LO QUE LA APP YA CIFRÓ, solo hacia quien sepa rearmarlo (0.49.0).
+   *
+   * Por cada token: si el mensaje no cabe en un mensaje de su camino y la otra punta dijo `parts`
+   * en su saludo, sale en partes; si ya hay partes saliendo hacia ese token, este mensaje se pone
+   * detrás, también uno pequeño, para que llegue en el orden en que se mandó. Devuelve los tokens
+   * que no tienen nada de eso, que se mandan como siempre.
+   *
+   * Quien NO dijo `parts` (no ha saludado, o es de antes: las apps nativas todavía) recibe el
+   * mensaje entero, como antes de esto. No es un repliegue: es lo que esa punta entiende.
+   *
+   * @param {string[]} tokens
+   * @param {any} payload
+   * @param {string} [peerPubkey]  de quién es (si es uno solo); si no, lo que dijo su saludo
+   * @returns {string[]}
+   */
+  _queueBehindParts (tokens, payload, peerPubkey) {
+    /** @type {string[]} */
+    const now = []
+    /** @type {Measured | null} */
+    let m = null
+    for (const t of tokens) {
+      const busy = this._outChains.has(t)
+      let pieces = null
+      if (!this.requireSealed && this.speaks(t, 'parts') === true) {
+        m ||= this._measure(payload)
+        const size = this._directFor(t) ? DIRECT_PART_CHARS : PROXY_PART_CHARS
+        if (!m.bin && m.len > size) pieces = { list: splitParts(/** @type {string} */ (m.whole), size), len: m.len }
+      }
+      if (!pieces && !busy) { now.push(t); continue }
+      const pk = peerPubkey || this.pubkeyOfToken(t) || undefined
+      const job = pieces
+        ? async () => {
+          if (!this._directFor(t) && pieces.len > RELAY_MAX_CHARS) {
+            this._upgradeDirect([t])
+            throw errorWithCode(`send: ${pieces.len} chars is more than goes through the proxy live (${RELAY_MAX_CHARS}); it needs a direct channel`, 'too-big-for-relay')
+          }
+          for (const piece of pieces.list) {
+            if (pk) await this._sendPiece(t, this._wire(piece), pk, pieces.len <= QUEUE_MAX_CHARS, pieces.len <= RELAY_MAX_CHARS)
+            else { const d = this._directFor(t); if (!(d && await d.sendDirect(t, this._wire(piece)))) this._sendRaw({ to: [t], message: this._wire(piece) }) }
+          }
+        }
+        : async () => { if (pk) this._sendToTokenOrQueue(t, payload, pk); else this._sendNow([t], payload) }
+      this._chainOut(t, job)
+    }
+    return now
+  }
+
+  /**
+   * Una cola por token: lo que va a ese token sale en orden. Un fallo se dice por `error`
+   * (`send` no devuelve nada que se pueda esperar), con su `code`.
+   * @param {string} token
+   * @param {() => Promise<void>} job
+   */
+  _chainOut (token, job) {
+    const prev = this._outChains.get(token) || Promise.resolve()
+    const next = prev.then(job).catch((e) => {
+      this._emit('error', { type: 'client', error: /** @type {{ message?: string }} */ (e).message, code: codeOf(e) || 'send-failed', token })
+    })
+    this._outChains.set(token, next)
+    next.then(() => { if (this._outChains.get(token) === next) this._outChains.delete(token) })
   }
 
   /**
@@ -1547,7 +1632,8 @@ export class WebSocketProxyClient {
       this._emit('error', { type: 'unsealed', reason: 'plaintext_rejected', from })
       return
     }
-    this._emit('message', from, payload, { ...meta, sealed: false })
+    // En claro también se rearma (0.49.0): lo que la app cifró por su cuenta llega en partes.
+    this._handOpened(from, payload, { ...meta, sealed: false })
   }
 
   /**

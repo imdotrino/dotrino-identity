@@ -84,6 +84,9 @@ export function usable (peer) {
   return !!(peer && peer.dc && peer.dc.readyState === 'open' && peer.pc && peer.pc.connectionState === 'connected')
 }
 
+/** Lo que se espera a que el canal directo vacíe su búfer antes de darlo por muerto. */
+export const STALL_MS = 5000
+
 /** @param {typeof RTCPeerConnection | null} impl */
 export function setPeerConnection (impl) { _PC = impl; _PCLookedUp = true }
 
@@ -261,13 +264,19 @@ export class WebRTCManager {
    * @param {number} [highWater]
    * @returns {Promise<boolean>}
    */
-  async sendDirect (to, payloadString, highWater = 1024 * 1024) {
+  async sendDirect (to, payloadString, highWater = 1024 * 1024, stallMs = STALL_MS) {
     const peer = this.peers.get(to)
     if (!usable(peer)) return false
     const dc = peer.dc
+    // UN CANAL QUE NO VACÍA SU BÚFER ESTÁ MUERTO (0.49.1). Esperarlo sin tope colgaba para
+    // siempre a quien manda en partes, y con ellas todo lo que iba detrás al mismo destino (el
+    // escritorio remoto se quedaba sin escena). Pasado `stallMs` sin bajar, se cierra —la
+    // siguiente vez se negocia de nuevo— y se dice que no salió, para que vaya por el proxio.
+    const since = Date.now()
     while (dc.bufferedAmount > highWater) {
       await new Promise((r) => setTimeout(r, 15))
       if (!usable(peer)) return false
+      if (Date.now() - since > stallMs) { this.closePeer(to); return false }
     }
     try {
       // `send` tiene una sobrecarga por tipo y no acepta la unión; el canal lleva las dos.

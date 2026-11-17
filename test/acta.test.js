@@ -142,12 +142,12 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   // `sealer` entra en la lista desde 2026-08-30: sellar es un permiso de aparato, y este
   // miembro los tiene todos. De paso queda probado que una bóveda puede RENUNCIAR a sellar.
   // `sealer` entra desde 2026-08-30, `unattended` desde 2026-09-01, `replica` desde
-  // 2026-09-02 (`passkeys` estuvo de 2026-09-19 a 2026-10-16, fusionado en `passwords`):
+  // 2026-09-02, `terminal` y `desktop` desde 2026-11-16 (`passkeys` estuvo de 2026-09-19 a 2026-10-16, fusionado en `passwords`):
   // son permisos de aparato, y este miembro los tiene TODOS (se admitió con `...CAPS`). Se
   // listan a mano —y no como `CAPS.filter(...)`— para que añadir o quitar un permiso ponga
   // esta prueba en rojo: que la lista cambie sin que nadie lo mire es justo lo que no se quiere.
   assert.deepEqual(effectiveCaps(dos, b.pub, [r]),
-    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'],
+    ['admin', 'approve', 'desktop', 'passwords', 'read', 'replica', 'sealer', 'store', 'terminal', 'unattended'],
     'se honra sin tocar el acta')
 
   // Falsificada por otro miembro: no vale.
@@ -157,7 +157,7 @@ test('renuncia: unilateral, solo quita, y no la puede falsificar otro', async ()
   // El master la absorbe: queda en el acta y el seq avanza.
   const tres = await step(dos, [{ op: 'renounce', record: r }], a)
   assert.deepEqual(effectiveCaps(tres, b.pub),
-    ['admin', 'approve', 'passwords', 'read', 'replica', 'sealer', 'store', 'unattended'])
+    ['admin', 'approve', 'desktop', 'passwords', 'read', 'replica', 'sealer', 'store', 'terminal', 'unattended'])
   assert.equal(tres.renounced.length, 1)
 })
 
@@ -667,4 +667,23 @@ test('la llave de comunicación dice de qué bóveda es, y solo ella puede decir
   await assert.rejects(() => applyChanges(cuatro, [{ op: 'admit', member: { pub: e.pub, caps: ['read'], vault: a.pub } }], { by: a.pub }), /only the vault communication key/)
   await assert.rejects(() => applyChanges(cuatro, [{ op: 'vault', pub: a.pub, vault: a.pub }], { by: a.pub }), /only the vault communication key/)
   assert.equal(checkShape({ ...cuatro, members: cuatro.members.map((m) => (m.pub === a.pub ? { ...m, vault: a.pub } : m)) }), 'invalid-vault')
+})
+
+/**
+ * `terminal` y `desktop`: abrir consolas y usar el escritorio de tus máquinas (dueño,
+ * 2026-11-16). Se conceden como cualquier otro permiso, y `sign` no los implica: es justo
+ * lo que se vino a quitar — antes bastaba firmar para tener una shell en todas las máquinas.
+ */
+test('terminal y desktop: permisos de aparato, y sign no los implica', async () => {
+  const master = await key(); const tel = await key(); const pc = await key()
+  const g = await sealActa({ acta: genesisActa({ pub: master.pub }), privateJwk: master.privateJwk })
+  assert.ok(DEVICE_CAPS.includes('terminal') && DEVICE_CAPS.includes('desktop'))
+  const acta = await step(g, [
+    { op: 'admit', member: { pub: tel.pub, caps: ['sign', 'terminal', 'desktop'], label: 'telefono' } },
+    { op: 'admit', member: { pub: pc.pub, caps: ['sign'], label: 'pc' } }
+  ], master)
+  assert.equal(memberCan(acta, tel.pub, 'terminal'), true)
+  assert.equal(memberCan(acta, tel.pub, 'desktop'), true)
+  assert.equal(memberCan(acta, pc.pub, 'terminal'), false)
+  assert.equal(memberCan(acta, pc.pub, 'desktop'), false)
 })

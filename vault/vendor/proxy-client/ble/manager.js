@@ -393,9 +393,12 @@ export class BluetoothManager {
   async sendDirect (to, wire, highWater = 256 * 1024) {
     const p = this.peers.get(to)
     if (!p || p.state !== 'open') return false
+    // Como en WebRTC: un canal que no vacía lo pendiente en 5 s no cuelga a quien manda (0.49.1).
+    const since = Date.now()
     while (p.pending > highWater) {
       await new Promise((r) => setTimeout(r, 15))
       if (p.state !== 'open') return false
+      if (Date.now() - since > 5000) return false
     }
     return this.trySend(to, wire)
   }

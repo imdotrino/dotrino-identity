@@ -649,6 +649,14 @@ export const CAPS: readonly string[];
  * Y va EN EL ACTA, no en una marca local de una máquina: así lo respeta cualquier bóveda
  * de la cuenta, se ve en la pantalla de permisos como los demás, y se quita quitándolo —
  * sin acordarse de un segundo registro escondido.
+ *
+ * `terminal` es ABRIR CONSOLAS en las máquinas de la cuenta que corren el agente de Dotrino
+ * Terminal, y `desktop` es USAR EL ESCRITORIO de las que corren el de Dotrino Remote Desktop
+ * (dueño, 2026-11-16, tras una auditoría de seguridad). Antes bastaba `sign`, así que
+ * cualquier aparato que firmara por ti tenía una shell en todas tus máquinas. Los agentes
+ * piden el permiso ADEMÁS de `sign`. Los dos conceden, no restringen (ver `checkShape`): un
+ * lector viejo los ignora y niega, que es el lado estricto. No tienen scope de certificado,
+ * como `unattended`: los mira el agente en el acta.
  */
 export const DEVICE_CAPS: readonly string[];
 /**
